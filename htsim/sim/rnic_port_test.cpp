@@ -238,6 +238,40 @@ TEST(RnicTxPortTest,
     EXPECT_TRUE(port.sourcePayloadDispatched(10));
 }
 
+TEST(RnicTxPortTest,
+     TransitCalibrationUsesEachDispatchedPacketsExactWireExtent) {
+    RnicTxPort port(
+        1,
+        8000000000000ULL,
+        RnicDataPacketizationConfig(1000, 40),
+        7);
+    std::vector<uint64_t> calibrated_wire_extents;
+    port.addFlow(
+        10,
+        1000,
+        [&calibrated_wire_extents](const RnicPacketExtent& extent) {
+            calibrated_wire_extents.push_back(extent.wireBytes());
+            return extent.wireBytes() * 3;
+        });
+    port.setWireRateGrant(10, 8000000000000ULL);
+    port.setDataEligible(10, true);
+
+    const RnicTxOpportunity full = port.dispatchOpportunity(0);
+    ASSERT_TRUE(full.packet.has_value());
+    EXPECT_EQ(full.packet->extent.payloadBytes(), 960u);
+    EXPECT_EQ(full.packet->extent.wireBytes(), 1000u);
+    EXPECT_EQ(full.packet->eta_ps - full.end_ps, 3000u);
+
+    const RnicTxOpportunity short_tail =
+        port.dispatchOpportunity(full.end_ps);
+    ASSERT_TRUE(short_tail.packet.has_value());
+    EXPECT_EQ(short_tail.packet->extent.payloadBytes(), 40u);
+    EXPECT_EQ(short_tail.packet->extent.wireBytes(), 80u);
+    EXPECT_EQ(short_tail.packet->eta_ps - short_tail.end_ps, 240u);
+    EXPECT_EQ(calibrated_wire_extents,
+              (std::vector<uint64_t>{1000, 80}));
+}
+
 TEST(RnicTxPortTest, RouteInjectionEtaOverflowIsTransactional) {
     RnicTxPort port(1, 8000000000000ULL, 1, 7);
     port.addFlow(10, 1, std::numeric_limits<uint64_t>::max());

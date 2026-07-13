@@ -68,7 +68,9 @@ RnicCollectiveNetworkConfig collectiveConfig(
         timeFromUs(10.0),
         RnicCollectiveController::kDefaultMarginPpm,
         64,
-        [](std::uint32_t, std::uint32_t) {
+        [](std::uint32_t,
+           std::uint32_t,
+           const RnicPacketExtent&) {
             return timeFromNs(500);
         },
     };
@@ -120,7 +122,9 @@ TEST(RnicAtlahsRuntimeFactoryTest,
     std::size_t caller_calibration_calls = 0;
     RnicCollectiveNetworkConfig config = collectiveConfig();
     config.calibrated_transit_ps =
-        [&caller_calibration_calls](std::uint32_t, std::uint32_t) {
+        [&caller_calibration_calls](std::uint32_t,
+                                    std::uint32_t,
+                                    const RnicPacketExtent&) {
             ++caller_calibration_calls;
             return timeFromNs(1);
         };
@@ -135,8 +139,8 @@ TEST(RnicAtlahsRuntimeFactoryTest,
 
     std::size_t completions = 0;
     runtime->setup(32, [&completions](AtlahsFlowId) { ++completions; });
-    // One exact full-wire DATA packet on a same-ToR path and one on a
-    // cross-ToR path exercise both physical no-queue calibrations.
+    // Full-wire and short-tail DATA on same- and cross-ToR paths exercise all
+    // packet-extent-aware physical no-queue calibrations.
     runtime->send({0x100000001ULL,
                    0,
                    1,
@@ -149,6 +153,18 @@ TEST(RnicAtlahsRuntimeFactoryTest,
                    936,
                    EventList::now(),
                    0});
+    runtime->send({0x100000003ULL,
+                   4,
+                   5,
+                   13,
+                   EventList::now(),
+                   0});
+    runtime->send({0x100000004ULL,
+                   6,
+                   30,
+                   13,
+                   EventList::now(),
+                   0});
     constexpr std::size_t maximum_events = 100000;
     std::size_t event_count = 0;
     while (runtime->hasPendingPhysicalWork()
@@ -159,9 +175,11 @@ TEST(RnicAtlahsRuntimeFactoryTest,
 
     EXPECT_FALSE(runtime->hasPendingPhysicalWork());
     runtime->validateQuiescent();
-    EXPECT_EQ(completions, 2U);
+    EXPECT_EQ(completions, 4U);
     EXPECT_EQ(runtime->flow(0x100000001ULL).delivered_data_packets, 1U);
     EXPECT_EQ(runtime->flow(0x100000002ULL).delivered_data_packets, 1U);
+    EXPECT_EQ(runtime->flow(0x100000003ULL).delivered_data_packets, 1U);
+    EXPECT_EQ(runtime->flow(0x100000004ULL).delivered_data_packets, 1U);
     EXPECT_EQ(caller_calibration_calls, 0U);
 }
 
@@ -240,6 +258,67 @@ TEST(RnicAtlahsRuntimeFactoryTest,
                               collectiveConfig(),
                               twoTierConfig(LOSSLESS_INPUT)),
         std::invalid_argument);
+}
+
+TEST(RnicAtlahsRuntimeFactoryTest,
+     CollectiveNetworkRejectsPreconfiguredLinkFailures) {
+    EventList& event_list = testEventList();
+    std::unique_ptr<FatTreeTopologyCfg> failed = twoTierConfig();
+    failed->set_failed_links(1);
+
+    EXPECT_THROW(
+        makeRnicAtlahsRuntime(event_list,
+                              RnicProfile::CollectiveNetwork,
+                              collectiveConfig(),
+                              std::move(failed)),
+        std::invalid_argument);
+}
+
+TEST(RnicAtlahsRuntimeFactoryTest,
+     CollectiveNetworkFreezesCalibrationAtAssemblyConstruction) {
+    EventList& event_list = testEventList();
+    auto assembly = makeRnicAtlahsRuntime(
+        event_list,
+        RnicProfile::CollectiveNetwork,
+        collectiveConfig(),
+        twoTierConfig());
+    auto* const runtime = dynamic_cast<RnicCollectiveNetworkRuntime*>(
+        &assembly->implementation());
+    ASSERT_NE(runtime, nullptr);
+
+    // Physical serializers already own the original 100-Gbit/s rate. The
+    // legacy API still exposes its configuration mutably; changing that
+    // object must not change the construction-time ETA baseline.
+    FatTreeTopologyCfg* const exposed_config = assembly->topologyConfig();
+    exposed_config->set_tier_parameters(
+        AGG_TIER,
+        exposed_config->radix_up(AGG_TIER),
+        exposed_config->radix_down(AGG_TIER),
+        exposed_config->queue_up(AGG_TIER),
+        exposed_config->queue_down(AGG_TIER),
+        exposed_config->bundlesize(AGG_TIER),
+        exposed_config->downlink_speed(AGG_TIER) / 4,
+        1);
+
+    std::size_t completions = 0;
+    runtime->setup(32, [&completions](AtlahsFlowId) { ++completions; });
+    runtime->send({0x100000005ULL,
+                   0,
+                   31,
+                   936,
+                   EventList::now(),
+                   0});
+    constexpr std::size_t maximum_events = 100000;
+    std::size_t event_count = 0;
+    while (runtime->hasPendingPhysicalWork()
+           && event_count < maximum_events) {
+        ASSERT_TRUE(EventList::doNextEvent());
+        ++event_count;
+    }
+
+    EXPECT_FALSE(runtime->hasPendingPhysicalWork());
+    runtime->validateQuiescent();
+    EXPECT_EQ(completions, 1U);
 }
 
 TEST(RnicAtlahsRuntimeFactoryTest,

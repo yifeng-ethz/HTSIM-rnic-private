@@ -20,7 +20,10 @@ class RnicNode;
 
 struct RnicCollectiveNetworkConfig {
     using TransitCalibration =
-        std::function<std::uint64_t(std::uint32_t, std::uint32_t)>;
+        std::function<std::uint64_t(
+            std::uint32_t,
+            std::uint32_t,
+            const RnicPacketExtent&)>;
 
     std::uint64_t access_wire_capacity_bps;
     RnicDataPacketizationConfig packetization;

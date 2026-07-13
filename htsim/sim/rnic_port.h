@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
 #include <vector>
@@ -32,6 +33,12 @@ struct RnicTxOpportunity {
 // One physical L2 transmit port shared by every flow at an RNIC node.
 class RnicTxPort {
 public:
+    // No-queue transit starts after this port's source serializer.  The
+    // exact DATA extent is supplied at dispatch so a short final packet is
+    // never calibrated as a maximum-size packet.
+    using TransitCalibration =
+        std::function<uint64_t(const RnicPacketExtent&)>;
+
     RnicTxPort(uint64_t node_id,
                uint64_t access_capacity_bps,
                uint64_t max_wire_packet_bytes,
@@ -41,6 +48,13 @@ public:
                RnicDataPacketizationConfig packetization,
                uint64_t global_prbs_seed);
 
+    void addFlow(
+        uint64_t flow_id,
+        uint64_t payload_size_bytes,
+        TransitCalibration calibrated_transit_ps);
+
+    // Convenience for tests and topology-free callers whose transit is
+    // independent of packet extent.
     void addFlow(
         uint64_t flow_id,
         uint64_t payload_size_bytes,
@@ -98,7 +112,7 @@ private:
     struct FlowState {
         uint64_t flow_id;
         uint64_t payload_size_bytes;
-        uint64_t calibrated_transit_ps;
+        TransitCalibration calibrated_transit_ps;
         uint64_t wire_rate_grant_bps = 0;
         uint64_t effective_wire_rate_bps = 0;
         uint64_t payload_bytes_dispatched = 0;

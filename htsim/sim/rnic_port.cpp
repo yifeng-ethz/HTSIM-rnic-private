@@ -40,12 +40,29 @@ RnicTxPort::RnicTxPort(uint64_t node_id,
 void RnicTxPort::addFlow(
         uint64_t flow_id,
         uint64_t payload_size_bytes,
-        uint64_t calibrated_transit_ps) {
-    const FlowState state{flow_id, payload_size_bytes, calibrated_transit_ps};
+        TransitCalibration calibrated_transit_ps) {
+    if (!calibrated_transit_ps) {
+        throw std::invalid_argument(
+            "RNIC TX flow requires a transit calibration");
+    }
+    FlowState state{
+        flow_id, payload_size_bytes, std::move(calibrated_transit_ps)};
     if (!_flows.emplace(flow_id, state).second) {
         throw std::invalid_argument("duplicate flow on RNIC TX port");
     }
     recomputeEffectiveRates();
+}
+
+void RnicTxPort::addFlow(
+        uint64_t flow_id,
+        uint64_t payload_size_bytes,
+        uint64_t calibrated_transit_ps) {
+    addFlow(
+        flow_id,
+        payload_size_bytes,
+        [calibrated_transit_ps](const RnicPacketExtent&) {
+            return calibrated_transit_ps;
+        });
 }
 
 void RnicTxPort::setWireRateGrant(
@@ -185,9 +202,11 @@ RnicTxOpportunity RnicTxPort::dispatchOpportunity(uint64_t requested_start_ps) {
     // transactional.
     std::optional<uint64_t> selected_eta_ps;
     if (selected_state != nullptr) {
+        const uint64_t calibrated_transit_ps =
+            selected_state->calibrated_transit_ps(*selected_extent);
         selected_eta_ps = checkedAdd(
             interval.end_ps,
-            selected_state->calibrated_transit_ps,
+            calibrated_transit_ps,
             "RNIC TX eligibility timestamp overflow");
     }
 

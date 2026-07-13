@@ -49,7 +49,9 @@ public:
             timeFromUs(10.0),
             RnicCollectiveController::kDefaultMarginPpm,
             64,
-            [this](std::uint32_t source, std::uint32_t destination) {
+            [this](std::uint32_t source,
+                   std::uint32_t destination,
+                   const RnicPacketExtent&) {
                 return topology_config.get_two_point_diameter_latency(
                     static_cast<int>(source),
                     static_cast<int>(destination));

@@ -330,6 +330,10 @@ The present paper scope assumes one calibrated, bounded control-loop deadline
 for flows in a two-tier datacenter Clos and synchronized activation time.
 Heterogeneous control RTT stability is deliberately out of scope and must be
 reported as such rather than hidden behind per-flow tuning.
+The physical profile therefore rejects preconfigured link failures and freezes
+its ETA calibration inputs when it constructs the homogeneous Clos. A later
+mutation of the legacy topology-config object cannot rewrite timestamps for
+already-constructed pipes and serializers.
 
 ## Node-wide PRBS pacer
 
@@ -386,10 +390,16 @@ pacing: it changes the mean rate and is prohibited.
 ## Ring-CAM resequencer
 
 The sender stamps packet eligibility `eta` at the physical route-injection
-boundary: source serializer completion plus calibrated constant transit. The
-physical HTSIM route starts at that boundary, so adding transit at source
-dispatch start would incorrectly omit source serialization. At a receiver, a
-packet is admitted only while its timestamp is in the active window and is
+boundary: source serializer completion plus packet-specific no-load physical
+transit. That transit includes the route's pipe and switch-pipeline latency and
+the remaining Tomahawk 3 egress serialization at the packet's exact wire
+extent. A same-ToR path has one ToR-downlink serialization; a cross-ToR
+two-tier path has two inter-switch serializations at the aggregation-tier link
+rate plus one ToR-downlink serialization. The physical HTSIM route starts at
+the source-serializer boundary, so adding transit at source dispatch start
+would incorrectly omit source serialization. Calibrating every packet as a
+maximum-size packet would instead make short tails appear early. At a receiver,
+a packet is admitted only while its timestamp is in the active window and is
 released independently when the lower window edge reaches it. Conceptually:
 
 ```text

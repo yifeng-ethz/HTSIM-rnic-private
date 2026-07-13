@@ -6,6 +6,7 @@
 #include <utility>
 
 #include "fat_tree_topology.h"
+#include "rnic_collective_route.h"
 #include "rnic_fluid_manifold_runtime.h"
 #include "rnic_packetized_manifold_runtime.h"
 
@@ -91,6 +92,10 @@ std::unique_ptr<RnicAtlahsRuntimeAssembly> makeRnicAtlahsRuntime(
             throw std::invalid_argument(
                 "rnic-cn rejects PAUSE/PFC and lossless queue modes");
         }
+        if (topology_config->failed_link_count() != 0) {
+            throw std::invalid_argument(
+                "rnic-cn requires a homogeneous failure-free two-tier Clos");
+        }
         if (topology_config->downlink_speed(TOR_TIER)
             != config.access_wire_capacity_bps) {
             throw std::invalid_argument(
@@ -109,17 +114,21 @@ std::unique_ptr<RnicAtlahsRuntimeAssembly> makeRnicAtlahsRuntime(
         }
 
         // ETA is a no-queue physical baseline, not a caller-selected model
-        // parameter. The captured configuration has assembly lifetime and is
-        // destroyed only after the runtime and topology.
-        FatTreeTopologyCfg* const owned_topology_config =
-            topology_config.get();
+        // parameter. Snapshot the construction-time values that create the
+        // physical serializers: the legacy API exposes its owned config
+        // mutably, but a later mutation must not rewrite ETA for queues and
+        // pipes that have already been constructed.
+        const auto calibration_config =
+            std::make_shared<const FatTreeTopologyCfg>(*topology_config);
         config.calibrated_transit_ps =
-            [owned_topology_config](std::uint32_t source,
-                                    std::uint32_t destination) {
-                return owned_topology_config
-                    ->get_two_point_diameter_latency(
-                        static_cast<int>(source),
-                        static_cast<int>(destination));
+            [calibration_config](std::uint32_t source,
+                                 std::uint32_t destination,
+                                 const RnicPacketExtent& extent) {
+                return rnicCollectiveNoQueueTransitPs(
+                    *calibration_config,
+                    source,
+                    destination,
+                    extent);
             };
 
         auto topology = std::make_unique<FatTreeTopology>(

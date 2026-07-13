@@ -127,12 +127,19 @@ TEST(RnicAtlahsDriverTest, CollectiveManifestNamesPhysicalModelExactly) {
     EXPECT_NE(manifest.find("clos_tiers=2 switch=Tomahawk3"),
               std::string::npos);
     EXPECT_NE(manifest.find(
+                  "link_failures=0 eta_calibration_config=construction-snapshot"),
+              std::string::npos);
+    EXPECT_NE(manifest.find(
                   "voq_key=physical-ingress-x-physical-egress"),
               std::string::npos);
     EXPECT_NE(manifest.find("pfc=off ecn=off"), std::string::npos);
     EXPECT_NE(manifest.find("declaration_gate=physical-accept"),
               std::string::npos);
-    EXPECT_NE(manifest.find("eta=source-route-injection-plus-calibrated-transit"),
+    EXPECT_NE(manifest.find(
+                  "eta=source-route-injection-plus-packet-specific-no-load-transit"),
+              std::string::npos);
+    EXPECT_NE(manifest.find(
+                  "eta_transit=pipe-switch-latency-plus-remaining-tm3-egress-serialization"),
               std::string::npos);
 }
 

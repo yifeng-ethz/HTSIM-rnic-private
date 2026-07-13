@@ -379,7 +379,7 @@ void RnicCollectiveNetworkRuntime::Impl::validateConfiguration() const {
     }
     if (!config.calibrated_transit_ps) {
         throw std::invalid_argument(
-            "rnic-cn requires fixed path-transit calibration");
+            "rnic-cn requires packet-specific no-queue transit calibration");
     }
     if (config.control_wire_bytes == 0
         || config.control_wire_bytes
@@ -491,8 +491,6 @@ void RnicCollectiveNetworkRuntime::Impl::send(
         throw std::invalid_argument("duplicate rnic-cn ATLAHS flow id");
     }
 
-    const TimePs calibrated_transit =
-        config.calibrated_transit_ps(request.source, request.destination);
     const RnicCollectiveFinalLedger final_ledger =
         packetLedger(request.payload_bytes, config.packetization);
     auto state = std::make_unique<FlowState>(request, final_ledger);
@@ -519,8 +517,17 @@ void RnicCollectiveNetworkRuntime::Impl::send(
         throw std::logic_error("rnic-cn flow insertion failed");
     }
     try {
+        const RnicCollectiveNetworkConfig::TransitCalibration calibration =
+            config.calibrated_transit_ps;
         source.node.txPort().addFlow(
-            request.flow_id, request.payload_bytes, calibrated_transit);
+            request.flow_id,
+            request.payload_bytes,
+            [calibration,
+             source_id = request.source,
+             destination_id = request.destination](
+                    const RnicPacketExtent& extent) {
+                return calibration(source_id, destination_id, extent);
+            });
     } catch (...) {
         flows.erase(inserted.first);
         source.control_queue.pop_back();

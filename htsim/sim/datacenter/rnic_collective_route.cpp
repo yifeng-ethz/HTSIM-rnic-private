@@ -5,6 +5,7 @@
 #include <stdexcept>
 
 #include "fat_tree_topology.h"
+#include "rnic_packet_extent.h"
 
 namespace {
 
@@ -35,7 +36,89 @@ private:
     std::vector<const Route*>* _routes;
 };
 
+std::uint64_t checkedAdd(
+        std::uint64_t lhs,
+        std::uint64_t rhs,
+        const char* message) {
+    if (rhs > std::numeric_limits<std::uint64_t>::max() - lhs) {
+        throw std::overflow_error(message);
+    }
+    return lhs + rhs;
+}
+
+std::uint64_t queueDrainTimePs(
+        std::uint64_t wire_bytes, linkspeed_bps bitrate) {
+    if (bitrate == 0) {
+        throw std::invalid_argument(
+            "rnic-cn transit calibration requires a nonzero link rate");
+    }
+
+    // BaseQueue computes an integral ps_per_byte once, then drainTime()
+    // multiplies that value by the packet size.  Keep the same truncation
+    // semantics without floating-point arithmetic, and check the multiply.
+    constexpr std::uint64_t serialization_numerator_per_byte =
+        UINT64_C(8000000000000);
+    const std::uint64_t ps_per_byte =
+        serialization_numerator_per_byte / bitrate;
+    if (ps_per_byte != 0
+        && wire_bytes
+               > std::numeric_limits<std::uint64_t>::max() / ps_per_byte) {
+        throw std::overflow_error(
+            "rnic-cn transit serialization time overflow");
+    }
+    return wire_bytes * ps_per_byte;
+}
+
 }  // namespace
+
+std::uint64_t rnicCollectiveNoQueueTransitPs(
+        const FatTreeTopologyCfg& topology_config,
+        std::uint32_t source,
+        std::uint32_t destination,
+        const RnicPacketExtent& extent) {
+    if (topology_config.get_tiers() != 2) {
+        throw std::invalid_argument(
+            "rnic-cn transit calibration requires a two-tier Clos");
+    }
+    if (source >= topology_config.no_of_servers()
+        || destination >= topology_config.no_of_servers()) {
+        throw std::out_of_range(
+            "rnic-cn transit calibration endpoint is outside the Clos");
+    }
+    if (source == destination) {
+        throw std::invalid_argument(
+            "rnic-cn transit calibration requires distinct endpoints");
+    }
+
+    std::uint64_t transit_ps =
+        topology_config.get_two_point_diameter_latency(
+            static_cast<int>(source), static_cast<int>(destination));
+    const std::uint64_t tor_downlink_serialization_ps =
+        queueDrainTimePs(
+            extent.wireBytes(),
+            topology_config.downlink_speed(TOR_TIER));
+
+    if (topology_config.HOST_POD_SWITCH(source)
+        != topology_config.HOST_POD_SWITCH(destination)) {
+        const std::uint64_t inter_switch_serialization_ps =
+            queueDrainTimePs(
+                extent.wireBytes(),
+                topology_config.downlink_speed(AGG_TIER));
+        transit_ps = checkedAdd(
+            transit_ps,
+            inter_switch_serialization_ps,
+            "rnic-cn transit calibration overflow");
+        transit_ps = checkedAdd(
+            transit_ps,
+            inter_switch_serialization_ps,
+            "rnic-cn transit calibration overflow");
+    }
+
+    return checkedAdd(
+        transit_ps,
+        tor_downlink_serialization_ps,
+        "rnic-cn transit calibration overflow");
+}
 
 RnicCollectiveRouteProvider::RnicCollectiveRouteProvider(
         FatTreeTopology& topology)

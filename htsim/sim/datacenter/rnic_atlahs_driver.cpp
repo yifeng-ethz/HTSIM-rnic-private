@@ -182,6 +182,8 @@ std::string renderRnicAtlahsModelManifest(
                     ? *options.collective.topology_file
                     : "generated-two-tier")
             << " clos_tiers=2 switch=Tomahawk3"
+            << " link_failures=0"
+            << " eta_calibration_config=construction-snapshot"
             << " voq_key=physical-ingress-x-physical-egress"
             << " arbitration=deterministic-round-robin"
             << " routing=per-packet-path-round-robin"
@@ -227,7 +229,8 @@ std::string renderRnicAtlahsModelManifest(
             << " ring_capacity_wire_bytes="
             << options.collective.ring_wire_capacity_bytes
             << " scope=node-shared"
-            << " eta=source-route-injection-plus-calibrated-transit"
+            << " eta=source-route-injection-plus-packet-specific-no-load-transit"
+            << " eta_transit=pipe-switch-latency-plus-remaining-tm3-egress-serialization"
             << " same_time_order=release-before-admission"
             << '\n';
     } else {

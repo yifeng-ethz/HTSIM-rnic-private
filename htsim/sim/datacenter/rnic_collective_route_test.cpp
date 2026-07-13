@@ -8,6 +8,7 @@
 
 #include "fat_tree_topology.h"
 #include "rnic_collective_route.h"
+#include "rnic_packet_extent.h"
 #include "tomahawk3_switch.h"
 
 namespace {
@@ -16,11 +17,13 @@ class RecordingSink : public PacketSink {
 public:
     void receivePacket(Packet& packet) override {
         packet_ids.push_back(packet.id());
+        arrival_times_ps.push_back(EventList::now());
     }
 
     const string& nodename() override { return _name; }
 
     std::vector<packetid_t> packet_ids;
+    std::vector<std::uint64_t> arrival_times_ps;
 
 private:
     string _name{"RnicCollectiveRouteTestSink"};
@@ -28,8 +31,12 @@ private:
 
 class TestPacket : public Packet {
 public:
-    TestPacket(PacketFlow& flow, const Route& route, packetid_t packet_id) {
-        set_route(flow, route, 100, packet_id);
+    TestPacket(PacketFlow& flow,
+               const Route& route,
+               packetid_t packet_id,
+               std::uint32_t wire_bytes = 100) {
+        set_route(
+            flow, route, static_cast<int>(wire_bytes), packet_id);
     }
 
     PktPriority priority() const override { return PRIO_LO; }
@@ -85,6 +92,36 @@ public:
 void drainAllEvents() {
     while (EventList::doNextEvent()) {
     }
+}
+
+void expectNoLoadTransit(
+        TwoTierTomahawk3Topology& fixture,
+        RnicCollectiveRouteProvider& provider,
+        RecordingSink& endpoint,
+        std::uint32_t source,
+        std::uint32_t destination,
+        const RnicPacketExtent& extent,
+        packetid_t packet_id) {
+    const auto& routes = provider.routes(source, destination, endpoint);
+    ASSERT_FALSE(routes.empty());
+
+    PacketFlow flow(nullptr);
+    TestPacket packet(
+        flow,
+        *routes.front(),
+        packet_id,
+        static_cast<std::uint32_t>(extent.wireBytes()));
+    const std::uint64_t injection_time_ps = EventList::now();
+    const std::uint64_t calibrated_transit_ps =
+        rnicCollectiveNoQueueTransitPs(
+            fixture.config, source, destination, extent);
+    packet.sendOn();
+    drainAllEvents();
+
+    ASSERT_FALSE(endpoint.arrival_times_ps.empty());
+    EXPECT_FALSE(packet.dropped);
+    EXPECT_EQ(endpoint.arrival_times_ps.back() - injection_time_ps,
+              calibrated_transit_ps);
 }
 
 TEST(RnicCollectiveRouteProviderTest,
@@ -144,6 +181,46 @@ TEST(RnicCollectiveRouteProviderTest,
 
     EXPECT_FALSE(packet.dropped);
     EXPECT_EQ(endpoint.packet_ids, (std::vector<packetid_t>{7}));
+}
+
+TEST(RnicCollectiveRouteProviderTest,
+     SameTorNoLoadArrivalAgeMatchesFullAndShortTailCalibration) {
+    TwoTierTomahawk3Topology fixture;
+    RecordingSink endpoint;
+    RnicCollectiveRouteProvider provider(*fixture.topology);
+    ASSERT_EQ(fixture.config.HOST_POD_SWITCH(0),
+              fixture.config.HOST_POD_SWITCH(1));
+
+    expectNoLoadTransit(
+        fixture, provider, endpoint, 0, 1, RnicPacketExtent(936, 1000), 8);
+    expectNoLoadTransit(
+        fixture, provider, endpoint, 0, 1, RnicPacketExtent(13, 77), 9);
+
+    EXPECT_EQ(endpoint.packet_ids,
+              (std::vector<packetid_t>{8, 9}));
+    EXPECT_EQ(endpoint.arrival_times_ps[1]
+                  - endpoint.arrival_times_ps[0],
+              timeFromNs(1000) * 2 + 77 * 80);
+}
+
+TEST(RnicCollectiveRouteProviderTest,
+     CrossTorNoLoadArrivalAgeMatchesFullAndShortTailCalibration) {
+    TwoTierTomahawk3Topology fixture;
+    RecordingSink endpoint;
+    RnicCollectiveRouteProvider provider(*fixture.topology);
+    ASSERT_NE(fixture.config.HOST_POD_SWITCH(0),
+              fixture.config.HOST_POD_SWITCH(31));
+
+    expectNoLoadTransit(
+        fixture, provider, endpoint, 0, 31, RnicPacketExtent(936, 1000), 10);
+    expectNoLoadTransit(
+        fixture, provider, endpoint, 0, 31, RnicPacketExtent(13, 77), 11);
+
+    EXPECT_EQ(endpoint.packet_ids,
+              (std::vector<packetid_t>{10, 11}));
+    EXPECT_EQ(endpoint.arrival_times_ps[1]
+                  - endpoint.arrival_times_ps[0],
+              timeFromNs(1000) * 4 + 3 * 77 * 80);
 }
 
 TEST(RnicCollectiveRouteProviderTest, RejectsInvalidPairsAndEndpointRebinding) {

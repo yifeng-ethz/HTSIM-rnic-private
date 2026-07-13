@@ -70,6 +70,7 @@ public:
     void set_failed_links(int num_failed_links) {
         _num_failed_links = num_failed_links;
     }
+    uint32_t failed_link_count() const { return _num_failed_links; }
 
     void set_tiers(uint32_t tiers) { if(tiers!=0) _tiers = tiers;}
     uint32_t get_tiers() const { return _tiers; }

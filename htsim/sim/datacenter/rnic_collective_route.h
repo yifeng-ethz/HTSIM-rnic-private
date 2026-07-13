@@ -12,7 +12,19 @@
 #include "route.h"
 
 class FatTreeTopology;
+class FatTreeTopologyCfg;
 class PacketSink;
+class RnicPacketExtent;
+
+// Physical no-load age from the source RNIC serializer boundary to the
+// destination endpoint.  The calibration mirrors the exact two-tier route:
+// propagation and switch-pipeline latency plus every remaining Tomahawk 3
+// egress serialization at the packet's actual wire extent.
+std::uint64_t rnicCollectiveNoQueueTransitPs(
+    const FatTreeTopologyCfg& topology_config,
+    std::uint32_t source,
+    std::uint32_t destination,
+    const RnicPacketExtent& extent);
 
 // Owns the explicit source-serialized routes used by the collective-network
 // profile.  FatTreeTopology's legacy host-to-host paths begin with a source
