@@ -12,6 +12,7 @@
 #include "logfile.h"
 #include "eventlist.h"
 #include "switch.h"
+#include "fat_tree_switch_model.h"
 #include <ostream>
 #include <memory>
 #include <optional>
@@ -88,6 +89,11 @@ public:
 
     void set_linkspeeds(linkspeed_bps linkspeed);
     void set_queue_sizes(mem_b queuesize);
+
+    void set_switch_model(FatTreeSwitchModel switch_model) {
+        _switch_model = switch_model;
+    }
+    FatTreeSwitchModel switch_model() const { return _switch_model; }
 
     void set_params(uint32_t no_of_nodes);
     void set_custom_params(uint32_t no_of_nodes);
@@ -173,6 +179,7 @@ private:
 
     queue_type _qt;
     queue_type _sender_qt;
+    FatTreeSwitchModel _switch_model;
 
     uint32_t NCORE, NAGG, NTOR, NSRV, NPOD;
     uint32_t _tor_switches_per_pod, _agg_switches_per_pod;

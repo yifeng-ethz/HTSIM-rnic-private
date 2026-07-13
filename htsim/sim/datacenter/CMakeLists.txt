@@ -10,6 +10,8 @@ set(LIB_SOURCES
     multihomed_fat_tree_topology.cpp
     star_topology.cpp
     fat_tree_switch.cpp
+    fat_tree_switch_factory.cpp
+    fat_tree_switch_model.cpp
     dragon_fly_topology.cpp
     slimfly_topology.cpp
     slimfly_switch.cpp
@@ -75,6 +77,13 @@ if ( ENABLE_TESTS )
     add_executable(fat_tree_topology_cfg_test fat_tree_topology_cfg_test.cpp)
     target_link_libraries(fat_tree_topology_cfg_test PRIVATE htsim_dc htsim gtest_main)
     gtest_discover_tests(fat_tree_topology_cfg_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
+    add_executable(fat_tree_switch_factory_test fat_tree_switch_factory_test.cpp)
+    target_link_libraries(fat_tree_switch_factory_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(fat_tree_switch_factory_test
         PROPERTIES LABELS "unit"
         PROPERTIES TIMEOUT 60
     )

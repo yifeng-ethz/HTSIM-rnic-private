@@ -8,6 +8,7 @@
 #include "main.h"
 #include "queue.h"
 #include "fat_tree_switch.h"
+#include "fat_tree_switch_factory.h"
 #include "compositequeue.h"
 #include "aeolusqueue.h"
 #include "prioqueue.h"
@@ -52,7 +53,8 @@ std::ostream &operator<<(std::ostream &os, FatTreeTopologyCfg const &m) {
         << " hop_latency=" << m._hop_latency
         << " switch_latency=" << m._switch_latency
         << " diameter_latency=" << m._diameter_latency
-        << " diameter=" << m._diameter;
+        << " diameter=" << m._diameter
+        << " switch_model=" << fat_tree_switch_model_name(m._switch_model);
     
     for (uint32_t tier = 0; tier < m._tiers; tier++) {
         cout << " tier=" << tier
@@ -78,6 +80,7 @@ FatTreeTopologyCfg::FatTreeTopologyCfg(queue_type q, queue_type snd):
                         _from_file(false),
                         _qt(q),
                         _sender_qt(snd),
+                        _switch_model(FatTreeSwitchModel::Default),
                         NCORE(0), 
                         NAGG(0), 
                         NTOR(0), 
@@ -830,15 +833,21 @@ FatTreeTopology::FatTreeTopology(const FatTreeTopologyCfg* cfg,
     // changed to always create switches
     for (uint32_t j=0;j<_cfg->NTOR;j++){
         simtime_picosec switch_latency = (_cfg->_switch_latencies[TOR_TIER] > 0) ? _cfg->_switch_latencies[TOR_TIER] : _cfg->_switch_latency;
-        switches_lp[j] = new FatTreeSwitch(*_eventlist, "Switch_LowerPod_"+ntoa(j),FatTreeSwitch::TOR,j,switch_latency,this);
+        switches_lp[j] = FatTreeSwitchFactory::create(
+            _cfg->_switch_model, *_eventlist, "Switch_LowerPod_" + ntoa(j),
+            FatTreeSwitch::TOR, j, switch_latency, this).release();
     }
     for (uint32_t j=0;j<_cfg->NAGG;j++){
         simtime_picosec switch_latency = (_cfg->_switch_latencies[AGG_TIER] > 0) ? _cfg->_switch_latencies[AGG_TIER] : _cfg->_switch_latency;
-        switches_up[j] = new FatTreeSwitch(*_eventlist, "Switch_UpperPod_"+ntoa(j), FatTreeSwitch::AGG,j,switch_latency,this);
+        switches_up[j] = FatTreeSwitchFactory::create(
+            _cfg->_switch_model, *_eventlist, "Switch_UpperPod_" + ntoa(j),
+            FatTreeSwitch::AGG, j, switch_latency, this).release();
     }
     for (uint32_t j=0;j<_cfg->NCORE;j++){
         simtime_picosec switch_latency = (_cfg->_switch_latencies[CORE_TIER] > 0) ? _cfg->_switch_latencies[CORE_TIER] : _cfg->_switch_latency;
-        switches_c[j] = new FatTreeSwitch(*_eventlist, "Switch_Core_"+ntoa(j), FatTreeSwitch::CORE,j,switch_latency,this);
+        switches_c[j] = FatTreeSwitchFactory::create(
+            _cfg->_switch_model, *_eventlist, "Switch_Core_" + ntoa(j),
+            FatTreeSwitch::CORE, j, switch_latency, this).release();
     }
       
     // links from lower layer pod switch to server
