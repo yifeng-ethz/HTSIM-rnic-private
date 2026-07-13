@@ -2,6 +2,7 @@
 #include "rnic_port.h"
 
 #include <algorithm>
+#include <iterator>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -271,15 +272,42 @@ RnicRxArrivalResult RnicRxPort::processArrival(const RnicRingCamPacket& packet) 
     RnicRingCamArrivalResult result = _ring_cam.processArrival(packet);
     std::vector<RnicRxScheduledSerialization> scheduled =
         scheduleSerializations(result.released_before_admission);
-    accountDeliveriesThrough(packet.arrival_ps);
-    return {result.admission, result.logical_release_ps, std::move(scheduled)};
+    updateLogicalReleaseTracking(
+        result.released_before_admission, result.logical_release_ps);
+    std::vector<RnicRxPacketCompletion> completed =
+        accountDeliveriesThrough(packet.arrival_ps);
+    return {result.admission,
+            result.logical_release_ps,
+            std::move(scheduled),
+            std::move(completed)};
+}
+
+RnicRxAdvanceResult RnicRxPort::advanceToWithCompletions(uint64_t now_ps) {
+    const std::vector<RnicRingCamRelease> released = _ring_cam.advanceTo(now_ps);
+    std::vector<RnicRxScheduledSerialization> scheduled =
+        scheduleSerializations(released);
+    updateLogicalReleaseTracking(released, std::nullopt);
+    std::vector<RnicRxPacketCompletion> completed =
+        accountDeliveriesThrough(now_ps);
+    return {std::move(scheduled), std::move(completed)};
 }
 
 std::vector<RnicRxScheduledSerialization> RnicRxPort::advanceTo(uint64_t now_ps) {
-    std::vector<RnicRxScheduledSerialization> scheduled =
-        scheduleSerializations(_ring_cam.advanceTo(now_ps));
-    accountDeliveriesThrough(now_ps);
-    return scheduled;
+    RnicRxAdvanceResult result = advanceToWithCompletions(now_ps);
+    return std::move(result.serializations_scheduled);
+}
+
+std::optional<uint64_t> RnicRxPort::nextEventTimePs() const {
+    std::optional<uint64_t> next_event;
+    if (!_pending_logical_release_counts.empty()) {
+        next_event = _pending_logical_release_counts.begin()->first;
+    }
+    if (!_pending_serializations.empty()
+        && (!next_event.has_value()
+            || _pending_serializations.begin()->first < *next_event)) {
+        next_event = _pending_serializations.begin()->first;
+    }
+    return next_event;
 }
 
 uint64_t RnicRxPort::deliveredPayloadBytes(uint64_t flow_id) const {
@@ -330,26 +358,141 @@ std::vector<RnicRxScheduledSerialization> RnicRxPort::scheduleSerializations(
     return scheduled;
 }
 
-void RnicRxPort::accountDeliveriesThrough(uint64_t now_ps) {
-    auto delivery = _pending_serializations.begin();
-    while (delivery != _pending_serializations.end() && delivery->first <= now_ps) {
+std::vector<RnicRxPacketCompletion> RnicRxPort::accountDeliveriesThrough(
+        uint64_t now_ps) {
+    const auto delivery_end = _pending_serializations.upper_bound(now_ps);
+    if (delivery_end == _pending_serializations.begin()) {
+        return {};
+    }
+
+    struct DeliveryTotals {
+        uint64_t payload_bytes;
+        uint64_t wire_bytes;
+    };
+
+    // Prepare every counter update, completion record, and missing map node
+    // before changing live byte ledgers or erasing a pending packet.  This
+    // keeps a multi-packet completion batch transactional on overflow.
+    std::vector<RnicRxPacketCompletion> completed;
+    completed.reserve(static_cast<size_t>(
+        std::distance(_pending_serializations.begin(), delivery_end)));
+    std::map<uint64_t, DeliveryTotals> next_totals_by_flow;
+    uint64_t completed_wire_bytes = 0;
+    for (auto delivery = _pending_serializations.begin();
+         delivery != delivery_end;
+         ++delivery) {
         const RnicRingCamPacket& packet = delivery->second;
-        const uint64_t delivered_payload = deliveredPayloadBytes(packet.flow_id);
-        const uint64_t delivered_wire = deliveredWireBytes(packet.flow_id);
-        const uint64_t next_delivered_payload = checkedAdd(
-            delivered_payload,
+        auto totals = next_totals_by_flow.find(packet.flow_id);
+        if (totals == next_totals_by_flow.end()) {
+            totals = next_totals_by_flow.emplace(
+                packet.flow_id,
+                DeliveryTotals{deliveredPayloadBytes(packet.flow_id),
+                               deliveredWireBytes(packet.flow_id)}).first;
+        }
+        totals->second.payload_bytes = checkedAdd(
+            totals->second.payload_bytes,
             packet.extent.payloadBytes(),
             "RNIC RX delivered-payload counter overflow");
-        const uint64_t next_delivered_wire = checkedAdd(
-            delivered_wire,
+        totals->second.wire_bytes = checkedAdd(
+            totals->second.wire_bytes,
             packet.extent.wireBytes(),
             "RNIC RX delivered-wire counter overflow");
-        if (packet.extent.wireBytes() > _pending_serializer_wire_bytes) {
-            throw std::logic_error("RNIC RX pending serializer occupancy underflow");
-        }
-        _delivered_payload_bytes_by_flow[packet.flow_id] = next_delivered_payload;
-        _delivered_wire_bytes_by_flow[packet.flow_id] = next_delivered_wire;
-        _pending_serializer_wire_bytes -= packet.extent.wireBytes();
-        delivery = _pending_serializations.erase(delivery);
+        completed_wire_bytes = checkedAdd(
+            completed_wire_bytes,
+            packet.extent.wireBytes(),
+            "RNIC RX completed wire-byte batch overflow");
+        completed.push_back({packet, delivery->first});
     }
+    if (completed_wire_bytes > _pending_serializer_wire_bytes) {
+        throw std::logic_error("RNIC RX pending serializer occupancy underflow");
+    }
+
+    std::map<uint64_t, uint64_t> payload_additions;
+    std::map<uint64_t, uint64_t> wire_additions;
+    for (const auto& update : next_totals_by_flow) {
+        if (_delivered_payload_bytes_by_flow.count(update.first) == 0) {
+            payload_additions.emplace(
+                update.first, update.second.payload_bytes);
+        }
+        if (_delivered_wire_bytes_by_flow.count(update.first) == 0) {
+            wire_additions.emplace(update.first, update.second.wire_bytes);
+        }
+    }
+
+    for (const auto& update : next_totals_by_flow) {
+        auto delivered_payload =
+            _delivered_payload_bytes_by_flow.find(update.first);
+        if (delivered_payload != _delivered_payload_bytes_by_flow.end()) {
+            delivered_payload->second = update.second.payload_bytes;
+        }
+        auto delivered_wire = _delivered_wire_bytes_by_flow.find(update.first);
+        if (delivered_wire != _delivered_wire_bytes_by_flow.end()) {
+            delivered_wire->second = update.second.wire_bytes;
+        }
+    }
+    _delivered_payload_bytes_by_flow.merge(payload_additions);
+    _delivered_wire_bytes_by_flow.merge(wire_additions);
+    _pending_serializer_wire_bytes -= completed_wire_bytes;
+    _pending_serializations.erase(
+        _pending_serializations.begin(), delivery_end);
+    return completed;
+}
+
+void RnicRxPort::updateLogicalReleaseTracking(
+        const std::vector<RnicRingCamRelease>& released,
+        std::optional<uint64_t> admitted_release_ps) {
+    struct CountUpdate {
+        uint64_t next_count;
+        bool existed;
+    };
+
+    std::map<uint64_t, CountUpdate> updates;
+    const auto prepare = [this, &updates](uint64_t release_ps) {
+        auto update = updates.find(release_ps);
+        if (update != updates.end()) {
+            return update;
+        }
+        const auto current = _pending_logical_release_counts.find(release_ps);
+        return updates.emplace(
+            release_ps,
+            CountUpdate{current == _pending_logical_release_counts.end()
+                            ? 0
+                            : current->second,
+                        current != _pending_logical_release_counts.end()}).first;
+    };
+
+    for (const RnicRingCamRelease& release : released) {
+        auto update = prepare(release.logical_release_ps);
+        if (update->second.next_count == 0) {
+            throw std::logic_error("RNIC RX logical release tracking underflow");
+        }
+        --update->second.next_count;
+    }
+    if (admitted_release_ps.has_value()) {
+        auto update = prepare(*admitted_release_ps);
+        update->second.next_count = checkedAdd(
+            update->second.next_count,
+            1,
+            "RNIC RX logical release count overflow");
+    }
+
+    std::map<uint64_t, uint64_t> additions;
+    for (const auto& update : updates) {
+        if (!update.second.existed && update.second.next_count != 0) {
+            additions.emplace(update.first, update.second.next_count);
+        }
+    }
+
+    for (const auto& update : updates) {
+        if (!update.second.existed) {
+            continue;
+        }
+        auto current = _pending_logical_release_counts.find(update.first);
+        if (update.second.next_count == 0) {
+            _pending_logical_release_counts.erase(current);
+        } else {
+            current->second = update.second.next_count;
+        }
+    }
+    _pending_logical_release_counts.merge(additions);
 }

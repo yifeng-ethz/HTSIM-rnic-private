@@ -120,11 +120,25 @@ struct RnicRxScheduledSerialization {
     uint64_t serializer_end_ps;
 };
 
+// One exact packet whose destination-link serializer has reached its terminal
+// wire boundary.  packet_id is the runtime-visible identity; the retained
+// packet also carries flow_id, timestamps, and the exact payload/wire extent.
+struct RnicRxPacketCompletion {
+    RnicRingCamPacket packet;
+    uint64_t serializer_end_ps;
+};
+
 struct RnicRxArrivalResult {
     RnicRingCamAdmission admission;
     std::optional<uint64_t> logical_release_ps;
     std::vector<RnicRxScheduledSerialization>
         serializations_scheduled_before_admission;
+    std::vector<RnicRxPacketCompletion> packets_completed_through_arrival;
+};
+
+struct RnicRxAdvanceResult {
+    std::vector<RnicRxScheduledSerialization> serializations_scheduled;
+    std::vector<RnicRxPacketCompletion> packets_completed;
 };
 
 // One physical L2 receive port: shared Ring-CAM first, then one serializer,
@@ -134,7 +148,20 @@ public:
     RnicRxPort(uint64_t access_capacity_bps, RnicRingCamConfig ring_cam_config);
 
     RnicRxArrivalResult processArrival(const RnicRingCamPacket& packet);
+
+    // The completion-aware entry point for an event-driven runtime.  It
+    // releases every Ring-CAM entry due through now_ps, schedules those exact
+    // extents on the destination serializer, and returns every packet whose
+    // serialization ends no later than now_ps.
+    RnicRxAdvanceResult advanceToWithCompletions(uint64_t now_ps);
+
+    // Compatibility wrapper for existing callers that only need newly
+    // scheduled serializations; byte accounting still advances as before.
     std::vector<RnicRxScheduledSerialization> advanceTo(uint64_t now_ps);
+
+    // Earliest internal event still requiring a runtime callback: either a
+    // Ring-CAM logical release or a destination serializer completion.
+    std::optional<uint64_t> nextEventTimePs() const;
 
     uint64_t serializerAvailablePs() const {
         return _wire_serializer.availablePs();
@@ -152,10 +179,15 @@ public:
 private:
     std::vector<RnicRxScheduledSerialization> scheduleSerializations(
         const std::vector<RnicRingCamRelease>& logical_releases);
-    void accountDeliveriesThrough(uint64_t now_ps);
+    std::vector<RnicRxPacketCompletion> accountDeliveriesThrough(
+        uint64_t now_ps);
+    void updateLogicalReleaseTracking(
+        const std::vector<RnicRingCamRelease>& released,
+        std::optional<uint64_t> admitted_release_ps);
 
     RnicWireSerializationClock _wire_serializer;
     RnicRingCam _ring_cam;
+    std::map<uint64_t, uint64_t> _pending_logical_release_counts;
     std::multimap<uint64_t, RnicRingCamPacket> _pending_serializations;
     uint64_t _pending_serializer_wire_bytes = 0;
     uint64_t _pending_serializer_high_watermark_wire_bytes = 0;

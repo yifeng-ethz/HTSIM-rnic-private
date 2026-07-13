@@ -345,6 +345,178 @@ TEST(RnicRxPortTest, SameTimeReleaseFreesSharedCamBeforeAdmission) {
     EXPECT_EQ(port.ringCam().wireOccupancyBytes(), 1000u);
 }
 
+TEST(RnicRxPortTest, NextEventMovesFromLogicalReleaseToExactCompletion) {
+    RnicRxPort port(8000000000000ULL, {100, 10, 128});
+    EXPECT_FALSE(port.nextEventTimePs().has_value());
+
+    const RnicRingCamPacket packet{7, 10, 0, 0, {100, 128}};
+    const RnicRxArrivalResult arrival = port.processArrival(packet);
+    ASSERT_EQ(arrival.admission, RnicRingCamAdmission::Admitted);
+    EXPECT_TRUE(arrival.packets_completed_through_arrival.empty());
+    ASSERT_TRUE(port.nextEventTimePs().has_value());
+    EXPECT_EQ(*port.nextEventTimePs(), 100u);
+
+    const RnicRxAdvanceResult before_release =
+        port.advanceToWithCompletions(99);
+    EXPECT_TRUE(before_release.serializations_scheduled.empty());
+    EXPECT_TRUE(before_release.packets_completed.empty());
+    ASSERT_TRUE(port.nextEventTimePs().has_value());
+    EXPECT_EQ(*port.nextEventTimePs(), 100u);
+
+    const RnicRxAdvanceResult released = port.advanceToWithCompletions(100);
+    ASSERT_EQ(released.serializations_scheduled.size(), 1u);
+    EXPECT_TRUE(released.packets_completed.empty());
+    EXPECT_EQ(released.serializations_scheduled[0].serializer_start_ps, 100u);
+    EXPECT_EQ(released.serializations_scheduled[0].serializer_end_ps, 228u);
+    ASSERT_TRUE(port.nextEventTimePs().has_value());
+    EXPECT_EQ(*port.nextEventTimePs(), 228u);
+
+    const RnicRxAdvanceResult before_completion =
+        port.advanceToWithCompletions(227);
+    EXPECT_TRUE(before_completion.serializations_scheduled.empty());
+    EXPECT_TRUE(before_completion.packets_completed.empty());
+    EXPECT_EQ(port.deliveredPayloadBytes(10), 0u);
+    EXPECT_EQ(port.deliveredWireBytes(10), 0u);
+    ASSERT_TRUE(port.nextEventTimePs().has_value());
+    EXPECT_EQ(*port.nextEventTimePs(), 228u);
+
+    const RnicRxAdvanceResult completed = port.advanceToWithCompletions(228);
+    EXPECT_TRUE(completed.serializations_scheduled.empty());
+    ASSERT_EQ(completed.packets_completed.size(), 1u);
+    const RnicRxPacketCompletion& exact = completed.packets_completed[0];
+    EXPECT_EQ(exact.serializer_end_ps, 228u);
+    EXPECT_EQ(exact.packet.packet_id, packet.packet_id);
+    EXPECT_EQ(exact.packet.flow_id, packet.flow_id);
+    EXPECT_EQ(exact.packet.eta_ps, packet.eta_ps);
+    EXPECT_EQ(exact.packet.arrival_ps, packet.arrival_ps);
+    EXPECT_EQ(exact.packet.extent.payloadBytes(), 100u);
+    EXPECT_EQ(exact.packet.extent.wireBytes(), 128u);
+    EXPECT_EQ(port.deliveredPayloadBytes(10), 100u);
+    EXPECT_EQ(port.deliveredWireBytes(10), 128u);
+    EXPECT_FALSE(port.nextEventTimePs().has_value());
+}
+
+TEST(RnicRxPortTest, NextEventPrefersReleaseBeforePendingCompletion) {
+    RnicRxPort port(8000000000000ULL, {100, 10, 192});
+    ASSERT_EQ(port.processArrival({1, 10, 0, 0, {100, 128}}).admission,
+              RnicRingCamAdmission::Admitted);
+    ASSERT_EQ(port.processArrival({2, 20, 50, 50, {40, 64}}).admission,
+              RnicRingCamAdmission::Admitted);
+
+    ASSERT_TRUE(port.nextEventTimePs().has_value());
+    EXPECT_EQ(*port.nextEventTimePs(), 100u);
+    const RnicRxAdvanceResult first_release =
+        port.advanceToWithCompletions(100);
+    ASSERT_EQ(first_release.serializations_scheduled.size(), 1u);
+    EXPECT_EQ(first_release.serializations_scheduled[0].serializer_end_ps, 228u);
+
+    // The second logical release is the next event even though the first
+    // destination serialization is still in progress.
+    ASSERT_TRUE(port.nextEventTimePs().has_value());
+    EXPECT_EQ(*port.nextEventTimePs(), 150u);
+    const RnicRxAdvanceResult second_release =
+        port.advanceToWithCompletions(150);
+    ASSERT_EQ(second_release.serializations_scheduled.size(), 1u);
+    EXPECT_EQ(second_release.serializations_scheduled[0].serializer_start_ps,
+              228u);
+    EXPECT_TRUE(second_release.packets_completed.empty());
+    ASSERT_TRUE(port.nextEventTimePs().has_value());
+    EXPECT_EQ(*port.nextEventTimePs(), 228u);
+}
+
+TEST(RnicRxPortTest, SameTimeReleaseAndCompletionAreBothReported) {
+    RnicRxPort port(8000000000000ULL, {100, 10, 112});
+    ASSERT_EQ(port.processArrival({1, 10, 0, 0, {64, 80}}).admission,
+              RnicRingCamAdmission::Admitted);
+    ASSERT_EQ(port.processArrival({2, 20, 80, 80, {24, 32}}).admission,
+              RnicRingCamAdmission::Admitted);
+
+    const RnicRxAdvanceResult first = port.advanceToWithCompletions(100);
+    ASSERT_EQ(first.serializations_scheduled.size(), 1u);
+    ASSERT_EQ(first.serializations_scheduled[0].serializer_end_ps, 180u);
+    ASSERT_TRUE(port.nextEventTimePs().has_value());
+    EXPECT_EQ(*port.nextEventTimePs(), 180u);
+
+    const RnicRxAdvanceResult coincident =
+        port.advanceToWithCompletions(180);
+    ASSERT_EQ(coincident.serializations_scheduled.size(), 1u);
+    ASSERT_EQ(coincident.packets_completed.size(), 1u);
+    EXPECT_EQ(coincident.packets_completed[0].packet.packet_id, 1u);
+    EXPECT_EQ(coincident.packets_completed[0].serializer_end_ps, 180u);
+    EXPECT_EQ(coincident.serializations_scheduled[0].release.packet.packet_id,
+              2u);
+    EXPECT_EQ(coincident.serializations_scheduled[0].serializer_start_ps,
+              180u);
+    EXPECT_EQ(coincident.serializations_scheduled[0].serializer_end_ps, 212u);
+    EXPECT_EQ(port.deliveredPayloadBytes(10), 64u);
+    EXPECT_EQ(port.deliveredPayloadBytes(20), 0u);
+    ASSERT_TRUE(port.nextEventTimePs().has_value());
+    EXPECT_EQ(*port.nextEventTimePs(), 212u);
+}
+
+TEST(RnicRxPortTest, ArrivalReportsSerializerCompletionAtSameTimestamp) {
+    RnicRxPort port(8000000000000ULL, {100, 10, 200});
+    ASSERT_EQ(port.processArrival({1, 10, 0, 0, {80, 100}}).admission,
+              RnicRingCamAdmission::Admitted);
+    const RnicRxAdvanceResult released = port.advanceToWithCompletions(100);
+    ASSERT_EQ(released.serializations_scheduled.size(), 1u);
+    ASSERT_EQ(released.serializations_scheduled[0].serializer_end_ps, 200u);
+
+    const RnicRxArrivalResult arrival =
+        port.processArrival({2, 20, 200, 200, {40, 50}});
+    ASSERT_EQ(arrival.admission, RnicRingCamAdmission::Admitted);
+    ASSERT_EQ(arrival.packets_completed_through_arrival.size(), 1u);
+    EXPECT_EQ(arrival.packets_completed_through_arrival[0].packet.packet_id,
+              1u);
+    EXPECT_EQ(arrival.packets_completed_through_arrival[0].serializer_end_ps,
+              200u);
+    EXPECT_EQ(port.deliveredPayloadBytes(10), 80u);
+    EXPECT_EQ(port.deliveredPayloadBytes(20), 0u);
+    ASSERT_TRUE(port.nextEventTimePs().has_value());
+    EXPECT_EQ(*port.nextEventTimePs(), 300u);
+}
+
+TEST(RnicRxPortTest, CompletionBatchOverflowDoesNotPartiallyCommit) {
+    const uint64_t maximum = std::numeric_limits<uint64_t>::max();
+    RnicRxPort port(maximum, {1, 1, maximum});
+    ASSERT_EQ(port.processArrival({1, 10, 0, 0, {maximum, maximum}}).admission,
+              RnicRingCamAdmission::Admitted);
+    const RnicRxAdvanceResult first_release =
+        port.advanceToWithCompletions(1);
+    ASSERT_EQ(first_release.serializations_scheduled.size(), 1u);
+    const uint64_t first_completion =
+        first_release.serializations_scheduled[0].serializer_end_ps;
+    ASSERT_EQ(port.advanceToWithCompletions(first_completion)
+                  .packets_completed.size(),
+              1u);
+    ASSERT_EQ(port.deliveredPayloadBytes(10), maximum);
+    ASSERT_EQ(port.deliveredWireBytes(10), maximum);
+
+    ASSERT_EQ(port.processArrival(
+                  {2, 20, first_completion, first_completion, {1, 1}}).admission,
+              RnicRingCamAdmission::Admitted);
+    ASSERT_EQ(port.processArrival(
+                  {3, 10, first_completion, first_completion, {1, 1}}).admission,
+              RnicRingCamAdmission::Admitted);
+    const uint64_t second_release = first_completion + 1;
+    const RnicRxAdvanceResult scheduled =
+        port.advanceToWithCompletions(second_release);
+    ASSERT_EQ(scheduled.serializations_scheduled.size(), 2u);
+    ASSERT_EQ(scheduled.serializations_scheduled[0].serializer_end_ps,
+              scheduled.serializations_scheduled[1].serializer_end_ps);
+    const uint64_t completion =
+        scheduled.serializations_scheduled.back().serializer_end_ps;
+
+    EXPECT_THROW(port.advanceToWithCompletions(completion), std::overflow_error);
+    EXPECT_EQ(port.deliveredPayloadBytes(20), 0u);
+    EXPECT_EQ(port.deliveredWireBytes(20), 0u);
+    EXPECT_EQ(port.deliveredPayloadBytes(10), maximum);
+    EXPECT_EQ(port.deliveredWireBytes(10), maximum);
+    EXPECT_EQ(port.pendingSerializerWireBytes(), 2u);
+    ASSERT_TRUE(port.nextEventTimePs().has_value());
+    EXPECT_EQ(*port.nextEventTimePs(), completion);
+}
+
 TEST(RnicRxPortTest, PayloadDeliveryAndWireServiceUseIndependentLedgers) {
     RnicRxPort port(8000000000000ULL, {100, 10, 192});
     ASSERT_EQ(port.processArrival({1, 10, 0, 0, {100, 128}}).admission,
