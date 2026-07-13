@@ -101,6 +101,7 @@ set(SOURCE_FILES
     queue_lossless_output.cpp
     randomqueue.cpp
     rnic_max_min_allocator.cpp
+    rnic_prbs_pacer.cpp
     rnic_profile.cpp
     rng.cpp
     roce.cpp
@@ -147,6 +148,7 @@ if ( ENABLE_TESTS )
     set(UNIT_TEST_FILES
         pipe_test
         rnic_max_min_allocator_test
+        rnic_prbs_pacer_test
         rnic_profile_test
     )
 
