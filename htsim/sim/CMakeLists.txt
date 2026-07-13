@@ -154,6 +154,7 @@ if ( ENABLE_TESTS )
     # Unit tests.
     set(UNIT_TEST_FILES
         atlahs_flow_runtime_test
+        eventlist_microphase_test
         pipe_test
         rnic_burst_trend_test
         rnic_collective_control_test

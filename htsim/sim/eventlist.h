@@ -43,6 +43,11 @@ public:
     static inline int trafficEventCount() {return EventList::_trafficeventcount;}
     static Handle nullHandle() {return _pendingsources.end();}
     static multimap<simtime_picosec, EventSource*> getPendingSources() {return _pendingsources;}
+    // True when at least one source is still queued at the exact timestamp.
+    // The currently executing source has already been removed, so an event
+    // can use this to yield to the tail of a same-time microphase without
+    // depending on equivalent-key insertion order.
+    static bool hasPendingSourceAt(simtime_picosec when);
 
 
     static EventList& getTheEventList();
