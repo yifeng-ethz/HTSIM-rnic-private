@@ -9,6 +9,7 @@ set(LIB_SOURCES
     shortflows.cpp
     multihomed_fat_tree_topology.cpp
     rnic_atlahs_cli.cpp
+    rnic_atlahs_driver.cpp
     rnic_atlahs_runtime_factory.cpp
     rnic_collective_network_runtime.cpp
     rnic_collective_route.cpp
@@ -55,6 +56,7 @@ set_property(TARGET htsim_eqds PROPERTY EXCLUDE_FROM_ALL TRUE)
 add_executable(htsim_uec main_uec.cpp)
 add_executable(htsim_uec_sf main_uec_sf.cpp)
 add_executable(htsim_uec_df main_uec_df.cpp)
+add_executable(htsim_rnic main_rnic.cpp)
 
 # -------------------------------
 # Linking Executables with Libraries
@@ -69,6 +71,7 @@ set (ALL_EXECUTABLES
     htsim_uec
     htsim_uec_sf
     htsim_uec_df
+    htsim_rnic
 )
 foreach(EXECUTABLE ${ALL_EXECUTABLES})
     # Link each executable with the 'htsim' library defined in the parent directory.
@@ -134,6 +137,14 @@ if ( ENABLE_TESTS )
         rnic_atlahs_runtime_factory_test
         PRIVATE htsim_dc htsim gtest_main)
     gtest_discover_tests(rnic_atlahs_runtime_factory_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
+    add_executable(rnic_atlahs_driver_test rnic_atlahs_driver_test.cpp)
+    target_link_libraries(
+        rnic_atlahs_driver_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(rnic_atlahs_driver_test
         PROPERTIES LABELS "unit"
         PROPERTIES TIMEOUT 60
     )
