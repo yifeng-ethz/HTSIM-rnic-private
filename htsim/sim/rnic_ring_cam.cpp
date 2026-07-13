@@ -48,10 +48,10 @@ std::vector<RnicRingCamRelease> RnicRingCam::advanceTo(uint64_t now_ps) {
     std::vector<RnicRingCamRelease> releases;
     auto entry = entries_.begin();
     while (entry != entries_.end() && entry->first.logical_release_ps <= now_ps) {
-        if (entry->second.wire_bytes > occupancy_bytes_) {
+        if (entry->second.extent.wireBytes() > wire_occupancy_bytes_) {
             throw std::logic_error("Ring-CAM occupancy underflow");
         }
-        occupancy_bytes_ -= entry->second.wire_bytes;
+        wire_occupancy_bytes_ -= entry->second.extent.wireBytes();
         releases.push_back({entry->second, entry->first.logical_release_ps});
         entry = entries_.erase(entry);
     }
@@ -64,10 +64,6 @@ RnicRingCamArrivalResult RnicRingCam::processArrival(const RnicRingCamPacket& pa
     if (packet.arrival_ps < current_time_ps_) {
         throw std::invalid_argument("Ring-CAM arrival precedes current time");
     }
-    if (packet.wire_bytes == 0) {
-        throw std::invalid_argument("Ring-CAM packet must occupy at least one wire byte");
-    }
-
     RnicRingCamAdmission admission = RnicRingCamAdmission::Admitted;
     std::optional<uint64_t> logical_release_ps;
     if (packet.arrival_ps < packet.eta_ps) {
@@ -91,16 +87,18 @@ RnicRingCamArrivalResult RnicRingCam::processArrival(const RnicRingCamPacket& pa
     std::vector<RnicRingCamRelease> releases = advanceTo(packet.arrival_ps);
 
     if (admission == RnicRingCamAdmission::Admitted) {
-        if (occupancy_bytes_ > config_.byte_capacity
-            || packet.wire_bytes > config_.byte_capacity - occupancy_bytes_) {
+        if (wire_occupancy_bytes_ > config_.wire_byte_capacity
+            || packet.extent.wireBytes()
+                   > config_.wire_byte_capacity - wire_occupancy_bytes_) {
             admission = RnicRingCamAdmission::Overflow;
             logical_release_ps.reset();
         } else {
             const ReleaseKey key{
                 *logical_release_ps, packet.eta_ps, next_admission_sequence_++};
             entries_.emplace(key, packet);
-            occupancy_bytes_ += packet.wire_bytes;
-            high_watermark_bytes_ = std::max(high_watermark_bytes_, occupancy_bytes_);
+            wire_occupancy_bytes_ += packet.extent.wireBytes();
+            wire_high_watermark_bytes_ = std::max(
+                wire_high_watermark_bytes_, wire_occupancy_bytes_);
         }
     }
 

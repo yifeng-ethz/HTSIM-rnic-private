@@ -5,14 +5,14 @@
 #include <stdexcept>
 
 RnicCollectiveController::RnicCollectiveController(
-        uint64_t bottleneck_capacity_bps,
+        uint64_t bottleneck_wire_capacity_bps,
         uint32_t margin_ppm)
-    : _bottleneck_capacity_bps(bottleneck_capacity_bps),
+    : _bottleneck_wire_capacity_bps(bottleneck_wire_capacity_bps),
       _margin_ppm(margin_ppm) {
     if (margin_ppm == 0 || margin_ppm > kPartsPerMillion) {
         throw std::invalid_argument("RNIC-CN margin must be in (0, 1]");
     }
-    if (bottleneck_capacity_bps
+    if (bottleneck_wire_capacity_bps
         > std::numeric_limits<uint64_t>::max() / margin_ppm) {
         throw std::invalid_argument("RNIC-CN capacity is too large for fixed-point grant math");
     }
@@ -45,7 +45,7 @@ RnicCollectiveGrant RnicCollectiveController::grantFor(uint64_t flow_id) const {
     return {flow_id,
             _membership_epoch,
             static_cast<uint32_t>(_active_flow_ids.size()),
-            currentRateBps()};
+            currentWireRateBps()};
 }
 
 std::vector<RnicCollectiveGrant> RnicCollectiveController::grantsForAll() const {
@@ -57,14 +57,14 @@ std::vector<RnicCollectiveGrant> RnicCollectiveController::grantsForAll() const 
     return grants;
 }
 
-uint64_t RnicCollectiveController::currentRateBps() const {
+uint64_t RnicCollectiveController::currentWireRateBps() const {
     if (_active_flow_ids.empty()) {
         return 0;
     }
     if (_active_flow_ids.size() > std::numeric_limits<uint32_t>::max()) {
         throw std::overflow_error("RNIC-CN active-flow count exceeds feedback field");
     }
-    const uint64_t numerator = _bottleneck_capacity_bps * _margin_ppm;
+    const uint64_t numerator = _bottleneck_wire_capacity_bps * _margin_ppm;
     const uint64_t denominator = static_cast<uint64_t>(kPartsPerMillion)
                                  * _active_flow_ids.size();
     return numerator / denominator;
@@ -86,7 +86,7 @@ void RnicSenderGrantGate::accept(const RnicCollectiveGrant& grant) {
         throw std::invalid_argument("RNIC-CN ACCEPT has an empty membership count");
     }
     _membership_epoch = grant.membership_epoch;
-    _current_rate_bps = grant.rate_bps;
+    _current_wire_rate_bps = grant.wire_rate_bps;
     _phase = Phase::Active;
 }
 
@@ -102,7 +102,7 @@ bool RnicSenderGrantGate::applyGrantUpdate(const RnicCollectiveGrant& grant) {
         return false;
     }
     _membership_epoch = grant.membership_epoch;
-    _current_rate_bps = grant.rate_bps;
+    _current_wire_rate_bps = grant.wire_rate_bps;
     return true;
 }
 
@@ -114,7 +114,7 @@ void RnicSenderGrantGate::retire() {
         throw std::logic_error("RNIC-CN sender retired before declaration");
     }
     _phase = Phase::Retired;
-    _current_rate_bps = 0;
+    _current_wire_rate_bps = 0;
 }
 
 void RnicSenderGrantGate::validateGrantIdentity(const RnicCollectiveGrant& grant) const {

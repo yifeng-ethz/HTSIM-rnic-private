@@ -32,7 +32,7 @@ RnicPacketizedReservation::RnicPacketizedReservation(
         TimePs manifold_exit_ps,
         TimePs destination_slot_start_ps,
         TimePs destination_slot_end_ps,
-        uint64_t charged_wire_bytes)
+        uint64_t reserved_wire_bytes)
     : _slot_index(slot_index),
       _allocation_epoch(allocation_epoch),
       _flow_id(flow_id),
@@ -44,7 +44,7 @@ RnicPacketizedReservation::RnicPacketizedReservation(
       _manifold_exit_ps(manifold_exit_ps),
       _destination_slot_start_ps(destination_slot_start_ps),
       _destination_slot_end_ps(destination_slot_end_ps),
-      _charged_wire_bytes(charged_wire_bytes) {}
+      _reserved_wire_bytes(reserved_wire_bytes) {}
 
 RnicPacketizedSlotCalendar::RnicPacketizedSlotCalendar(
         RateBps access_capacity_bps,
@@ -288,7 +288,7 @@ RnicPacketizedSlotCalendar::maximumCardinalityMatching() const {
     Adjacency adjacency;
     for (const auto& item : _flows) {
         const FlowState& state = item.second;
-        if (state.grant.rate_bps > 0 && hasPositiveCredit(state.credit)) {
+        if (state.grant.wire_rate_bps > 0 && hasPositiveCredit(state.credit)) {
             adjacency[state.grant.source_node].push_back(state.grant.flow_id);
         }
     }
@@ -375,18 +375,18 @@ void RnicPacketizedSlotCalendar::validateGrantSnapshot(
 
         RateBps& source_rate = rate_by_source[grant.source_node];
         RateBps& destination_rate = rate_by_destination[grant.destination_node];
-        if (grant.rate_bps > _access_capacity_bps - source_rate
-            || grant.rate_bps > _access_capacity_bps - destination_rate) {
+        if (grant.wire_rate_bps > _access_capacity_bps - source_rate
+            || grant.wire_rate_bps > _access_capacity_bps - destination_rate) {
             throw std::invalid_argument(
                 "packetized manifold grant snapshot exceeds endpoint capacity");
         }
-        source_rate += grant.rate_bps;
-        destination_rate += grant.rate_bps;
+        source_rate += grant.wire_rate_bps;
+        destination_rate += grant.wire_rate_bps;
     }
 }
 
 void RnicPacketizedSlotCalendar::advanceCredits() {
     for (auto& item : _flows) {
-        addCredit(item.second.credit, item.second.grant.rate_bps);
+        addCredit(item.second.credit, item.second.grant.wire_rate_bps);
     }
 }

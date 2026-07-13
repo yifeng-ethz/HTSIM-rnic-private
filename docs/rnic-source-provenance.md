@@ -47,8 +47,8 @@ All paths below are local to the development machine.
 | --- | --- | --- |
 | CN means **collective network**, never congestion control. Public profiles are `rnic-cn`, `rnic-nn`, and `rnic-nn-fluid`. | Current discussion and simulator contract | Do not expose `rnic-cc` or retain legacy `rnic-null` naming. |
 | Every CN flow declares before DATA; DATA is ineligible until an in-band ACCEPT; the sender then steps directly from zero to the returned grant. | Paper pp. 4--6, Figure 3 and Sections 3.2, 4.1--4.2; formal appendix lines 193--211 | No slow start, rate probing, additive ramp, lookback estimate, or out-of-band oracle in `rnic-cn`. |
-| A receiver grant is `margin * C_b / N_hat`; the default margin is `0.9`. | Paper p. 4, Equation 1, `03-design.tex:108` | Historical experiments with another margin cannot override this equation. |
-| CN's PRBS pacer is one shared sender-side scheduler over per-flow heads; ETA is stamped after physical dispatch. | Patent pp. 9 and 14, Appendices B and F; paper p. 4, Figure 1 | Independent per-node reproducible streams preserve source independence. Byte-deficit correction is required for mixed packet sizes. |
+| A receiver grant is the wire rate `margin * C_b / N_hat`; the default margin is `0.9`. | Paper p. 4, Equation 1, `03-design.tex:108` | `C_b` is physical wire capacity. Payload goodput is accounted separately; historical experiments with another margin cannot override this equation. |
+| CN's PRBS pacer is one shared sender-side scheduler over per-flow heads; ETA is stamped after physical dispatch. | Patent pp. 9 and 14, Appendices B and F; paper p. 4, Figure 1 | Independent per-node reproducible streams preserve source independence. Mixed extents use size-normalized fixed-point event hazards so grants remain wire-byte rates; equal extents preserve the legacy sequence exactly. |
 | RB admission and release are driven by packet eligibility time, not FIFO arrival or PSN. Missing/late packets cannot head-of-line block unrelated eligible packets. | Patent pp. 3--5, Sections 3.3--3.5 and Figure 2; paper p. 4, Figure 2 | Admit within the configured timestamp window and release at quantized `ETA + Delta`; use modular timestamp comparisons. |
 | RB restores the dispatch envelope within one tick/packet edge; shared storage scales with admitted peak rate times `Delta`, not flow count. | Patent p. 9, Equations 9--13; paper p. 17, Sections B.4--B.5; Ring-CAM slides 9--14 | Enforce `W_RB >= R_in_peak * Delta + MTU`; separate early, late, and capacity violations. |
 | `rnic-nn` has finite source/destination links, fixed propagation, instantaneous centralized max-min allocation, and no internal congestion queue, loss, backpressure, reorder, or variable delay. | Current discussion; paper pp. 2--3, Section 2.1; Appendix B.1/B.3 | Use a central collision-free source/destination packet calendar. Global state need not be broadcast as per-sender events. |
@@ -121,8 +121,9 @@ the model from the non-golden artifacts above:
   `margin`, active-flow counting/retirement rule, and any intentionally hidden
   startup RTT;
 - [ ] PRBS algorithm/version, polynomial or generator identity, packet quantum,
-  global seed, node-seed derivation, tie-breaking, and mixed-size byte-deficit
-  policy;
+  global seed, node-seed derivation, tie-breaking, and mixed-size
+  size-normalized fixed-point policy (including preferred scale and deterministic
+  fallback rule);
 - [ ] Ring-CAM `Delta`, release tick `delta`, timestamp width/wrap rule,
   calibrated transit, capacity, shared-vs-per-flow scope, release/admission event
   order, and early/late/capacity violation counters;

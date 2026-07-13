@@ -8,12 +8,14 @@
 #include <optional>
 #include <vector>
 
+#include "rnic_packet_extent.h"
+
 struct RnicRingCamPacket {
     uint64_t packet_id;
     uint64_t flow_id;
     uint64_t eta_ps;
     uint64_t arrival_ps;
-    uint64_t wire_bytes;
+    RnicPacketExtent extent;
 };
 
 struct RnicRingCamConfig {
@@ -24,8 +26,9 @@ struct RnicRingCamConfig {
     // The logical release quantum delta.
     uint64_t release_tick_ps;
 
-    // Shared payload storage for all flows using this receive port.
-    uint64_t byte_capacity;
+    // Shared stored-frame capacity for all flows using this receive port.
+    // The current model stores and charges the complete wire extent.
+    uint64_t wire_byte_capacity;
 };
 
 enum class RnicRingCamAdmission {
@@ -64,9 +67,9 @@ public:
     RnicRingCamArrivalResult processArrival(const RnicRingCamPacket& packet);
 
     uint64_t currentTimePs() const { return current_time_ps_; }
-    uint64_t occupancyBytes() const { return occupancy_bytes_; }
-    uint64_t highWatermarkBytes() const { return high_watermark_bytes_; }
-    uint64_t byteCapacity() const { return config_.byte_capacity; }
+    uint64_t wireOccupancyBytes() const { return wire_occupancy_bytes_; }
+    uint64_t wireHighWatermarkBytes() const { return wire_high_watermark_bytes_; }
+    uint64_t wireByteCapacity() const { return config_.wire_byte_capacity; }
     size_t packetCount() const { return entries_.size(); }
 
 private:
@@ -80,8 +83,8 @@ private:
 
     RnicRingCamConfig config_;
     uint64_t current_time_ps_ = 0;
-    uint64_t occupancy_bytes_ = 0;
-    uint64_t high_watermark_bytes_ = 0;
+    uint64_t wire_occupancy_bytes_ = 0;
+    uint64_t wire_high_watermark_bytes_ = 0;
     uint64_t next_admission_sequence_ = 0;
     std::map<ReleaseKey, RnicRingCamPacket> entries_;
 };

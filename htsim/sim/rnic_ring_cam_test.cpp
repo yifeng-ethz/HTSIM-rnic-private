@@ -31,47 +31,48 @@ std::vector<uint64_t> packetIds(const std::vector<RnicRingCamRelease>& releases)
 TEST(RnicRingCamTest, ClassifiesEveryAdmissionBoundary) {
     {
         RnicRingCam cam = makeCam();
-        const auto result = cam.processArrival({1, 10, 100, 90, 100});
+        const auto result = cam.processArrival({1, 10, 100, 90, {100, 100}});
         EXPECT_EQ(result.admission, Admission::Early);
-        EXPECT_EQ(cam.occupancyBytes(), 0u);
+        EXPECT_EQ(cam.wireOccupancyBytes(), 0u);
     }
     {
         RnicRingCam cam = makeCam();
-        const auto result = cam.processArrival({1, 10, 100, 100, 100});
+        const auto result = cam.processArrival({1, 10, 100, 100, {100, 100}});
         EXPECT_EQ(result.admission, Admission::Admitted);
         EXPECT_EQ(result.logical_release_ps, 200u);
     }
     {
         RnicRingCam cam = makeCam();
-        const auto result = cam.processArrival({1, 10, 100, 190, 100});
+        const auto result = cam.processArrival({1, 10, 100, 190, {100, 100}});
         EXPECT_EQ(result.admission, Admission::Admitted);
         EXPECT_EQ(result.logical_release_ps, 200u);
     }
     {
         RnicRingCam cam = makeCam();
-        const auto result = cam.processArrival({1, 10, 100, 200, 100});
+        const auto result = cam.processArrival({1, 10, 100, 200, {100, 100}});
         EXPECT_EQ(result.admission, Admission::Late);
-        EXPECT_EQ(cam.occupancyBytes(), 0u);
+        EXPECT_EQ(cam.wireOccupancyBytes(), 0u);
     }
 }
 
 TEST(RnicRingCamTest, ReleasesBeforeClassifyingAnArrivalAtTheSameTime) {
     RnicRingCam cam = makeCam(100);
-    ASSERT_EQ(cam.processArrival({1, 10, 0, 0, 100}).admission, Admission::Admitted);
+    ASSERT_EQ(cam.processArrival({1, 10, 0, 0, {100, 100}}).admission,
+              Admission::Admitted);
 
-    const auto result = cam.processArrival({2, 20, 100, 100, 100});
+    const auto result = cam.processArrival({2, 20, 100, 100, {100, 100}});
 
     ASSERT_EQ(result.released_before_admission.size(), 1u);
     EXPECT_EQ(result.released_before_admission.front().packet.packet_id, 1u);
     EXPECT_EQ(result.admission, Admission::Admitted);
-    EXPECT_EQ(cam.occupancyBytes(), 100u);
+    EXPECT_EQ(cam.wireOccupancyBytes(), 100u);
     EXPECT_EQ(cam.packetCount(), 1u);
 }
 
 TEST(RnicRingCamTest, QuantizesTheStampPlusWindowReleaseEdgeUpward) {
     RnicRingCam cam = makeCam(10000, 100, 16);
 
-    const auto result = cam.processArrival({1, 10, 1, 1, 100});
+    const auto result = cam.processArrival({1, 10, 1, 1, {100, 100}});
 
     ASSERT_EQ(result.admission, Admission::Admitted);
     ASSERT_TRUE(result.logical_release_ps.has_value());
@@ -86,9 +87,12 @@ TEST(RnicRingCamTest, QuantizesTheStampPlusWindowReleaseEdgeUpward) {
 
 TEST(RnicRingCamTest, OrdersSameTickPacketsByEtaThenStableAdmissionOrder) {
     RnicRingCam cam = makeCam(10000, 100, 16);
-    ASSERT_EQ(cam.processArrival({1, 10, 1, 1, 100}).admission, Admission::Admitted);
-    ASSERT_EQ(cam.processArrival({3, 30, 7, 7, 100}).admission, Admission::Admitted);
-    ASSERT_EQ(cam.processArrival({2, 20, 7, 7, 100}).admission, Admission::Admitted);
+    ASSERT_EQ(cam.processArrival({1, 10, 1, 1, {100, 100}}).admission,
+              Admission::Admitted);
+    ASSERT_EQ(cam.processArrival({3, 30, 7, 7, {100, 100}}).admission,
+              Admission::Admitted);
+    ASSERT_EQ(cam.processArrival({2, 20, 7, 7, {100, 100}}).admission,
+              Admission::Admitted);
 
     const auto releases = cam.advanceTo(112);
 
@@ -100,49 +104,68 @@ TEST(RnicRingCamTest, OrdersSameTickPacketsByEtaThenStableAdmissionOrder) {
 
 TEST(RnicRingCamTest, MissingPacketIdDoesNotBlockLaterPackets) {
     RnicRingCam cam = makeCam();
-    ASSERT_EQ(cam.processArrival({1, 10, 0, 0, 100}).admission, Admission::Admitted);
-    ASSERT_EQ(cam.processArrival({3, 10, 10, 10, 100}).admission, Admission::Admitted);
+    ASSERT_EQ(cam.processArrival({1, 10, 0, 0, {100, 100}}).admission,
+              Admission::Admitted);
+    ASSERT_EQ(cam.processArrival({3, 10, 10, 10, {100, 100}}).admission,
+              Admission::Admitted);
 
     const auto releases = cam.advanceTo(110);
 
     EXPECT_EQ(packetIds(releases), (std::vector<uint64_t>{1, 3}));
 }
 
-TEST(RnicRingCamTest, AccountsSharedCapacityAndHighWatermarkAcrossFlows) {
+TEST(RnicRingCamTest, AccountsSharedWireCapacityAndHighWatermarkAcrossFlows) {
     RnicRingCam cam = makeCam(1500);
-    ASSERT_EQ(cam.processArrival({1, 10, 0, 0, 1000}).admission, Admission::Admitted);
-    EXPECT_EQ(cam.occupancyBytes(), 1000u);
+    ASSERT_EQ(cam.processArrival({1, 10, 0, 0, {1000, 1000}}).admission,
+              Admission::Admitted);
+    EXPECT_EQ(cam.wireOccupancyBytes(), 1000u);
 
-    const auto overflow = cam.processArrival({2, 20, 10, 10, 600});
+    const auto overflow = cam.processArrival({2, 20, 10, 10, {600, 600}});
     EXPECT_EQ(overflow.admission, Admission::Overflow);
     EXPECT_FALSE(overflow.logical_release_ps.has_value());
-    EXPECT_EQ(cam.occupancyBytes(), 1000u);
+    EXPECT_EQ(cam.wireOccupancyBytes(), 1000u);
 
-    ASSERT_EQ(cam.processArrival({3, 30, 20, 20, 500}).admission, Admission::Admitted);
-    EXPECT_EQ(cam.occupancyBytes(), 1500u);
-    EXPECT_EQ(cam.highWatermarkBytes(), 1500u);
+    ASSERT_EQ(cam.processArrival({3, 30, 20, 20, {500, 500}}).admission,
+              Admission::Admitted);
+    EXPECT_EQ(cam.wireOccupancyBytes(), 1500u);
+    EXPECT_EQ(cam.wireHighWatermarkBytes(), 1500u);
     EXPECT_EQ(cam.packetCount(), 2u);
 
     EXPECT_EQ(cam.advanceTo(120).size(), 2u);
-    EXPECT_EQ(cam.occupancyBytes(), 0u);
-    EXPECT_EQ(cam.highWatermarkBytes(), 1500u);
+    EXPECT_EQ(cam.wireOccupancyBytes(), 0u);
+    EXPECT_EQ(cam.wireHighWatermarkBytes(), 1500u);
+}
+
+TEST(RnicRingCamTest, PreservesPayloadWhileChargingOnlyWireOccupancy) {
+    RnicRingCam cam = makeCam(128);
+
+    const auto admission = cam.processArrival({1, 10, 0, 0, {100, 128}});
+    ASSERT_EQ(admission.admission, Admission::Admitted);
+    EXPECT_EQ(cam.wireOccupancyBytes(), 128u);
+    EXPECT_EQ(cam.wireHighWatermarkBytes(), 128u);
+
+    const auto releases = cam.advanceTo(100);
+    ASSERT_EQ(releases.size(), 1u);
+    EXPECT_EQ(releases.front().packet.extent.payloadBytes(), 100u);
+    EXPECT_EQ(releases.front().packet.extent.wireBytes(), 128u);
+    EXPECT_EQ(cam.wireOccupancyBytes(), 0u);
 }
 
 TEST(RnicRingCamTest, ArrivalPermutationDoesNotChangeTimestampReleaseOrder) {
     RnicRingCam unjittered = makeCam();
-    ASSERT_EQ(unjittered.processArrival({1, 10, 0, 0, 100}).admission,
+    ASSERT_EQ(unjittered.processArrival({1, 10, 0, 0, {100, 100}}).admission,
               Admission::Admitted);
-    ASSERT_EQ(unjittered.processArrival({2, 20, 10, 10, 100}).admission,
+    ASSERT_EQ(unjittered.processArrival({2, 20, 10, 10, {100, 100}}).admission,
               Admission::Admitted);
-    ASSERT_EQ(unjittered.processArrival({3, 30, 20, 20, 100}).admission,
+    ASSERT_EQ(unjittered.processArrival({3, 30, 20, 20, {100, 100}}).admission,
               Admission::Admitted);
 
     RnicRingCam permuted = makeCam();
-    ASSERT_EQ(permuted.processArrival({2, 20, 10, 10, 100}).admission,
+    ASSERT_EQ(permuted.processArrival({2, 20, 10, 10, {100, 100}}).admission,
               Admission::Admitted);
-    ASSERT_EQ(permuted.processArrival({3, 30, 20, 20, 100}).admission,
+    ASSERT_EQ(permuted.processArrival({3, 30, 20, 20, {100, 100}}).admission,
               Admission::Admitted);
-    ASSERT_EQ(permuted.processArrival({1, 10, 0, 90, 100}).admission,
+    ASSERT_EQ(permuted.processArrival({1, 10, 0, 90, {100, 100}}).admission,
               Admission::Admitted);
 
     EXPECT_EQ(packetIds(unjittered.advanceTo(120)),
@@ -156,10 +179,11 @@ TEST(RnicRingCamTest, RejectsInvalidConfigurationAndNonMonotonicUse) {
     EXPECT_THROW(RnicRingCam({1, 0, 100}), std::invalid_argument);
 
     RnicRingCam cam = makeCam();
-    EXPECT_THROW(cam.processArrival({1, 1, 0, 0, 0}), std::invalid_argument);
+    EXPECT_THROW(RnicPacketExtent(0, 0), std::invalid_argument);
+    EXPECT_THROW(RnicPacketExtent(2, 1), std::invalid_argument);
     cam.advanceTo(50);
     EXPECT_THROW(cam.advanceTo(49), std::invalid_argument);
-    EXPECT_THROW(cam.processArrival({2, 1, 0, 49, 1}), std::invalid_argument);
+    EXPECT_THROW(cam.processArrival({2, 1, 0, 49, {1, 1}}), std::invalid_argument);
 }
 
 TEST(RnicRingCamModuloTimestampTest, ExhaustivelyClassifiesAcrossSmallWrap) {

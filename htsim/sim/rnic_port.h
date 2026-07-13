@@ -8,15 +8,16 @@
 #include <optional>
 #include <vector>
 
+#include "rnic_packet_extent.h"
 #include "rnic_prbs_pacer.h"
 #include "rnic_ring_cam.h"
+#include "rnic_wire_serialization.h"
 
 struct RnicTxPacket {
     uint64_t flow_id;
     uint64_t packet_index;
-    uint64_t byte_offset;
-    uint64_t payload_bytes;
-    uint64_t charged_wire_bytes;
+    uint64_t payload_byte_offset;
+    RnicPacketExtent extent;
     uint64_t dispatch_start_ps;
     uint64_t dispatch_end_ps;
     uint64_t eta_ps;
@@ -33,52 +34,66 @@ class RnicTxPort {
 public:
     RnicTxPort(uint64_t node_id,
                uint64_t access_capacity_bps,
-               uint64_t wire_quantum_bytes,
+               uint64_t max_wire_packet_bytes,
+               uint64_t global_prbs_seed);
+    RnicTxPort(uint64_t node_id,
+               uint64_t access_capacity_bps,
+               RnicDataPacketizationConfig packetization,
                uint64_t global_prbs_seed);
 
-    void addFlow(uint64_t flow_id, uint64_t size_bytes, uint64_t calibrated_transit_ps);
-    void setGrant(uint64_t flow_id, uint64_t grant_bps);
+    void addFlow(
+        uint64_t flow_id,
+        uint64_t payload_size_bytes,
+        uint64_t calibrated_transit_ps);
+    void setWireRateGrant(uint64_t flow_id, uint64_t wire_rate_grant_bps);
     void setDataEligible(uint64_t flow_id, bool eligible);
 
     bool contains(uint64_t flow_id) const;
-    bool flowComplete(uint64_t flow_id) const;
-    uint64_t flowBytesDispatched(uint64_t flow_id) const;
-    uint64_t effectiveRateBps(uint64_t flow_id) const;
+    bool sourcePayloadDispatched(uint64_t flow_id) const;
+    uint64_t flowPayloadBytesDispatched(uint64_t flow_id) const;
+    uint64_t effectiveWireRateBps(uint64_t flow_id) const;
     size_t flowCount() const { return _flows.size(); }
-    uint64_t nextWireOpportunityPs() const { return _next_wire_opportunity_ps; }
-    uint64_t wireOpportunityDurationPs() const { return _wire_opportunity_duration_ps; }
+    uint64_t nextWireOpportunityPs() const { return _wire_serializer.availablePs(); }
+    uint64_t maxWirePacketBytes() const {
+        return _packetization.maxWirePacketBytes();
+    }
+    uint64_t dataHeaderBytes() const { return _packetization.dataHeaderBytes(); }
+    uint64_t maxDataPayloadBytes() const {
+        return _packetization.maxPayloadBytes();
+    }
     const RnicPrbsManifest& prbsManifest() const { return _pacer.manifest(); }
 
-    // One call consumes exactly one fixed wire opportunity, including an idle
-    // PRBS outcome. requested_start_ps may be later than the next free time but
-    // never earlier. A short final packet is charged a full wire quantum.
+    // One call consumes one selected DATA extent or one max-wire-sized idle
+    // event. requested_start_ps may be later than the next free time but never
+    // earlier. A selected short final is serialized at its exact wire extent;
+    // the size-aware PRBS lottery preserves wire-byte rather than packet shares.
     RnicTxOpportunity dispatchOpportunity(uint64_t requested_start_ps);
 
 private:
     struct FlowState {
         uint64_t flow_id;
-        uint64_t size_bytes;
+        uint64_t payload_size_bytes;
         uint64_t calibrated_transit_ps;
-        uint64_t grant_bps = 0;
-        uint64_t effective_rate_bps = 0;
-        uint64_t bytes_dispatched = 0;
+        uint64_t wire_rate_grant_bps = 0;
+        uint64_t effective_wire_rate_bps = 0;
+        uint64_t payload_bytes_dispatched = 0;
         uint64_t packet_index = 0;
         bool data_eligible = false;
     };
 
+    RnicPacketExtent headExtent(const FlowState& state) const;
     void recomputeEffectiveRates();
     FlowState& requireFlow(uint64_t flow_id);
     const FlowState& requireFlow(uint64_t flow_id) const;
 
     uint64_t _access_capacity_bps;
-    uint64_t _wire_quantum_bytes;
-    uint64_t _wire_opportunity_duration_ps;
-    uint64_t _next_wire_opportunity_ps = 0;
+    RnicDataPacketizationConfig _packetization;
+    RnicWireSerializationClock _wire_serializer;
     RnicPrbsPacer _pacer;
     std::map<uint64_t, FlowState> _flows;
 };
 
-struct RnicRxDelivery {
+struct RnicRxScheduledSerialization {
     RnicRingCamRelease release;
     uint64_t serializer_start_ps;
     uint64_t serializer_end_ps;
@@ -87,7 +102,8 @@ struct RnicRxDelivery {
 struct RnicRxArrivalResult {
     RnicRingCamAdmission admission;
     std::optional<uint64_t> logical_release_ps;
-    std::vector<RnicRxDelivery> deliveries_released_before_admission;
+    std::vector<RnicRxScheduledSerialization>
+        serializations_scheduled_before_admission;
 };
 
 // One physical L2 receive port: shared Ring-CAM first, then one serializer,
@@ -97,22 +113,33 @@ public:
     RnicRxPort(uint64_t access_capacity_bps, RnicRingCamConfig ring_cam_config);
 
     RnicRxArrivalResult processArrival(const RnicRingCamPacket& packet);
-    std::vector<RnicRxDelivery> advanceTo(uint64_t now_ps);
+    std::vector<RnicRxScheduledSerialization> advanceTo(uint64_t now_ps);
 
-    uint64_t serializerAvailablePs() const { return _serializer_available_ps; }
-    uint64_t deliveredBytes(uint64_t flow_id) const;
+    uint64_t serializerAvailablePs() const {
+        return _wire_serializer.availablePs();
+    }
+    uint64_t deliveredPayloadBytes(uint64_t flow_id) const;
+    uint64_t deliveredWireBytes(uint64_t flow_id) const;
+    uint64_t pendingSerializerWireBytes() const {
+        return _pending_serializer_wire_bytes;
+    }
+    uint64_t pendingSerializerHighWatermarkWireBytes() const {
+        return _pending_serializer_high_watermark_wire_bytes;
+    }
     const RnicRingCam& ringCam() const { return _ring_cam; }
 
 private:
-    std::vector<RnicRxDelivery> serialize(
+    std::vector<RnicRxScheduledSerialization> scheduleSerializations(
         const std::vector<RnicRingCamRelease>& logical_releases);
     void accountDeliveriesThrough(uint64_t now_ps);
 
-    uint64_t _access_capacity_bps;
-    uint64_t _serializer_available_ps = 0;
+    RnicWireSerializationClock _wire_serializer;
     RnicRingCam _ring_cam;
-    std::multimap<uint64_t, RnicRingCamPacket> _pending_deliveries;
-    std::map<uint64_t, uint64_t> _delivered_bytes_by_flow;
+    std::multimap<uint64_t, RnicRingCamPacket> _pending_serializations;
+    uint64_t _pending_serializer_wire_bytes = 0;
+    uint64_t _pending_serializer_high_watermark_wire_bytes = 0;
+    std::map<uint64_t, uint64_t> _delivered_payload_bytes_by_flow;
+    std::map<uint64_t, uint64_t> _delivered_wire_bytes_by_flow;
 };
 
 class RnicNode {
@@ -122,10 +149,21 @@ public:
              uint64_t wire_quantum_bytes,
              uint64_t global_prbs_seed,
              RnicRingCamConfig ring_cam_config)
+        : RnicNode(node_id,
+                   access_capacity_bps,
+                   RnicDataPacketizationConfig(wire_quantum_bytes),
+                   global_prbs_seed,
+                   ring_cam_config) {}
+
+    RnicNode(uint64_t node_id,
+             uint64_t access_capacity_bps,
+             RnicDataPacketizationConfig packetization,
+             uint64_t global_prbs_seed,
+             RnicRingCamConfig ring_cam_config)
         : _node_id(node_id),
           _tx_port(node_id,
                    access_capacity_bps,
-                   wire_quantum_bytes,
+                   packetization,
                    global_prbs_seed),
           _rx_port(access_capacity_bps, ring_cam_config) {}
 

@@ -75,9 +75,48 @@ and shared across flows; sequence tracking and reliable delivery are per-flow
 L4 state after release. This scope is required for incast occupancy, collision,
 and burst-reduction measurements to be meaningful.
 
+### Packet and rate accounting
+
+Every packetized profile carries an explicit `RnicPacketExtent` with two
+independent ledgers:
+
+- `payload_bytes` advances the application flow and is the numerator for
+  payload goodput and completion;
+- `wire_bytes` consumes source/destination serialization, packet-buffer, and
+  Ring-CAM capacity and is the numerator for wire utilization.
+
+The invariant is `0 <= payload_bytes <= wire_bytes` with `wire_bytes > 0`.
+Control packets may therefore have zero payload but still consume the physical
+wire. Packet payload is counted as delivered only at destination serializer
+completion. Source dispatch completion is not flow completion.
+
+DATA packetization is configured by maximum wire extent `M` and a per-DATA
+header `H`, with `M > 0` and `0 <= H < M`. The maximum payload quantum is
+`Q = M - H`. Every full DATA packet has extent `{Q, M}`; a final payload
+remainder `0 < R <= Q` has exact extent `{R, R + H}` and is never padded to
+`M`. A zero-size flow emits no DATA. Construction validates the inequalities
+and every header/payload addition before producing the structurally valid
+extent.
+
+Both endpoint serializers retain the fractional remainder of the exact
+rational wire boundary across back-to-back packets. Reported timestamps are
+ceilings of those cumulative boundaries, not independently rounded packet
+durations. The remainder resets only after a strictly later, observably idle
+start. Intermediate byte/rate products use 128-bit arithmetic; an extent is
+rejected only when its resulting simulator timestamp cannot be represented.
+
+All packetized CN and NN grants are **wire-rate grants**. In particular,
+`margin * C_b / N_hat` divides a physical wire capacity. Treating that value as
+a payload rate would overbook the link whenever headers make
+`wire_bytes > payload_bytes`. The fluid profile states its byte-service
+convention separately and must not silently inherit packet header accounting.
+
 ## Network-calculus contract
 
-For cumulative arrivals `R`, an arrival curve `alpha` satisfies
+In this section, `R`, `alpha`, `beta`, `S`, and `M` are measured in wire bytes.
+Write physical link capacity as `C_b` bits per unit time and
+`C_B = C_b / 8` bytes per unit time. For cumulative arrivals `R`, an arrival
+curve `alpha` satisfies
 
 ```text
 R(t) - R(s) <= alpha(t - s), for all s <= t.
@@ -86,25 +125,25 @@ R(t) - R(s) <= alpha(t - s), for all s <= t.
 A fixed-rate, fixed-latency endpoint edge offers the fluid service curve
 
 ```text
-beta_C,L(t) = C [t - L]^+.
+beta_{C_B,L}(t) = C_B [t - L]^+.
 ```
 
 For packet size `M`, packetized service is
 
 ```text
-beta^M_C,L(t) = M floor(C [t - L]^+ / M),
-beta_C,L+M/C(t) <= beta^M_C,L(t) <= beta_C,L(t).
+beta^M_{C_B,L}(t) = M floor(C_B [t - L]^+ / M),
+beta_{C_B,L+M/C_B}(t) <= beta^M_{C_B,L}(t) <= beta_{C_B,L}(t).
 ```
 
 Every active allocation must satisfy both endpoint-edge constraints:
 
 ```text
-sum(rate_f for f sourced at s) <= C_up(s)
-sum(rate_f for f destined to d) <= C_down(d).
+sum(wire_bit_rate_f for f sourced at s) <= C_{b,up}(s)
+sum(wire_bit_rate_f for f destined to d) <= C_{b,down}(d).
 ```
 
 The central oracle uses progressive filling to produce a max-min fair feasible
-allocation. A symmetric `N:1` incast therefore assigns `C_down/N` to every
+allocation. A symmetric `N:1` incast therefore assigns `C_{b,down}/N` to every
 active flow (subject to any smaller source-edge or demand limit).
 
 ## Packetized null-network manifold
@@ -129,11 +168,12 @@ packetized counterpart of max-min service, not a best-effort fabric.
 
 For synchronized equal-size `N:1` flows, packetized round-robin has a useful
 legacy reference ledger. With flow size `S`, full packet size `M`,
-`P = ceil(S/M)`, final packet size `R = S - (P - 1)M`, and `U = S/C`, the paper's
-named source-charged, non-overlapped convention gives ordered completion times
+`P = ceil(S/M)`, final packet size `R = S - (P - 1)M`, and `U = S/C_B`, the
+paper's named source-charged, non-overlapped convention gives ordered completion
+times
 
 ```text
-T_i = L + U + (N(P - 1)M + iR)/C.
+T_i = L + U + (N(P - 1)M + iR)/C_B.
 ```
 
 The physical engine pipelines source serialization, fixed-delay transit, and
@@ -161,7 +201,8 @@ Its startup sequence is:
 1. a flow sends a declaration before any DATA;
 2. the receiver-side controller counts the declared active flow;
 3. DATA remains hard-gated until an ACCEPT grant returns in band;
-4. the sender moves directly from zero to `margin * C_b / N_hat`;
+4. the sender moves directly from zero to the wire-rate grant
+   `margin * C_b / N_hat`;
 5. subsequent grants use the same controller and travel in band.
 
 The default paper parameters are `margin = 0.9`, admission window
@@ -177,16 +218,38 @@ tuning.
 
 ## Node-wide PRBS pacer
 
-The `rnic-cn` sender schedules one wire packet opportunity at a time across all
-eligible flows on an `RnicTxPort`. For flow grant `r_i` and access-link capacity
-`C_access`, the selector chooses flow `i` with probability `r_i/C_access` and an
-idle outcome with the remaining probability. Selecting a flow advances its
-head pointer and consumes exactly one serialized packet opportunity.
+The `rnic-cn` sender schedules one wire event at a time across all eligible
+flows on an `RnicTxPort`. Let flow `i` have a wire-rate grant `r_i`, head wire
+extent `l_i`, access capacity `C`, and maximum/idle wire extent `M`. Equal
+`l_i = M` heads use the original `r_i/C` lottery verbatim, including flow-id
+ordering, bounded draw, LFSR-word consumption, and idle sequence.
 
-Those probabilities apply directly to equal wire quanta. For a short final
-packet or mixed packet sizes, byte-deficit accounting corrects the lottery so
-the long-run **byte** rate remains `r_i`; the implementation must not silently
-turn a byte-rate grant into a packet-count share.
+For unequal heads, selection uses size-normalized hazards
+
+```text
+b_i = r_i M / l_i,       b_idle = C - sum_i r_i,
+B = b_idle + sum_i b_i,  p_i = b_i/B.
+```
+
+The selected DATA extent or explicit `M`-byte idle event starts immediately at
+the physical serializer's available boundary; no positive random gap is added.
+This preserves exact wire rates before finite-precision quantization. Indeed,
+`sum_j b_j l_j = C M`, where the idle event has `l_idle = M`, so
+
+```text
+E[event duration] = (8/C) sum_j p_j l_j = 8M/B,
+E[flow-i wire bits/event] = 8 p_i l_i = 8 r_i M/B.
+```
+
+Their ratio is exactly `r_i`. The implementation represents each unequal-head
+hazard as `a_i = floor(2^q b_i)` and the idle hazard exactly as
+`2^q b_idle`, choosing the largest `q <= 32` whose weights and sum fit unsigned
+128-bit arithmetic. Thus each represented flow hazard has absolute error less
+than `2^-q`; normal configurations use Q32, while `q = 0` is only the explicit
+extreme-`uint64` fallback. A 64-step binary rational comparison maps one LFSR
+word against the exact cumulative/total 128-bit weights without a narrowing
+ticket range or 192-bit product; its finite-grid probability error is at most
+`2^-64`.
 
 The generator is an independent per-node LFSR stream seeded from
 `(global_seed, node_id)`. The run manifest records the algorithm name, version,
@@ -217,9 +280,16 @@ unsigned ordering is invalid across counter wraparound.
 
 The implementation uses one node-wide timestamp-ordered store. It does not sort
 or barrier by flow or timestamp bucket, and a missing or late packet cannot
-block an unrelated eligible packet. After release, the one physical receiver
-serializer and per-flow delivery FSM account for packet quantization and
-reliability.
+block an unrelated eligible packet. Ring-CAM occupancy is charged in stored
+wire bytes while preserving each packet's payload extent. After release, the
+one physical receiver serializer consumes wire bytes; per-flow delivery counts
+payload and wire bytes independently at serializer completion.
+
+Release removes bytes from the finite Ring-CAM immediately. It may create a
+post-release serializer backlog, tracked separately as current and high-water
+pending wire bytes. `RnicRxScheduledSerialization` reports that future physical
+service interval; it is not a delivery notification. No finite bound for this
+post-release backlog is claimed by the Ring-CAM capacity formula below.
 
 For an aggregate arrival envelope `alpha`, release satisfies the conservative
 bound
@@ -228,8 +298,9 @@ bound
 R_rb(t) - R_rb(s) <= alpha(t - s + delta) + M.
 ```
 
-The configured buffer must cover at least peak admitted bytes over one window
-plus a packet edge:
+Let `R_in_peak` be the peak admitted wire-byte rate (bytes per unit time). The
+configured buffer must cover at least those bytes over one window plus a packet
+edge:
 
 ```text
 W_RB >= R_in_peak * Delta + M.

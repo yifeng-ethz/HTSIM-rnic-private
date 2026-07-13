@@ -17,7 +17,7 @@ struct RnicPacketizedGrant {
     FlowId flow_id;
     NodeId source_node;
     NodeId destination_node;
-    RateBps rate_bps;
+    RateBps wire_rate_bps;
 };
 
 class RnicPacketizedSlotCalendar;
@@ -44,7 +44,7 @@ public:
         return _destination_slot_start_ps;
     }
     TimePs destinationSlotEndPs() const noexcept { return _destination_slot_end_ps; }
-    uint64_t chargedWireBytes() const noexcept { return _charged_wire_bytes; }
+    uint64_t reservedWireBytes() const noexcept { return _reserved_wire_bytes; }
 
 private:
     friend class RnicPacketizedSlotCalendar;
@@ -60,7 +60,7 @@ private:
                               TimePs manifold_exit_ps,
                               TimePs destination_slot_start_ps,
                               TimePs destination_slot_end_ps,
-                              uint64_t charged_wire_bytes);
+                              uint64_t reserved_wire_bytes);
 
     uint64_t _slot_index;
     uint64_t _allocation_epoch;
@@ -73,14 +73,14 @@ private:
     TimePs _manifold_exit_ps;
     TimePs _destination_slot_start_ps;
     TimePs _destination_slot_end_ps;
-    uint64_t _charged_wire_bytes;
+    uint64_t _reserved_wire_bytes;
 };
 
 // Deterministic version-1 packet calendar for the validated homogeneous-C,
 // fixed-wire-quantum null-network scope. A caller supplies a complete active,
 // backlogged grant snapshot at each epoch. A packetization wrapper must handle
 // a short final packet with its exact serialization time; this calendar accepts
-// and charges only complete wire quanta and makes no flow-completion claim.
+// and reserves only complete wire quanta and makes no flow-completion claim.
 class RnicPacketizedSlotCalendar {
 public:
     using FlowId = RnicPacketizedGrant::FlowId;

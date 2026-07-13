@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <vector>
@@ -164,6 +165,116 @@ TEST(RnicPrbsPacerTest, OpportunityLotteryDoesNotAddPositiveGapJitter) {
     // random delay after each nominal gap would undershoot this grant.
     EXPECT_NEAR(static_cast<double>(selected_count) / kOpportunities, 0.6, 0.01);
     EXPECT_TRUE(saw_adjacent_selected_opportunities);
+}
+
+TEST(RnicPrbsPacerTest, EqualWireHeadsReplayLegacySelectorExactly) {
+    RnicPrbsPacer legacy(123456, 71);
+    RnicPrbsPacer size_aware(123456, 71);
+    const std::vector<RnicPrbsCandidate> legacy_candidates{
+        {30, 200}, {10, 300}};
+    const std::vector<RnicPrbsWireCandidate> wire_candidates{
+        {30, 200, 1000}, {10, 300, 1000}};
+
+    for (int opportunity = 0; opportunity < 10000; ++opportunity) {
+        EXPECT_EQ(legacy.selectEqualWireQuantum(legacy_candidates, 1000),
+                  size_aware.selectWireEvent(wire_candidates, 1000, 1000));
+        EXPECT_EQ(legacy.state(), size_aware.state());
+    }
+}
+
+TEST(RnicPrbsPacerTest, VariableWireEventsPreserveFlowAndIdleWireRates) {
+    RnicPrbsPacer pacer(20260713, 202);
+    const std::vector<RnicPrbsWireCandidate> candidates{
+        {1, 200, 1000}, {2, 300, 500}};
+    std::array<uint64_t, 3> wire_bytes{};
+    constexpr uint64_t kEvents = 300000;
+
+    for (uint64_t event = 0; event < kEvents; ++event) {
+        const std::optional<uint64_t> selected =
+            pacer.selectWireEvent(candidates, 1000, 1000);
+        if (!selected.has_value()) {
+            wire_bytes[2] += 1000;
+        } else if (*selected == 1) {
+            wire_bytes[0] += 1000;
+        } else {
+            ASSERT_EQ(*selected, 2u);
+            wire_bytes[1] += 500;
+        }
+    }
+
+    const uint64_t total_wire_bytes =
+        wire_bytes[0] + wire_bytes[1] + wire_bytes[2];
+    EXPECT_NEAR(static_cast<double>(wire_bytes[0]) / total_wire_bytes,
+                0.2,
+                0.01);
+    EXPECT_NEAR(static_cast<double>(wire_bytes[1]) / total_wire_bytes,
+                0.3,
+                0.01);
+    EXPECT_NEAR(static_cast<double>(wire_bytes[2]) / total_wire_bytes,
+                0.5,
+                0.01);
+}
+
+TEST(RnicPrbsPacerTest, Q32HazardRetainsFractionAtOneBitPerSecond) {
+    RnicPrbsPacer pacer(20260713, 303);
+    const std::vector<RnicPrbsWireCandidate> candidate{{1, 1, 600}};
+    uint64_t selected_wire_bytes = 0;
+    uint64_t total_wire_bytes = 0;
+    constexpr uint64_t kEvents = 200000;
+
+    for (uint64_t event = 0; event < kEvents; ++event) {
+        const bool selected =
+            pacer.selectWireEvent(candidate, 2, 1000).has_value();
+        const uint64_t event_wire_bytes = selected ? 600 : 1000;
+        total_wire_bytes += event_wire_bytes;
+        selected_wire_bytes += selected ? event_wire_bytes : 0;
+    }
+
+    EXPECT_NEAR(static_cast<double>(selected_wire_bytes) / total_wire_bytes,
+                0.5,
+                0.01);
+}
+
+TEST(RnicPrbsPacerTest, VariableWireCandidateOrderDoesNotChangeReplay) {
+    RnicPrbsPacer ascending_pacer(99, 7);
+    RnicPrbsPacer descending_pacer(99, 7);
+    const std::vector<RnicPrbsWireCandidate> ascending{
+        {1, 100, 1000}, {2, 200, 750}, {3, 300, 500}};
+    const std::vector<RnicPrbsWireCandidate> descending{
+        {3, 300, 500}, {2, 200, 750}, {1, 100, 1000}};
+
+    for (int event = 0; event < 10000; ++event) {
+        EXPECT_EQ(ascending_pacer.selectWireEvent(ascending, 1000, 1000),
+                  descending_pacer.selectWireEvent(descending, 1000, 1000));
+        EXPECT_EQ(ascending_pacer.state(), descending_pacer.state());
+    }
+}
+
+TEST(RnicPrbsPacerTest, VariableWireSelectorValidatesItsPhysicalDomain) {
+    RnicPrbsPacer pacer(1, 2);
+
+    EXPECT_THROW(pacer.selectWireEvent({}, 0, 1000), std::invalid_argument);
+    EXPECT_THROW(pacer.selectWireEvent({}, 1000, 0), std::invalid_argument);
+    EXPECT_THROW(pacer.selectWireEvent({{1, 10, 0}}, 1000, 1000),
+                 std::invalid_argument);
+    EXPECT_THROW(pacer.selectWireEvent({{1, 10, 1001}}, 1000, 1000),
+                 std::invalid_argument);
+    EXPECT_THROW(
+        pacer.selectWireEvent({{1, 10, 500}, {1, 20, 750}}, 1000, 1000),
+        std::invalid_argument);
+    EXPECT_THROW(
+        pacer.selectWireEvent({{1, 600, 500}, {2, 401, 750}}, 1000, 1000),
+        std::invalid_argument);
+}
+
+TEST(RnicPrbsPacerTest, AdaptiveScaleAcceptsFullUint64PhysicalDomain) {
+    RnicPrbsPacer pacer(9, 9);
+    constexpr uint64_t kMaximum = std::numeric_limits<uint64_t>::max();
+
+    EXPECT_EQ(pacer.selectWireEvent({{1, kMaximum, 1}},
+                                    kMaximum,
+                                    kMaximum),
+              std::optional<uint64_t>(1));
 }
 
 }  // namespace

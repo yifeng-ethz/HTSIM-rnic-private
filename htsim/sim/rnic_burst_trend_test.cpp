@@ -120,7 +120,7 @@ TEST(RnicBurstTrendTest, RingCamRestoresPacedEnvelopeAfterTransitCompression) {
                                  sender + 1,
                                  eta_ps,
                                  arrival_ps,
-                                 kWireBytes}});
+                                 {kWireBytes, kWireBytes}}});
         }
     }
     ASSERT_EQ(arrivals.size(), dispatch.packet_count);
@@ -157,7 +157,7 @@ TEST(RnicBurstTrendTest, RingCamRestoresPacedEnvelopeAfterTransitCompression) {
         (kSlotCount + kTransitSlots + kDelayWindowSlots + 1) * kSlotPs));
 
     ASSERT_EQ(released_packets, dispatch.packet_count);
-    ASSERT_EQ(ring_cam.occupancyBytes(), 0u);
+    ASSERT_EQ(ring_cam.wireOccupancyBytes(), 0u);
     for (uint64_t slot = 0; slot < kSlotCount; ++slot) {
         const uint64_t release_slot = slot + kTransitSlots + kDelayWindowSlots;
         EXPECT_EQ(releases_by_slot[release_slot], dispatch.packets_by_slot[slot]);
@@ -174,7 +174,8 @@ TEST(RnicBurstTrendTest, RingCamRestoresPacedEnvelopeAfterTransitCompression) {
 
     EXPECT_EQ(release_peak, peak(dispatch.packets_by_slot));
     EXPECT_GT(raw_peak, release_peak * 2);
-    EXPECT_LE(ring_cam.highWatermarkBytes(), ring_cam.byteCapacity());
+    EXPECT_LE(
+        ring_cam.wireHighWatermarkBytes(), ring_cam.wireByteCapacity());
 }
 
 }  // namespace

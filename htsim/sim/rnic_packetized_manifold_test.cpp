@@ -48,16 +48,16 @@ TEST(RnicPacketizedSlotCalendarTest, SymmetricIncastTracksMaxMinWithinOneQuantum
     calendar.beginMaxMinEpoch(0,
                               {{1, 10, 20}, {2, 11, 20}, {3, 12, 20}});
 
-    std::map<uint64_t, uint64_t> charged_bytes;
+    std::map<uint64_t, uint64_t> reserved_bytes;
     for (int slot = 0; slot < 60; ++slot) {
         const auto reservations = calendar.reserveNextSlot();
         ASSERT_EQ(reservations.size(), 1u);
-        charged_bytes[reservations[0].flowId()] +=
-            reservations[0].chargedWireBytes();
+        reserved_bytes[reservations[0].flowId()] +=
+            reservations[0].reservedWireBytes();
     }
 
-    const auto minimum = std::min({charged_bytes[1], charged_bytes[2], charged_bytes[3]});
-    const auto maximum = std::max({charged_bytes[1], charged_bytes[2], charged_bytes[3]});
+    const auto minimum = std::min({reserved_bytes[1], reserved_bytes[2], reserved_bytes[3]});
+    const auto maximum = std::max({reserved_bytes[1], reserved_bytes[2], reserved_bytes[3]});
     EXPECT_LE(maximum - minimum, kQuantumBytes);
 }
 
@@ -212,7 +212,7 @@ TEST(RnicPacketizedSlotCalendarTest, ReservesOnlyFullWireQuanta) {
     calendar.beginEpoch(0, {{1, 10, 20, kCapacity}});
     const Reservation reservation = calendar.reserveNextSlot().at(0);
 
-    EXPECT_EQ(reservation.chargedWireBytes(), kQuantumBytes);
+    EXPECT_EQ(reservation.reservedWireBytes(), kQuantumBytes);
     EXPECT_EQ(reservation.sourceSlotEndPs() - reservation.sourceSlotStartPs(),
               kExactSlotPs);
     EXPECT_GT(reservation.destinationSlotEndPs(), reservation.manifoldExitPs());

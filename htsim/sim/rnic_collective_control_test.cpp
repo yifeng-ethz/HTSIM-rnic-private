@@ -10,12 +10,12 @@ namespace {
 TEST(RnicCollectiveControllerTest, GrantIsDirectMarginCapacityDivision) {
     RnicCollectiveController controller(400000000000ULL);
     controller.declareFlow(1);
-    EXPECT_EQ(controller.grantFor(1).rate_bps, 360000000000ULL);
+    EXPECT_EQ(controller.grantFor(1).wire_rate_bps, 360000000000ULL);
     EXPECT_EQ(controller.grantFor(1).n_hat, 1u);
 
     controller.declareFlow(2);
-    EXPECT_EQ(controller.grantFor(1).rate_bps, 180000000000ULL);
-    EXPECT_EQ(controller.grantFor(2).rate_bps, 180000000000ULL);
+    EXPECT_EQ(controller.grantFor(1).wire_rate_bps, 180000000000ULL);
+    EXPECT_EQ(controller.grantFor(2).wire_rate_bps, 180000000000ULL);
     EXPECT_EQ(controller.grantFor(1).n_hat, 2u);
 }
 
@@ -26,8 +26,8 @@ TEST(RnicCollectiveControllerTest, MembershipChangeProducesOneVerticalStep) {
 
     controller.declareFlow(11);
     const RnicCollectiveGrant after = controller.grantFor(10);
-    EXPECT_EQ(before.rate_bps, 900u);
-    EXPECT_EQ(after.rate_bps, 450u);
+    EXPECT_EQ(before.wire_rate_bps, 900u);
+    EXPECT_EQ(after.wire_rate_bps, 450u);
     EXPECT_GT(after.membership_epoch, before.membership_epoch);
 }
 
@@ -48,10 +48,10 @@ TEST(RnicCollectiveControllerTest, RetirementImmediatelyReallocatesReceiverGrant
     RnicCollectiveController controller(1000);
     controller.declareFlow(10);
     controller.declareFlow(11);
-    EXPECT_EQ(controller.grantFor(10).rate_bps, 450u);
+    EXPECT_EQ(controller.grantFor(10).wire_rate_bps, 450u);
 
     controller.retireFlow(11);
-    EXPECT_EQ(controller.grantFor(10).rate_bps, 900u);
+    EXPECT_EQ(controller.grantFor(10).wire_rate_bps, 900u);
     EXPECT_THROW(controller.grantFor(11), std::out_of_range);
 }
 
@@ -70,15 +70,15 @@ TEST(RnicCollectiveControllerTest, GrantsForAllAreStableByFlowId) {
 TEST(RnicSenderGrantGateTest, DataIsHardGatedUntilAccept) {
     RnicSenderGrantGate gate(10);
     EXPECT_FALSE(gate.dataEligible());
-    EXPECT_EQ(gate.currentRateBps(), 0u);
+    EXPECT_EQ(gate.currentWireRateBps(), 0u);
 
     gate.declarationDispatched();
     EXPECT_FALSE(gate.dataEligible());
-    EXPECT_EQ(gate.currentRateBps(), 0u);
+    EXPECT_EQ(gate.currentWireRateBps(), 0u);
 
     gate.accept({10, 1, 4, 225});
     EXPECT_TRUE(gate.dataEligible());
-    EXPECT_EQ(gate.currentRateBps(), 225u);
+    EXPECT_EQ(gate.currentWireRateBps(), 225u);
 }
 
 TEST(RnicSenderGrantGateTest, ActiveSenderStepsDirectlyAndIgnoresStaleUpdates) {
@@ -87,9 +87,9 @@ TEST(RnicSenderGrantGateTest, ActiveSenderStepsDirectlyAndIgnoresStaleUpdates) {
     gate.accept({10, 5, 1, 900});
 
     EXPECT_TRUE(gate.applyGrantUpdate({10, 6, 2, 450}));
-    EXPECT_EQ(gate.currentRateBps(), 450u);
+    EXPECT_EQ(gate.currentWireRateBps(), 450u);
     EXPECT_FALSE(gate.applyGrantUpdate({10, 4, 1, 900}));
-    EXPECT_EQ(gate.currentRateBps(), 450u);
+    EXPECT_EQ(gate.currentWireRateBps(), 450u);
 }
 
 TEST(RnicSenderGrantGateTest, RetirementClosesDataGate) {
@@ -99,7 +99,7 @@ TEST(RnicSenderGrantGateTest, RetirementClosesDataGate) {
     gate.retire();
 
     EXPECT_FALSE(gate.dataEligible());
-    EXPECT_EQ(gate.currentRateBps(), 0u);
+    EXPECT_EQ(gate.currentWireRateBps(), 0u);
     gate.retire();
 }
 
