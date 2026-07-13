@@ -153,6 +153,7 @@ if ( ENABLE_TESTS )
     set(UNIT_TEST_FILES
         atlahs_flow_runtime_test
         pipe_test
+        rnic_burst_trend_test
         rnic_collective_control_test
         rnic_fluid_manifold_test
         rnic_max_min_allocator_test
