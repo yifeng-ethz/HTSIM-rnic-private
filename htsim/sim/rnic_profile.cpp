@@ -8,10 +8,10 @@ RnicProfile parseRnicProfile(const std::string& name) {
         return RnicProfile::CollectiveNetwork;
     }
     if (name == "rnic-nn") {
-        return RnicProfile::NullNetworkPacketized;
+        return RnicProfile::PacketizedManifold;
     }
     if (name == "rnic-nn-fluid") {
-        return RnicProfile::NullNetworkFluid;
+        return RnicProfile::FluidManifold;
     }
     throw std::invalid_argument(
         "unknown RNIC profile '" + name +
@@ -22,9 +22,9 @@ const char* rnicProfileName(RnicProfile profile) {
     switch (profile) {
     case RnicProfile::CollectiveNetwork:
         return "rnic-cn";
-    case RnicProfile::NullNetworkPacketized:
+    case RnicProfile::PacketizedManifold:
         return "rnic-nn";
-    case RnicProfile::NullNetworkFluid:
+    case RnicProfile::FluidManifold:
         return "rnic-nn-fluid";
     }
     throw std::invalid_argument("invalid RNIC profile enum");
@@ -38,15 +38,15 @@ RnicProfileSpec resolveRnicProfile(RnicProfile profile) {
                 RnicTrafficModel::Packetized,
                 RnicControlModel::InBandCollective,
                 RnicPacerModel::Prbs};
-    case RnicProfile::NullNetworkPacketized:
+    case RnicProfile::PacketizedManifold:
         return {profile,
-                RnicFabricModel::NullNetworkManifold,
+                RnicFabricModel::TopologyFreeManifold,
                 RnicTrafficModel::Packetized,
                 RnicControlModel::CentralOracle,
                 RnicPacerModel::CentralPacketSlots};
-    case RnicProfile::NullNetworkFluid:
+    case RnicProfile::FluidManifold:
         return {profile,
-                RnicFabricModel::NullNetworkManifold,
+                RnicFabricModel::TopologyFreeManifold,
                 RnicTrafficModel::Fluid,
                 RnicControlModel::CentralOracle,
                 RnicPacerModel::None};
@@ -58,8 +58,8 @@ const char* rnicFabricModelName(RnicFabricModel model) {
     switch (model) {
     case RnicFabricModel::Tomahawk3Clos:
         return "tomahawk3-clos";
-    case RnicFabricModel::NullNetworkManifold:
-        return "null-network-manifold";
+    case RnicFabricModel::TopologyFreeManifold:
+        return "manifold-nn";
     }
     throw std::invalid_argument("invalid RNIC fabric model enum");
 }

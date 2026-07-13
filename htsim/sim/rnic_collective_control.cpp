@@ -10,11 +10,12 @@ RnicCollectiveController::RnicCollectiveController(
     : _bottleneck_wire_capacity_bps(bottleneck_wire_capacity_bps),
       _margin_ppm(margin_ppm) {
     if (margin_ppm == 0 || margin_ppm > kPartsPerMillion) {
-        throw std::invalid_argument("RNIC-CN margin must be in (0, 1]");
+        throw std::invalid_argument("rnic-cn margin must be in (0, 1]");
     }
     if (bottleneck_wire_capacity_bps
         > std::numeric_limits<uint64_t>::max() / margin_ppm) {
-        throw std::invalid_argument("RNIC-CN capacity is too large for fixed-point grant math");
+        throw std::invalid_argument(
+            "rnic-cn capacity is too large for fixed-point grant math");
     }
 }
 
@@ -40,7 +41,7 @@ bool RnicCollectiveController::contains(uint64_t flow_id) const {
 
 RnicCollectiveGrant RnicCollectiveController::grantFor(uint64_t flow_id) const {
     if (!contains(flow_id)) {
-        throw std::out_of_range("grant requested for undeclared RNIC-CN flow");
+        throw std::out_of_range("grant requested for undeclared rnic-cn flow");
     }
     return {flow_id,
             _membership_epoch,
@@ -62,7 +63,8 @@ uint64_t RnicCollectiveController::currentWireRateBps() const {
         return 0;
     }
     if (_active_flow_ids.size() > std::numeric_limits<uint32_t>::max()) {
-        throw std::overflow_error("RNIC-CN active-flow count exceeds feedback field");
+        throw std::overflow_error(
+            "rnic-cn active-flow count exceeds feedback field");
     }
     const uint64_t numerator = _bottleneck_wire_capacity_bps * _margin_ppm;
     const uint64_t denominator = static_cast<uint64_t>(kPartsPerMillion)
@@ -72,18 +74,21 @@ uint64_t RnicCollectiveController::currentWireRateBps() const {
 
 void RnicSenderGrantGate::declarationDispatched() {
     if (_phase != Phase::Idle) {
-        throw std::logic_error("RNIC-CN declaration dispatched in invalid sender phase");
+        throw std::logic_error(
+            "rnic-cn declaration dispatched in invalid sender phase");
     }
     _phase = Phase::DeclarationInFlight;
 }
 
 void RnicSenderGrantGate::accept(const RnicCollectiveGrant& grant) {
     if (_phase != Phase::DeclarationInFlight) {
-        throw std::logic_error("RNIC-CN ACCEPT received in invalid sender phase");
+        throw std::logic_error(
+            "rnic-cn ACCEPT received in invalid sender phase");
     }
     validateGrantIdentity(grant);
     if (grant.n_hat == 0) {
-        throw std::invalid_argument("RNIC-CN ACCEPT has an empty membership count");
+        throw std::invalid_argument(
+            "rnic-cn ACCEPT has an empty membership count");
     }
     _membership_epoch = grant.membership_epoch;
     _current_wire_rate_bps = grant.wire_rate_bps;
@@ -92,11 +97,13 @@ void RnicSenderGrantGate::accept(const RnicCollectiveGrant& grant) {
 
 bool RnicSenderGrantGate::applyGrantUpdate(const RnicCollectiveGrant& grant) {
     if (_phase != Phase::Active) {
-        throw std::logic_error("RNIC-CN grant update received before ACCEPT");
+        throw std::logic_error(
+            "rnic-cn grant update received before ACCEPT");
     }
     validateGrantIdentity(grant);
     if (grant.n_hat == 0) {
-        throw std::invalid_argument("RNIC-CN grant update has an empty membership count");
+        throw std::invalid_argument(
+            "rnic-cn grant update has an empty membership count");
     }
     if (grant.membership_epoch < _membership_epoch) {
         return false;
@@ -111,7 +118,7 @@ void RnicSenderGrantGate::retire() {
         return;
     }
     if (_phase == Phase::Idle) {
-        throw std::logic_error("RNIC-CN sender retired before declaration");
+        throw std::logic_error("rnic-cn sender retired before declaration");
     }
     _phase = Phase::Retired;
     _current_wire_rate_bps = 0;
@@ -119,6 +126,7 @@ void RnicSenderGrantGate::retire() {
 
 void RnicSenderGrantGate::validateGrantIdentity(const RnicCollectiveGrant& grant) const {
     if (grant.flow_id != _flow_id) {
-        throw std::invalid_argument("RNIC-CN grant delivered to the wrong sender flow");
+        throw std::invalid_argument(
+            "rnic-cn grant delivered to the wrong sender flow");
     }
 }

@@ -28,8 +28,8 @@ model invalidates an old result.
 | Profile | Traffic | Fabric | Allocation and feedback | Sender scheduling |
 | --- | --- | --- | --- | --- |
 | `rnic-cn` | packets | Tomahawk 3 two-tier Clos with VoQ | receiver-observed, in-band collective-network grants | node-wide PRBS packet pacer |
-| `rnic-nn` | packets | null-network manifold with fixed propagation | instantaneous centralized packetized max-min | centrally feasible packet slots; PRBS may randomize ties |
-| `rnic-nn-fluid` | fluid bytes | null-network manifold with fixed propagation | instantaneous centralized fluid max-min | continuous service; no packet pacer |
+| `rnic-nn` | packets | topology-free NN manifold with fixed propagation | instantaneous centralized packetized max-min | centrally feasible packet slots; PRBS may randomize ties |
+| `rnic-nn-fluid` | fluid bytes | topology-free NN manifold with fixed propagation | instantaneous centralized fluid max-min | continuous service; no packet pacer |
 
 CN always means **collective network**. Do not use `cc` as a profile or mode
 name because it is conventionally read as congestion control. Spell Tomahawk 3
@@ -38,7 +38,7 @@ shorthand in prose.
 
 The implementation keeps the following dimensions independent internally:
 
-- `RnicFabricModel`: `Tomahawk3Clos` or `NullNetworkManifold`;
+- `RnicFabricModel`: `Tomahawk3Clos` or `TopologyFreeManifold`;
 - `RnicTrafficModel`: `Packetized` or `Fluid`;
 - `RnicControlModel`: `InBandCollective` or `CentralOracle`;
 - `RnicPacerModel`: `Prbs`, `CentralPacketSlots`, or `None`.
@@ -154,9 +154,9 @@ Normalized exact-rational numerators and denominators must fit the allocator's
 checked unsigned 128-bit domain; an unsupported case is rejected rather than
 approximated with floating point.
 
-## Packetized null-network manifold
+## Packetized topology-free manifold (`rnic-nn`)
 
-The null-network manifold abstracts routing, switches, internal links,
+The topology-free NN manifold abstracts routing, switches, internal links,
 congestion domains, and internal queues. It retains physical packets, endpoint
 access-link serialization, and a configurable fixed propagation latency.
 
@@ -168,7 +168,7 @@ packet, applies backpressure, or adds load-dependent latency.
 
 Independent sender PRBS streams at aggregate load exactly equal to a downlink
 capacity would create a stochastic `rho = 1` destination queue. That would
-contradict the null-network definition. Consequently, `rnic-nn` uses a central
+contradict the topology-free contract. Consequently, `rnic-nn` uses a central
 collision-free packet-slot scheduler. It may use deterministic PRBS state to
 choose among equally feasible matchings or flow ties, but it must never schedule
 two packets that violate a source or destination access-link slot. This is the
@@ -190,7 +190,7 @@ to reproduce that non-overlapped ledger. Tests retain the formula with its
 convention named, then independently enforce capacity lower bounds and the
 single-packet slack implied by the packetized service curve.
 
-## Fluid null-network manifold
+## Fluid topology-free manifold (`rnic-nn-fluid`)
 
 `rnic-nn-fluid` applies the same instantaneous max-min allocation and endpoint
 constraints to continuous bytes. A rate change splits an in-progress transfer
@@ -352,11 +352,11 @@ ATLAHS commit.
 Tests are layered:
 
 1. exact invariants: exact-rational ideal max-min fairness followed by the
-   declared componentwise whole-bps floor, no null-manifold queue or
+   declared componentwise whole-bps floor, no manifold-internal queue or
    load-dependent latency, packet service-curve slack, declaration gate,
    resequencer window/tick rules, node-wide serialization, and deterministic
    seeded replay;
-2. trend regressions: packetized null approaches fluid null as `M` decreases,
+2. trend regressions: packetized NN approaches fluid NN as `M` decreases,
    PRBS aggregate variance decreases with sender count, RB release suppresses
    incast burst peaks, CN stays near NN for the validated paper workload, and
    conventional reactive transports degrade more strongly under large incast;
@@ -369,7 +369,7 @@ it used deterministic slot staggering and did not model the shared physical
 RNIC described above.
 
 Likewise, a receiver-bound CN flow granted with the default `margin = 0.9`
-cannot universally match full-capacity null service: its asymptotic rate tax is
+cannot universally match full-capacity NN service: its asymptotic rate tax is
 approximately `1 / 0.9`. A historical mean ratio closer to one may still arise
 for a latency- or compute-dominated workload, but it is never allowed to
 override the explicit grant equation.

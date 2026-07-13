@@ -6,13 +6,13 @@
 
 enum class RnicProfile {
     CollectiveNetwork,
-    NullNetworkPacketized,
-    NullNetworkFluid,
+    PacketizedManifold,
+    FluidManifold,
 };
 
 enum class RnicFabricModel {
     Tomahawk3Clos,
-    NullNetworkManifold,
+    TopologyFreeManifold,
 };
 
 enum class RnicTrafficModel {

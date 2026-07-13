@@ -14,7 +14,8 @@ struct RnicCollectiveGrant {
     uint64_t wire_rate_bps;
 };
 
-// Receiver-side membership and direct explicit-rate calculation for RNIC-CN.
+// Receiver-side membership and direct explicit-rate calculation for the
+// collective-network (`rnic-cn`) profile.
 // Transport of declarations and grants is deliberately outside this class: the
 // integration must carry them in band through the simulated Clos.
 class RnicCollectiveController {

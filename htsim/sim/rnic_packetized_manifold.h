@@ -22,8 +22,9 @@ struct RnicPacketizedGrant {
 
 class RnicPacketizedSlotCalendar;
 
-// An immutable value describing one full-wire-quantum reservation. The null
-// manifold adds no route, internal queue, loss, marking, or backpressure.
+// An immutable value describing one full-wire-quantum reservation. The
+// topology-free manifold adds no route, internal queue, loss, marking, or
+// backpressure.
 class RnicPacketizedReservation {
 public:
     using FlowId = RnicPacketizedGrant::FlowId;
@@ -77,7 +78,7 @@ private:
 };
 
 // Deterministic version-1 packet calendar for the validated homogeneous-C,
-// fixed-wire-quantum null-network scope. A caller supplies a complete active,
+// fixed-wire-quantum `rnic-nn` scope. A caller supplies a complete active,
 // backlogged grant snapshot at each epoch. A packetization wrapper must handle
 // a short final packet with its exact serialization time; this calendar accepts
 // and reserves only complete wire quanta and makes no flow-completion claim.
