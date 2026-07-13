@@ -43,14 +43,30 @@ RnicAtlahsRuntimeAssembly::RnicAtlahsRuntimeAssembly(
     : topology_config(std::move(topology_config_value)),
       topology(std::move(topology_value)),
       runtime(std::move(runtime_value)),
-      profile_spec(profile_spec_value) {}
+      profile_spec(profile_spec_value) {
+    if (runtime == nullptr) {
+        throw std::invalid_argument(
+            "RNIC ATLAHS session requires a runtime implementation");
+    }
+}
 
 RnicAtlahsRuntimeAssembly::~RnicAtlahsRuntimeAssembly() = default;
 
-RnicAtlahsRuntimeAssembly::RnicAtlahsRuntimeAssembly(
-    RnicAtlahsRuntimeAssembly&&) noexcept = default;
+void RnicAtlahsRuntimeAssembly::setup(
+        std::uint32_t node_count, CompletionHandler complete_flow) {
+    runtime->setup(node_count, std::move(complete_flow));
+}
 
-RnicAtlahsRuntimeAssembly makeRnicAtlahsRuntime(
+void RnicAtlahsRuntimeAssembly::send(
+        const AtlahsFlowRequest& request) {
+    runtime->send(request);
+}
+
+bool RnicAtlahsRuntimeAssembly::hasPendingPhysicalWork() const noexcept {
+    return runtime->hasPendingPhysicalWork();
+}
+
+std::unique_ptr<RnicAtlahsRuntimeAssembly> makeRnicAtlahsRuntime(
         EventList& event_list,
         RnicProfile profile,
         RnicAtlahsRuntimeConfig runtime_config,
@@ -110,10 +126,11 @@ RnicAtlahsRuntimeAssembly makeRnicAtlahsRuntime(
             topology_config.get(), logger_factory, &event_list, nullptr);
         auto runtime = std::make_unique<RnicCollectiveNetworkRuntime>(
             event_list, *topology, std::move(config));
-        return RnicAtlahsRuntimeAssembly(std::move(topology_config),
-                                         std::move(topology),
-                                         std::move(runtime),
-                                         profile_spec);
+        return std::make_unique<RnicAtlahsRuntimeAssembly>(
+            std::move(topology_config),
+            std::move(topology),
+            std::move(runtime),
+            profile_spec);
     }
     case RnicProfile::PacketizedManifold: {
         rejectTopologyConfig(topology_config, profile);
@@ -125,10 +142,8 @@ RnicAtlahsRuntimeAssembly makeRnicAtlahsRuntime(
             config.node_link_capacity_bps,
             config.packetization,
             config.propagation_delay_ps);
-        return RnicAtlahsRuntimeAssembly(nullptr,
-                                         nullptr,
-                                         std::move(runtime),
-                                         profile_spec);
+        return std::make_unique<RnicAtlahsRuntimeAssembly>(
+            nullptr, nullptr, std::move(runtime), profile_spec);
     }
     case RnicProfile::FluidManifold: {
         rejectTopologyConfig(topology_config, profile);
@@ -139,10 +154,8 @@ RnicAtlahsRuntimeAssembly makeRnicAtlahsRuntime(
             event_list,
             config.node_link_capacity_bps,
             config.propagation_delay_ps);
-        return RnicAtlahsRuntimeAssembly(nullptr,
-                                         nullptr,
-                                         std::move(runtime),
-                                         profile_spec);
+        return std::make_unique<RnicAtlahsRuntimeAssembly>(
+            nullptr, nullptr, std::move(runtime), profile_spec);
     }
     }
 

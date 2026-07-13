@@ -8,16 +8,18 @@
 #include <type_traits>
 #include <utility>
 
+#include "atlahs_htsim_api.h"
 #include "fat_tree_topology.h"
 #include "rnic_atlahs_runtime_factory.h"
 #include "rnic_fluid_manifold_runtime.h"
 #include "rnic_packetized_manifold_runtime.h"
+#include "tomahawk3_switch.h"
 
 namespace {
 
 constexpr std::uint64_t kAccessCapacityBps = 100000000000ULL;
 
-static_assert(std::is_move_constructible_v<RnicAtlahsRuntimeAssembly>);
+static_assert(!std::is_move_constructible_v<RnicAtlahsRuntimeAssembly>);
 static_assert(!std::is_move_assignable_v<RnicAtlahsRuntimeAssembly>);
 
 EventList& testEventList() {
@@ -79,30 +81,41 @@ TEST(RnicAtlahsRuntimeFactoryTest,
     FatTreeTopologyCfg* const input_config_address = input_config.get();
     EXPECT_EQ(input_config->switch_model(), FatTreeSwitchModel::Default);
 
-    RnicAtlahsRuntimeAssembly assembly = makeRnicAtlahsRuntime(
+    auto assembly = makeRnicAtlahsRuntime(
         event_list,
         RnicProfile::CollectiveNetwork,
         collectiveConfig(),
         std::move(input_config));
 
-    EXPECT_EQ(assembly.profile_spec.profile,
+    ASSERT_NE(assembly, nullptr);
+    EXPECT_EQ(assembly->profileSpec().profile,
               RnicProfile::CollectiveNetwork);
-    EXPECT_EQ(assembly.profile_spec.fabric,
+    EXPECT_EQ(assembly->profileSpec().fabric,
               RnicFabricModel::Tomahawk3Clos);
-    ASSERT_NE(assembly.topology_config, nullptr);
-    ASSERT_NE(assembly.topology, nullptr);
-    ASSERT_NE(assembly.runtime, nullptr);
-    EXPECT_EQ(assembly.topology_config.get(), input_config_address);
-    EXPECT_EQ(&assembly.topology->cfg(), input_config_address);
-    EXPECT_EQ(assembly.topology_config->switch_model(),
+    ASSERT_NE(assembly->topologyConfig(), nullptr);
+    ASSERT_NE(assembly->physicalTopology(), nullptr);
+    EXPECT_EQ(assembly->topologyConfig(), input_config_address);
+    EXPECT_EQ(&assembly->physicalTopology()->cfg(), input_config_address);
+    EXPECT_EQ(assembly->topologyConfig()->switch_model(),
               FatTreeSwitchModel::Tomahawk3);
     EXPECT_NE(dynamic_cast<RnicCollectiveNetworkRuntime*>(
-                  assembly.runtime.get()),
+                  &assembly->implementation()),
               nullptr);
+    ASSERT_FALSE(assembly->physicalTopology()->switches_lp.empty());
+    ASSERT_FALSE(assembly->physicalTopology()->switches_up.empty());
+    EXPECT_TRUE(assembly->physicalTopology()->switches_c.empty());
+    for (Switch* const physical_switch :
+         assembly->physicalTopology()->switches_lp) {
+        EXPECT_NE(dynamic_cast<Tomahawk3Switch*>(physical_switch), nullptr);
+    }
+    for (Switch* const physical_switch :
+         assembly->physicalTopology()->switches_up) {
+        EXPECT_NE(dynamic_cast<Tomahawk3Switch*>(physical_switch), nullptr);
+    }
 }
 
 TEST(RnicAtlahsRuntimeFactoryTest,
-     CollectiveNetworkCalibratesEtaFromItsOwnedPhysicalClos) {
+     CollectiveNetworkCalibratesDataEtaFromItsOwnedPhysicalClos) {
     EventList& event_list = testEventList();
     std::size_t caller_calibration_calls = 0;
     RnicCollectiveNetworkConfig config = collectiveConfig();
@@ -111,21 +124,29 @@ TEST(RnicAtlahsRuntimeFactoryTest,
             ++caller_calibration_calls;
             return timeFromNs(1);
         };
-    RnicAtlahsRuntimeAssembly assembly = makeRnicAtlahsRuntime(
+    auto assembly = makeRnicAtlahsRuntime(
         event_list,
         RnicProfile::CollectiveNetwork,
         std::move(config),
         twoTierConfig());
     auto* const runtime = dynamic_cast<RnicCollectiveNetworkRuntime*>(
-        assembly.runtime.get());
+        &assembly->implementation());
     ASSERT_NE(runtime, nullptr);
 
-    bool completed = false;
-    runtime->setup(32, [&completed](AtlahsFlowId) { completed = true; });
+    std::size_t completions = 0;
+    runtime->setup(32, [&completions](AtlahsFlowId) { ++completions; });
+    // One exact full-wire DATA packet on a same-ToR path and one on a
+    // cross-ToR path exercise both physical no-queue calibrations.
     runtime->send({0x100000001ULL,
                    0,
+                   1,
+                   936,
+                   EventList::now(),
+                   0});
+    runtime->send({0x100000002ULL,
+                   2,
                    31,
-                   0,
+                   936,
                    EventList::now(),
                    0});
     constexpr std::size_t maximum_events = 100000;
@@ -138,8 +159,52 @@ TEST(RnicAtlahsRuntimeFactoryTest,
 
     EXPECT_FALSE(runtime->hasPendingPhysicalWork());
     runtime->validateQuiescent();
-    EXPECT_TRUE(completed);
+    EXPECT_EQ(completions, 2U);
+    EXPECT_EQ(runtime->flow(0x100000001ULL).delivered_data_packets, 1U);
+    EXPECT_EQ(runtime->flow(0x100000002ULL).delivered_data_packets, 1U);
     EXPECT_EQ(caller_calibration_calls, 0U);
+}
+
+TEST(RnicAtlahsRuntimeFactoryTest,
+     ApiOwnsCollectiveRuntimeTopologyAndConfigurationAsOneSession) {
+    EventList& event_list = testEventList();
+    AtlahsHtsimApi api;
+    api.setEventList(&event_list);
+    api.total_nodes = 32;
+
+    auto session = makeRnicAtlahsRuntime(event_list,
+                              RnicProfile::CollectiveNetwork,
+                              collectiveConfig(),
+                              twoTierConfig());
+    RnicAtlahsRuntimeAssembly* const session_address = session.get();
+    api.setTopologyCfg(session->topologyConfig());
+    api.setTopology(session->physicalTopology());
+    api.setFlowRuntime(std::move(session));
+
+    EXPECT_EQ(api.getFlowRuntime(), session_address);
+    EXPECT_EQ(api.getTopologyCfg(), session_address->topologyConfig());
+    EXPECT_EQ(api.getTopology(), session_address->physicalTopology());
+    api.Setup();
+
+    auto* const runtime = dynamic_cast<RnicCollectiveNetworkRuntime*>(
+        &session_address->implementation());
+    ASSERT_NE(runtime, nullptr);
+    runtime->send({0x100000003ULL,
+                   0,
+                   31,
+                   936,
+                   EventList::now(),
+                   0});
+    constexpr std::size_t maximum_events = 100000;
+    std::size_t event_count = 0;
+    while (api.runtimeHasPendingPhysicalWork()
+           && event_count < maximum_events) {
+        ASSERT_TRUE(EventList::doNextEvent());
+        ++event_count;
+    }
+
+    EXPECT_FALSE(api.runtimeHasPendingPhysicalWork());
+    runtime->validateQuiescent();
 }
 
 TEST(RnicAtlahsRuntimeFactoryTest,
@@ -197,17 +262,18 @@ TEST(RnicAtlahsRuntimeFactoryTest,
         RnicDataPacketizationConfig(2048, 64),
         timeFromNs(350)};
 
-    RnicAtlahsRuntimeAssembly assembly = makeRnicAtlahsRuntime(
+    auto assembly = makeRnicAtlahsRuntime(
         event_list, RnicProfile::PacketizedManifold, config);
 
-    EXPECT_EQ(assembly.profile_spec.profile,
+    ASSERT_NE(assembly, nullptr);
+    EXPECT_EQ(assembly->profileSpec().profile,
               RnicProfile::PacketizedManifold);
-    EXPECT_EQ(assembly.profile_spec.fabric,
+    EXPECT_EQ(assembly->profileSpec().fabric,
               RnicFabricModel::TopologyFreeManifold);
-    EXPECT_EQ(assembly.topology_config, nullptr);
-    EXPECT_EQ(assembly.topology, nullptr);
+    EXPECT_EQ(assembly->topologyConfig(), nullptr);
+    EXPECT_EQ(assembly->physicalTopology(), nullptr);
     auto* const runtime = dynamic_cast<RnicPacketizedManifoldRuntime*>(
-        assembly.runtime.get());
+        &assembly->implementation());
     ASSERT_NE(runtime, nullptr);
     EXPECT_EQ(runtime->nodeLinkCapacity(), config.node_link_capacity_bps);
     EXPECT_EQ(runtime->packetization().maxWirePacketBytes(), 2048U);
@@ -221,17 +287,18 @@ TEST(RnicAtlahsRuntimeFactoryTest,
     const RnicFluidManifoldRuntimeConfig config{
         200000000000ULL, timeFromNs(725)};
 
-    RnicAtlahsRuntimeAssembly assembly = makeRnicAtlahsRuntime(
+    auto assembly = makeRnicAtlahsRuntime(
         event_list, RnicProfile::FluidManifold, config);
 
-    EXPECT_EQ(assembly.profile_spec.profile,
+    ASSERT_NE(assembly, nullptr);
+    EXPECT_EQ(assembly->profileSpec().profile,
               RnicProfile::FluidManifold);
-    EXPECT_EQ(assembly.profile_spec.fabric,
+    EXPECT_EQ(assembly->profileSpec().fabric,
               RnicFabricModel::TopologyFreeManifold);
-    EXPECT_EQ(assembly.topology_config, nullptr);
-    EXPECT_EQ(assembly.topology, nullptr);
+    EXPECT_EQ(assembly->topologyConfig(), nullptr);
+    EXPECT_EQ(assembly->physicalTopology(), nullptr);
     auto* const runtime = dynamic_cast<RnicFluidManifoldRuntime*>(
-        assembly.runtime.get());
+        &assembly->implementation());
     ASSERT_NE(runtime, nullptr);
     EXPECT_EQ(runtime->nodeLinkCapacity(), config.node_link_capacity_bps);
     EXPECT_EQ(runtime->propagationDelay(), config.propagation_delay_ps);
@@ -300,6 +367,16 @@ TEST(RnicAtlahsRuntimeFactoryTest, RejectsAnInvalidProfileEnum) {
             static_cast<RnicProfile>(99),
             RnicFluidManifoldRuntimeConfig{
                 kAccessCapacityBps, timeFromNs(100)}),
+        std::invalid_argument);
+}
+
+TEST(RnicAtlahsRuntimeFactoryTest, SessionRejectsMissingImplementation) {
+    EXPECT_THROW(
+        std::make_unique<RnicAtlahsRuntimeAssembly>(
+            nullptr,
+            nullptr,
+            nullptr,
+            resolveRnicProfile(RnicProfile::PacketizedManifold)),
         std::invalid_argument);
 }
 
