@@ -255,16 +255,48 @@ Its startup sequence is:
    `margin * C_b / N_hat`;
 5. subsequent grants use the same controller and travel in band.
 
+A join wave cannot safely open the new sender before incumbent reductions take
+effect: with one incumbent, the transient would otherwise be
+`0.9C + 0.45C = 1.35C`. For the paper-scoped homogeneous Clos model, every
+physical ACCEPT/UPDATE in one immutable membership wave therefore carries a
+common `effective_time`. Senders retain the old grant (or remain gated) until
+that boundary. The sender gate has no per-flow activation operation: one
+receiver-scoped barrier authenticates the exact immutable wave, preflights its
+complete flow set, and commits every grant synchronously. Missing feedback
+therefore leaves all incumbents at the old rate and all joiners gated. At an
+effective timestamp, the runtime must process all same-time feedback arrivals,
+then the barrier, then DATA scheduling, so an arrival exactly at the deadline
+is timely without exposing a partial wave. Every feedback packet must
+physically arrive by a configured worst-case one-way control deadline that
+includes receiver fanout serialization and non-preemptive switch blocking; a
+miss invalidates the run. Receiver membership waves are serialized, and
+declarations observed at the same modeled timestamp are microbatched before a
+wave is emitted.
+
+The receiver controller owns membership, deadline sequencing, and the retained
+wave as one non-copyable object. `beginMembershipWave` is its only membership
+mutation path, and a new wave is rejected until the barrier clears the current
+one. A source-drained sender remains able to consume intervening updates; its
+grant gate reaches `Retired` only after the receiver transition excluding that
+flow has succeeded. This keeps a RETIRE that races another membership event
+from silently desynchronizing receiver membership and sender gates.
+
+This effective-time field is an explicit homogeneous-RTT implementation
+idealization, not a general delay-independent protocol claim, and its deadline
+tail may extend the nominal one-RTT start. Without a proven deadline, a safe
+implementation requires an in-band incumbent-ACK barrier and another control
+round trip; that alternative is outside the current profile.
+
 The default paper parameters are `margin = 0.9`, admission window
 `Delta = 4.096 us`, and release tick `delta = 16 ns`. There is no slow start,
 startup probe, additive ramp, or out-of-band fanout. Flow retirement is an
 explicit control event so the receiver's active count cannot leak after short
 flows.
 
-The present paper scope assumes one calibrated control-loop RTT for flows in a
-two-tier datacenter Clos. Heterogeneous control RTT stability is deliberately
-out of scope and must be reported as such rather than hidden behind per-flow
-tuning.
+The present paper scope assumes one calibrated, bounded control-loop deadline
+for flows in a two-tier datacenter Clos and synchronized activation time.
+Heterogeneous control RTT stability is deliberately out of scope and must be
+reported as such rather than hidden behind per-flow tuning.
 
 ## Node-wide PRBS pacer
 
