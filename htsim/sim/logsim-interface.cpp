@@ -111,7 +111,8 @@ void LogSimInterface::htsim_schedule(u_int32_t host, int to, int size, int tag, 
 }
 
 void LogSimInterface::execute_compute(graph_node_properties comp_elem, int size_p) {
-    if (_protocolName == EQDS_PROTOCOL || _protocolName == NDP_PROTOCOL || _protocolName == UEC_PROTOCOL) {
+    if (_protocolName == EQDS_PROTOCOL || _protocolName == NDP_PROTOCOL
+        || _protocolName == UEC_PROTOCOL || _protocolName == RNIC_PROTOCOL) {
         compute_events_handler->setCompute(comp_elem.size * 1);
         ComputeAtlahsEvent *compute_event = new ComputeAtlahsEvent(comp_elem.size);
         htsim_api->Calc(*compute_event);
@@ -119,7 +120,8 @@ void LogSimInterface::execute_compute(graph_node_properties comp_elem, int size_
 }
 
 void LogSimInterface::execute_null_compute(graph_node_properties comp_elem, int size_p) {
-  if (_protocolName == EQDS_PROTOCOL || _protocolName == NDP_PROTOCOL || _protocolName == UEC_PROTOCOL) {
+  if (_protocolName == EQDS_PROTOCOL || _protocolName == NDP_PROTOCOL
+      || _protocolName == UEC_PROTOCOL || _protocolName == RNIC_PROTOCOL) {
       
       null_events_handler->setCompute(comp_elem.size);
   }

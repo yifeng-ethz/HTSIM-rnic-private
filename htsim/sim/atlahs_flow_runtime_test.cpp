@@ -160,6 +160,21 @@ TEST(AtlahsFlowRuntimeTest, GoalLayoutMustMatchConfiguredPhysicalNodes) {
                  std::invalid_argument);
 }
 
+TEST(AtlahsFlowRuntimeTest, ExplicitGoalRankMappingOverridesHeuristic) {
+    CapturingAtlahsHtsimApi api;
+    api.total_nodes = 32;
+    api.setGoalRankMappingOverride(
+        AtlahsHtsimApi::GoalRankMapping::UniqueNic);
+
+    const AtlahsHtsimApi::GoalLayout layout =
+        api.configureGoalLayoutFromBinaryHeader(16, 8, 2);
+    EXPECT_EQ(layout.rank_mapping,
+              AtlahsHtsimApi::GoalRankMapping::UniqueNic);
+    EXPECT_EQ(layout.physical_node_count, 32U);
+    ASSERT_TRUE(api.getGoalRankMappingOverride().has_value());
+    EXPECT_EQ(*api.getGoalRankMappingOverride(), layout.rank_mapping);
+}
+
 TEST(AtlahsFlowRuntimeTest, DelegatesExactPayloadForConcurrentSameSourceFlows) {
     CapturingAtlahsHtsimApi api;
     api.total_nodes = 16;

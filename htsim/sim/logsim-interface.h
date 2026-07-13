@@ -32,6 +32,7 @@ enum ProtocolName {
     UEC_DROP_PROTOCOL,
     EQDS_PROTOCOL,
     SENDER_PROTOCOL,
+    RNIC_PROTOCOL,
 };
 
 /* ... */
@@ -120,25 +121,25 @@ class LogSimInterface {
 
   private:
     bool debug_prints = false;
-    TrafficLoggerSimple *_flow;
-    UecLogger *_logger;
-    EventList *_eventlist;
-    FatTreeTopology *_topo = NULL;
-    std::vector<const Route *> ***_netPaths;
-    int _cwd;
-    ComputeEvent *compute_events_handler;
-    NullEvent *null_events_handler;
-    graph_node_properties *_latest_recv;
+    TrafficLoggerSimple *_flow = nullptr;
+    UecLogger *_logger = nullptr;
+    EventList *_eventlist = nullptr;
+    FatTreeTopology *_topo = nullptr;
+    std::vector<const Route *> ***_netPaths = nullptr;
+    int _cwd = 0;
+    ComputeEvent *compute_events_handler = nullptr;
+    NullEvent *null_events_handler = nullptr;
+    graph_node_properties *_latest_recv = nullptr;
     bool compute_if_finished = false;
     bool time_over = false;
-    ProtocolName _protocolName;
+    ProtocolName _protocolName = UEC_PROTOCOL;
     AtlahsNetworkTiming _network_timing = AtlahsNetworkTiming::LegacyLogSimGap;
-    int _queuesize;
+    int _queuesize = 0;
     std::unordered_map<int, NdpPullPacer *> _puller_map;
-    bool _use_good_entropies;
-    bool _ignore_ecn_ack;
-    bool _ignore_ecn_data;
-    int _num_entropies;
+    bool _use_good_entropies = false;
+    bool _ignore_ecn_ack = false;
+    bool _ignore_ecn_data = false;
+    int _num_entropies = 0;
     int path_entropy_size = 256;
 };
 

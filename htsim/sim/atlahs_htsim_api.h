@@ -7,6 +7,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <unordered_map>
 #include "compute_event.h"
@@ -154,6 +155,13 @@ public:
 
     void setGoalRankMapping(GoalRankMapping mapping) { goal_rank_mapping = mapping; }
     GoalRankMapping getGoalRankMapping() const { return goal_rank_mapping; }
+    void setGoalRankMappingOverride(
+        std::optional<GoalRankMapping> mapping) {
+        goal_rank_mapping_override = mapping;
+    }
+    std::optional<GoalRankMapping> getGoalRankMappingOverride() const {
+        return goal_rank_mapping_override;
+    }
 
     GoalLayout configureGoalLayoutFromBinaryHeader(
         std::uint32_t rank_count,
@@ -172,8 +180,9 @@ public:
         const bool looks_like_v2_gpu_rank =
             nic_count == 1 ||
             (nic_count == 2 && rank_count > static_cast<uint32_t>(nic_count) && cpu_count <= 8);
-        goal_rank_mapping =
-            looks_like_v2_gpu_rank ? GoalRankMapping::GpuRank : GoalRankMapping::UniqueNic;
+        goal_rank_mapping = goal_rank_mapping_override.value_or(
+            looks_like_v2_gpu_rank ? GoalRankMapping::GpuRank
+                                   : GoalRankMapping::UniqueNic);
 
         const std::uint64_t required_nodes =
             usesUniqueNicRankMapping()
@@ -261,6 +270,7 @@ private:
     // LGS Specific
     int number_nics = 1;
     GoalRankMapping goal_rank_mapping = GoalRankMapping::GpuRank;
+    std::optional<GoalRankMapping> goal_rank_mapping_override;
 
     // EQDS Specific 
     vector<EqdsPullPacer*> pacersEQDS;
