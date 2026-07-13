@@ -107,19 +107,6 @@ void validatePacketOptions(const RnicAtlahsCliOptions& options) {
     }
 }
 
-bool isGeneratedTwoTierNodeCount(std::uint32_t node_count) noexcept {
-    // HTSIM's generated two-tier Clos has N = K^2/2 with an even radix K.
-    // Search in integer arithmetic to avoid a floating square-root boundary.
-    for (std::uint64_t radix = 2;
-         radix <= static_cast<std::uint64_t>(node_count) * 2 / radix;
-         radix += 2) {
-        if (radix * radix == static_cast<std::uint64_t>(node_count) * 2) {
-            return true;
-        }
-    }
-    return false;
-}
-
 void validateCollectiveOptions(const RnicAtlahsCliOptions& options) {
     constexpr std::uint64_t htsim_one_byte_per_ps_bps =
         UINT64_C(8000000000000);
@@ -129,7 +116,7 @@ void validateCollectiveOptions(const RnicAtlahsCliOptions& options) {
     }
     if (options.node_count != 0
         && !options.collective.topology_file.has_value()
-        && !isGeneratedTwoTierNodeCount(options.node_count)) {
+        && !isRnicGeneratedTwoTierClosNodeCount(options.node_count)) {
         throw std::invalid_argument(
             "generated rnic-cn topology requires nodes = K^2/2 for even K");
     }
@@ -285,6 +272,12 @@ RnicAtlahsCliOptions parseRnicAtlahsCli(
                 throw optionError(
                     option, "explicit validation override must be positive");
             }
+            if (options.node_count
+                > static_cast<std::uint32_t>(
+                    std::numeric_limits<int>::max())) {
+                throw optionError(
+                    option, "value exceeds the ATLAHS API node domain");
+            }
             options.explicitly_supplied.node_count = true;
         } else if (option == "-linkspeed_bps") {
             options.link_capacity_bps = parseUnsigned(option, value);
@@ -365,6 +358,21 @@ RnicAtlahsCliOptions parseRnicAtlahsCli(
 
     validateResolvedOptions(options);
     return options;
+}
+
+bool isRnicGeneratedTwoTierClosNodeCount(
+        std::uint32_t node_count) noexcept {
+    // Search in integer arithmetic to avoid a floating square-root boundary.
+    const std::uint64_t doubled_node_count =
+        static_cast<std::uint64_t>(node_count) * 2;
+    for (std::uint64_t radix = 2;
+         radix <= doubled_node_count / radix;
+         radix += 2) {
+        if (radix * radix == doubled_node_count) {
+            return true;
+        }
+    }
+    return false;
 }
 
 const char* rnicAtlahsGoalRankMappingName(

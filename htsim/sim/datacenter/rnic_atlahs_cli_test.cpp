@@ -239,6 +239,24 @@ TEST(RnicAtlahsCliTest, RejectsMalformedNegativeOverflowAndHexNumerics) {
     std::vector<std::string> zero_nodes = baseArguments("rnic-nn");
     zero_nodes[4] = "0";
     EXPECT_THROW(parse(std::move(zero_nodes)), std::invalid_argument);
+
+    std::vector<std::string> maximum_api_nodes = baseArguments("rnic-nn");
+    maximum_api_nodes[4] = "2147483647";
+    EXPECT_NO_THROW(parse(std::move(maximum_api_nodes)));
+
+    std::vector<std::string> above_api_nodes = baseArguments("rnic-nn");
+    above_api_nodes[4] = "2147483648";
+    EXPECT_THROW(parse(std::move(above_api_nodes)), std::invalid_argument);
+}
+
+TEST(RnicAtlahsCliTest, RecognizesOnlyGeneratedTwoTierClosNodeCounts) {
+    for (const std::uint32_t valid : {2U, 8U, 18U, 32U, 50U, 72U, 128U}) {
+        EXPECT_TRUE(isRnicGeneratedTwoTierClosNodeCount(valid)) << valid;
+    }
+    for (const std::uint32_t invalid :
+         {0U, 1U, 3U, 7U, 31U, 33U, 127U}) {
+        EXPECT_FALSE(isRnicGeneratedTwoTierClosNodeCount(invalid)) << invalid;
+    }
 }
 
 TEST(RnicAtlahsCliTest, RejectsDuplicateAndUnknownOptions) {

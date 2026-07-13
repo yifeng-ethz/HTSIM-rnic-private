@@ -211,6 +211,29 @@ public:
                           static_cast<std::uint32_t>(required_nodes)};
     }
 
+    // A layout-ready callback may install a runtime, but it must not rewrite
+    // the rank-to-physical-node interpretation that was just resolved from
+    // the GOAL header. Send() consults these live fields for every flow, so a
+    // mutation here would otherwise silently disagree with runtime setup.
+    void validateGoalLayoutSnapshot(const GoalLayout& layout) const {
+        if (total_nodes < 0
+            || static_cast<std::uint64_t>(total_nodes)
+                   != layout.physical_node_count) {
+            throw std::logic_error(
+                "ATLAHS layout-ready callback changed the physical node "
+                "count");
+        }
+        if (goal_rank_mapping != layout.rank_mapping) {
+            throw std::logic_error(
+                "ATLAHS layout-ready callback changed the GOAL rank "
+                "mapping");
+        }
+        if (number_nics != layout.nic_count) {
+            throw std::logic_error(
+                "ATLAHS layout-ready callback changed the GOAL NIC count");
+        }
+    }
+
     bool usesUniqueNicRankMapping() const {
         return goal_rank_mapping == GoalRankMapping::UniqueNic;
     }

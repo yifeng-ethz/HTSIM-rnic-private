@@ -89,6 +89,12 @@ struct RnicAtlahsCliOptions {
 RnicAtlahsCliOptions parseRnicAtlahsCli(
     int argc, const char* const argv[]);
 
+// HTSIM's generated two-tier Clos has N = K^2/2 endpoints for an even
+// Tomahawk3 radix K. The driver also applies this predicate after deriving N
+// from GOAL, when no explicit -nodes validation override was supplied.
+bool isRnicGeneratedTwoTierClosNodeCount(
+    std::uint32_t node_count) noexcept;
+
 const char* rnicAtlahsGoalRankMappingName(
     RnicAtlahsGoalRankMapping mapping);
 std::string rnicAtlahsCliUsage(const std::string& program_name);

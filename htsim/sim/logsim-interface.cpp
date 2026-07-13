@@ -426,11 +426,7 @@ int start_lgs(std::string filename_goal,
     if (goal_layout_ready) {
         goal_layout_ready(goal_layout);
     }
-    if (lgs_interface->htsim_api->total_nodes
-        != static_cast<int>(goal_layout.physical_node_count)) {
-        throw std::logic_error(
-            "ATLAHS layout-ready callback changed the physical node count");
-    }
+    lgs_interface->htsim_api->validateGoalLayoutSnapshot(goal_layout);
     // Runtime setup belongs after GOAL rank-layout inference. In particular,
     // a unique-NIC schedule needs p * nnics physical nodes, whereas a V2
     // GPU-rank schedule needs p. The checked configuration above guarantees
