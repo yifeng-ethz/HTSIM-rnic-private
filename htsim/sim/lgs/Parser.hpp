@@ -1,5 +1,9 @@
+#include <algorithm>
 #include <cstring>
+#include <limits>
 #include <map>
+#include <stdexcept>
+#include <type_traits>
 #include <vector>
 #include <string>
 #include <string.h>
@@ -23,6 +27,67 @@
 #define OPTYPE_CALC 3
 
 typedef uint64_t base_t;
+
+namespace goal_binary_detail {
+
+template <typename T>
+T load_packed(const char* source) {
+	static_assert(std::is_trivially_copyable<T>::value,
+	              "packed GOAL scalars must be trivially copyable");
+	T value;
+	std::memcpy(&value, source, sizeof(value));
+	return value;
+}
+
+template <typename T>
+void store_packed(char* destination, const T& value) {
+	static_assert(std::is_trivially_copyable<T>::value,
+	              "packed GOAL scalars must be trivially copyable");
+	std::memcpy(destination, &value, sizeof(value));
+}
+
+inline std::runtime_error malformed(const std::string& detail) {
+	return std::runtime_error("malformed serialized GOAL schedule: " + detail);
+}
+
+inline size_t checked_add(size_t lhs, size_t rhs, const char* field) {
+	if (rhs > std::numeric_limits<size_t>::max() - lhs) {
+		throw malformed(std::string(field) + " size overflows");
+	}
+	return lhs + rhs;
+}
+
+inline size_t checked_multiply(size_t lhs, size_t rhs, const char* field) {
+	if (lhs != 0 && rhs > std::numeric_limits<size_t>::max() / lhs) {
+		throw malformed(std::string(field) + " size overflows");
+	}
+	return lhs * rhs;
+}
+
+template <typename T>
+T load_bounded(const char* base,
+	           size_t length,
+	           size_t offset,
+	           const char* field) {
+	if (offset > length || sizeof(T) > length - offset) {
+		throw malformed(std::string(field) + " is outside its byte span");
+	}
+	return load_packed<T>(base + offset);
+}
+
+template <typename T>
+void store_bounded(char* base,
+	              size_t length,
+	              size_t offset,
+	              const T& value,
+	              const char* field) {
+	if (offset > length || sizeof(T) > length - offset) {
+		throw malformed(std::string(field) + " is outside its byte span");
+	}
+	store_packed(base + offset, value);
+}
+
+}  // namespace goal_binary_detail
 
 // TODO Experiment with packing of the node structure,
 //      that could save us up to 30% in space, but might
@@ -334,7 +399,8 @@ class Graph {
 				perror("couldn't mmap the output file");
 				exit(EXIT_FAILURE);
 			}
-			*( (uint64_t*) mapping_start ) = (uint64_t) MAGIC_COOKIE;
+			goal_binary_detail::store_packed(
+				mapping_start, static_cast<uint64_t>(MAGIC_COOKIE));
 			mapping_start += sizeof(uint64_t); // jump over magic cookie
 			end_of_lastrank = sizeof(uint32_t) + sizeof(uint8_t)*2 + sizeof(uint64_t)*2*num_ranks;
 			start_rankdata = mapping_start + sizeof(uint32_t) + sizeof(uint8_t)*2 + sizeof(uint64_t)*2*num_ranks;  // our rankdata starts right after the jumptable
@@ -362,7 +428,9 @@ class Graph {
 
 			mapping_start += sizeof(uint64_t); // jump over magic cookie
 
-			end_of_lastrank = *((uint64_t*) (mapping_start + sizeof(uint32_t) + sizeof(uint8_t)*2 + sizeof(uint64_t)*(2*(rank-1)+1))); 
+			end_of_lastrank = goal_binary_detail::load_packed<uint64_t>(
+				mapping_start + sizeof(uint32_t) + sizeof(uint8_t)*2
+				+ sizeof(uint64_t)*(2*(rank-1)+1));
 			start_rankdata = mapping_start + end_of_lastrank;
 		}
 
@@ -398,7 +466,7 @@ class Graph {
 				const uint32_t size = (**it).DependOnMe.size();
 				memcpy(pos, &size, sizeof(uint32_t));                 		pos += sizeof(uint32_t);	// number of actions that depend on this actions termination
 			}
-			memcpy(&pos, &num_in_appendix, sizeof(uint32_t));   				pos += sizeof(uint32_t);	// start index of dependent actions (in appendix)
+			memcpy(pos, &num_in_appendix, sizeof(uint32_t));    				pos += sizeof(uint32_t);	// start index of dependent actions (in appendix)
 			num_in_appendix += (**it).DependOnMe.size();
 			{
 				const uint32_t size = (**it).StartDependOnMe.size();
@@ -420,18 +488,28 @@ class Graph {
 		}
 
 		// jumptable info
-		*((uint32_t*) mapping_start) = num_ranks;														// number of ranks in this schedule-file
+		goal_binary_detail::store_packed(mapping_start, num_ranks);								// number of ranks in this schedule-file
 
-		*((uint8_t*) (mapping_start + sizeof(uint32_t) )) = max_cpu;	// minimal number of cpu required to simulate this schedule
-		*((uint8_t*) (mapping_start + sizeof(uint32_t) + sizeof(uint8_t) )) = max_nic;	// minimal number of nics required to simulate this schedule
+		goal_binary_detail::store_packed(
+			mapping_start + sizeof(uint32_t), max_cpu);	// minimal number of cpu required to simulate this schedule
+		goal_binary_detail::store_packed(
+			mapping_start + sizeof(uint32_t) + sizeof(uint8_t), max_nic);	// minimal number of nics required to simulate this schedule
 		
-		*((uint64_t*) (mapping_start + sizeof(uint32_t) + sizeof(uint8_t)*2 + sizeof(uint64_t)*2*rank)) = end_of_lastrank;	// start of this ranks info
-		*((uint64_t*) (mapping_start + sizeof(uint32_t) + sizeof(uint8_t)*2 + sizeof(uint64_t)*(2*rank+1))) = pos - mapping_start;			// end of this ranks info
+		goal_binary_detail::store_packed(
+			mapping_start + sizeof(uint32_t) + sizeof(uint8_t)*2
+			+ sizeof(uint64_t)*2*rank,
+			end_of_lastrank);	// start of this ranks info
+		goal_binary_detail::store_packed(
+			mapping_start + sizeof(uint32_t) + sizeof(uint8_t)*2
+			+ sizeof(uint64_t)*(2*rank+1),
+			static_cast<uint64_t>(pos - mapping_start));	// end of this ranks info
 	
 		//printf("s: %llu e: %llu\n", (long long unsigned int) end_of_lastrank, (long long unsigned int) (pos - mapping_start));
 
 		// munmap the files so that the contents get written
-		int r = munmap(mapping_start-sizeof(uint64_t), (size_t) (pos - mapping_start));
+		int r = munmap(
+			mapping_start - sizeof(uint64_t),
+			static_cast<size_t>(filesize));
 		assert(r == 0);	
 	}
 
@@ -441,11 +519,38 @@ class SerializedGraph {
 	
 	private:
 	
-	char* mapping_start; // argh. this should be void* but c++ is anal on void*-arithmetic
+	static constexpr size_t NODE_INFO_BYTES =
+		sizeof(char) + sizeof(uint64_t) + sizeof(uint32_t)*7
+		+ sizeof(uint8_t)*2;
+	static constexpr size_t RANK_COUNTS_BYTES = sizeof(uint32_t)*2;
+	static constexpr size_t NODE_TYPE_OFFSET = sizeof(uint32_t);
+	static constexpr size_t NODE_PEER_OFFSET =
+		sizeof(uint32_t) + sizeof(char);
+	static constexpr size_t NODE_SIZE_OFFSET =
+		NODE_PEER_OFFSET + sizeof(uint32_t);
+	static constexpr size_t NODE_TAG_OFFSET =
+		NODE_SIZE_OFFSET + sizeof(uint64_t);
+	static constexpr size_t NODE_PROC_OFFSET =
+		NODE_TAG_OFFSET + sizeof(uint32_t);
+	static constexpr size_t NODE_NIC_OFFSET =
+		NODE_PROC_OFFSET + sizeof(uint8_t);
+	static constexpr size_t NODE_DEP_COUNT_OFFSET =
+		NODE_NIC_OFFSET + sizeof(uint8_t);
+	static constexpr size_t NODE_DEP_START_OFFSET =
+		NODE_DEP_COUNT_OFFSET + sizeof(uint32_t);
+	static constexpr size_t NODE_START_DEP_COUNT_OFFSET =
+		NODE_DEP_START_OFFSET + sizeof(uint32_t);
+	static constexpr size_t NODE_START_DEP_START_OFFSET =
+		NODE_START_DEP_COUNT_OFFSET + sizeof(uint32_t);
+
+	char* mapping_start;
+	size_t mapping_length;
+	size_t node_table_offset;
+	size_t appendix_offset;
+	size_t appendix_entries;
 	uint32_t num_root_nodes;
 	uint32_t num_nodes;
 	uint32_t num_ranks_in_schedule;
-	uint32_t my_rank;
 
 	std::vector<DeserializedNode> executableNodes;
 
@@ -455,78 +560,257 @@ class SerializedGraph {
 	// a timestamp is passed to the function, which is then
 	// used to update the `node_start_time` hashmap.
 	std::map<uint32_t, uint64_t> node_start_time;
+	template <typename T>
+	T load_rank(size_t offset, const char* field) const {
+		return goal_binary_detail::load_bounded<T>(
+			mapping_start, mapping_length, offset, field);
+	}
 
+	template <typename T>
+	void store_rank(size_t offset, const T& value, const char* field) {
+		goal_binary_detail::store_bounded(
+			mapping_start, mapping_length, offset, value, field);
+	}
 
+	size_t node_offset(uint32_t offset) const {
+		if (offset >= num_nodes) {
+			throw std::out_of_range(
+				"serialized GOAL node offset is outside the rank");
+		}
+		return goal_binary_detail::checked_add(
+			node_table_offset,
+			goal_binary_detail::checked_multiply(
+				static_cast<size_t>(offset), NODE_INFO_BYTES,
+				"node table"),
+			"node table");
+	}
 
-	void add_root_nodes() {
-	
-		uint32_t num_root_nodes = (uint32_t) *( (uint32_t*) (mapping_start + sizeof(uint32_t)) );
-		
-		for (uint32_t cnt=0; cnt<num_root_nodes; cnt++) {
+	template <typename T>
+	T load_node(uint32_t node, size_t field_offset, const char* field) const {
+		return load_rank<T>(
+			goal_binary_detail::checked_add(
+				node_offset(node), field_offset, field),
+			field);
+	}
 
-			 //printf("[timos] trying to get root node number %i\n", cnt);
-			uint32_t offset = (uint32_t) *( (uint32_t*) (mapping_start + sizeof(uint32_t)*2 + cnt*sizeof(uint32_t)) );
-			//printf("[timos] is's offset is %i\n", offset);
-			DeserializedNode N = get_node_by_offset(offset);
-			executableNodes.push_back(N);
+	uint32_t load_appendix(size_t index) const {
+		if (index >= appendix_entries) {
+			throw goal_binary_detail::malformed(
+				"dependency appendix index is outside the rank");
+		}
+		return load_rank<uint32_t>(
+			goal_binary_detail::checked_add(
+				appendix_offset,
+				goal_binary_detail::checked_multiply(
+					index, sizeof(uint32_t), "dependency appendix"),
+				"dependency appendix"),
+			"dependency appendix entry");
+	}
+
+	void validate_dependency_range(
+			uint32_t count, uint32_t start, const char* field) const {
+		if (count == 0) {
+			return;
+		}
+		const size_t checked_start = static_cast<size_t>(start);
+		const size_t checked_count = static_cast<size_t>(count);
+		if (checked_start > appendix_entries
+				|| checked_count > appendix_entries - checked_start) {
+			throw goal_binary_detail::malformed(
+				std::string(field) + " range is outside the appendix");
+		}
+	}
+
+	void validate_layout() {
+		if (num_root_nodes > num_nodes) {
+			throw goal_binary_detail::malformed(
+				"root-node count exceeds node count");
 		}
 
+		const size_t root_bytes = goal_binary_detail::checked_multiply(
+			static_cast<size_t>(num_root_nodes), sizeof(uint32_t),
+			"root table");
+		node_table_offset = goal_binary_detail::checked_add(
+			RANK_COUNTS_BYTES, root_bytes, "root table");
+		const size_t node_bytes = goal_binary_detail::checked_multiply(
+			static_cast<size_t>(num_nodes), NODE_INFO_BYTES, "node table");
+		appendix_offset = goal_binary_detail::checked_add(
+			node_table_offset, node_bytes, "node table");
+		if (appendix_offset > mapping_length) {
+			throw goal_binary_detail::malformed(
+				"rank ends inside its node table");
+		}
+		const size_t appendix_bytes = mapping_length - appendix_offset;
+		if (appendix_bytes % sizeof(uint32_t) != 0) {
+			throw goal_binary_detail::malformed(
+				"dependency appendix has a partial entry");
+		}
+		appendix_entries = appendix_bytes / sizeof(uint32_t);
+
+		std::vector<bool> roots(num_nodes, false);
+		for (uint32_t index = 0; index < num_root_nodes; ++index) {
+			const uint32_t root = load_rank<uint32_t>(
+				RANK_COUNTS_BYTES + static_cast<size_t>(index)*sizeof(uint32_t),
+				"root-node id");
+			if (root >= num_nodes) {
+				throw goal_binary_detail::malformed(
+					"root-node id is outside the rank");
+			}
+			if (roots[root]) {
+				throw goal_binary_detail::malformed(
+					"root-node table contains a duplicate");
+			}
+			roots[root] = true;
+		}
+
+		std::vector<uint32_t> expected_dependencies(num_nodes, 0);
+		for (uint32_t node = 0; node < num_nodes; ++node) {
+			const char type = load_node<char>(
+				node, NODE_TYPE_OFFSET, "node type");
+			if (type != OPTYPE_SEND && type != OPTYPE_RECV
+					&& type != OPTYPE_CALC) {
+				throw goal_binary_detail::malformed("node has an unknown type");
+			}
+			const uint32_t dependency_count = load_node<uint32_t>(
+				node, NODE_DEP_COUNT_OFFSET, "dependency count");
+			const uint32_t dependency_start = load_node<uint32_t>(
+				node, NODE_DEP_START_OFFSET, "dependency start");
+			const uint32_t start_dependency_count = load_node<uint32_t>(
+				node, NODE_START_DEP_COUNT_OFFSET,
+				"start-dependency count");
+			const uint32_t start_dependency_start = load_node<uint32_t>(
+				node, NODE_START_DEP_START_OFFSET,
+				"start-dependency start");
+			validate_dependency_range(
+				dependency_count, dependency_start, "dependency");
+			validate_dependency_range(
+				start_dependency_count, start_dependency_start,
+				"start-dependency");
+
+			const auto count_incoming = [&](uint32_t target) {
+				if (target >= num_nodes) {
+					throw goal_binary_detail::malformed(
+						"dependency node id is outside the rank");
+				}
+				if (expected_dependencies[target]
+						== std::numeric_limits<uint32_t>::max()) {
+					throw goal_binary_detail::malformed(
+						"dependency count overflows");
+				}
+				++expected_dependencies[target];
+			};
+			for (size_t index = 0; index < dependency_count; ++index) {
+				count_incoming(load_appendix(
+					static_cast<size_t>(dependency_start) + index));
+			}
+			for (size_t index = 0; index < start_dependency_count; ++index) {
+				count_incoming(load_appendix(
+					static_cast<size_t>(start_dependency_start) + index));
+			}
+		}
+
+		for (uint32_t node = 0; node < num_nodes; ++node) {
+			const uint32_t stored_dependencies = load_node<uint32_t>(
+				node, 0, "stored dependency count");
+			if (stored_dependencies != expected_dependencies[node]) {
+				throw goal_binary_detail::malformed(
+					"stored dependency count does not match the appendix");
+			}
+			if (roots[node] != (stored_dependencies == 0)) {
+				throw goal_binary_detail::malformed(
+					"root-node table does not match dependency counts");
+			}
+		}
+	}
+
+	std::vector<uint32_t> decrement_dependencies(
+			const std::vector<uint32_t>& offsets) {
+		std::map<uint32_t, uint32_t> occurrences;
+		for (const uint32_t offset : offsets) {
+			if (offset >= num_nodes
+					|| occurrences[offset] == std::numeric_limits<uint32_t>::max()) {
+				throw std::logic_error("invalid GOAL dependency update");
+			}
+			++occurrences[offset];
+		}
+
+		std::map<uint32_t, uint32_t> remaining;
+		for (const auto& entry : occurrences) {
+			const uint32_t current = load_rank<uint32_t>(
+				node_offset(entry.first), "mutable dependency count");
+			if (current < entry.second) {
+				throw std::logic_error(
+					"serialized GOAL dependency count would underflow");
+			}
+			remaining.emplace(entry.first, current - entry.second);
+		}
+		for (const auto& entry : remaining) {
+			store_rank(
+				node_offset(entry.first), entry.second,
+				"mutable dependency count");
+		}
+
+		std::vector<uint32_t> unlocked;
+		for (const uint32_t offset : offsets) {
+			const auto entry = remaining.find(offset);
+			if (entry != remaining.end() && entry->second == 0) {
+				unlocked.push_back(offset);
+				remaining.erase(entry);
+			}
+		}
+		return unlocked;
+	}
+
+	void add_root_nodes() {
+		for (uint32_t index = 0; index < num_root_nodes; ++index) {
+			const uint32_t offset = load_rank<uint32_t>(
+				RANK_COUNTS_BYTES + static_cast<size_t>(index)*sizeof(uint32_t),
+				"root-node id");
+			executableNodes.push_back(get_node_by_offset(offset));
+		}
 	}
 
 	DeserializedNode get_node_by_offset(uint32_t offset) {
-	
-		//printf("[timos] trying to get node with offset %i\n", offset);
-	
-		uint32_t num_nodes = (uint32_t) *((uint32_t*) mapping_start);
-
-		if (offset > num_nodes) {
-			fprintf(stderr, "[rank %i] got offset %i, have %i nodes\n", my_rank, offset, num_nodes);
-			exit(EXIT_FAILURE);
+		if (offset >= num_nodes) {
+			throw std::out_of_range(
+				"serialized GOAL node offset is outside the rank");
 		}
-		// printf("yyy 1\n");
-		int SIZEOF_NODE_INFO = sizeof(char) + sizeof(uint64_t) + sizeof(uint32_t)*7 + sizeof(uint8_t)*2;
-		char* start_of_node = mapping_start + sizeof(uint32_t)*2 + sizeof(uint32_t)*num_root_nodes + SIZEOF_NODE_INFO*offset;
-		DeserializedNode N;
-		// printf("yyy 2\n");
+		DeserializedNode node{};
+		node.DependenciesCnt = load_node<uint32_t>(
+			offset, 0, "stored dependency count");
+		node.Type = load_node<char>(offset, NODE_TYPE_OFFSET, "node type");
+		node.Peer = load_node<uint32_t>(
+			offset, NODE_PEER_OFFSET, "node peer");
+		node.Size = load_node<uint64_t>(
+			offset, NODE_SIZE_OFFSET, "node size");
+		node.Tag = load_node<uint32_t>(
+			offset, NODE_TAG_OFFSET, "node tag");
+		node.Proc = load_node<uint8_t>(
+			offset, NODE_PROC_OFFSET, "node processor");
+		node.Nic = load_node<uint8_t>(
+			offset, NODE_NIC_OFFSET, "node NIC");
+		node.offset = offset;
+		node.start_time = 0;
 
-		N.DependenciesCnt = (uint32_t) *( (uint32_t*) start_of_node);
-		N.Type = (char) *(start_of_node + sizeof(uint32_t)); // after depcnt
-		N.Peer = (uint32_t) *( (uint32_t*) (start_of_node + sizeof(uint32_t) + sizeof(char)) ); // after depcnt + type
-		N.Size = (uint64_t) *( (uint64_t*) (start_of_node + sizeof(uint32_t) + sizeof(char) + sizeof(uint32_t)));
-		N.Tag = (uint32_t) *( (uint32_t*) (start_of_node + sizeof(uint32_t) + sizeof(char) + sizeof(uint32_t) + sizeof(uint64_t)));
-		N.Proc = (uint8_t) *( (uint8_t*) (start_of_node + sizeof(uint32_t) + sizeof(char) + sizeof(uint32_t) + sizeof(uint64_t) + sizeof(uint32_t)));
-		N.Nic = (uint8_t) *( (uint8_t*) (start_of_node + sizeof(uint32_t) + sizeof(char) + sizeof(uint32_t) + sizeof(uint64_t) + sizeof(uint32_t) + sizeof(uint8_t)));
-		N.offset = (uint32_t) offset;
-		uint32_t num_deps =                      (uint32_t) *( (uint32_t*) (start_of_node + sizeof(char) + sizeof(uint64_t) + sizeof(uint32_t)*3 + sizeof(uint8_t)*2));
-		uint32_t deps_startoffset_in_apdx =      (uint32_t) *( (uint32_t*) (start_of_node + sizeof(char) + sizeof(uint64_t) + sizeof(uint32_t)*4 + sizeof(uint8_t)*2));
-		uint32_t num_startdeps =                 (uint32_t) *( (uint32_t*) (start_of_node + sizeof(char) + sizeof(uint64_t) + sizeof(uint32_t)*5 + sizeof(uint8_t)*2));
-		uint32_t startdeps_startoffset_in_apdx = (uint32_t) *( (uint32_t*) (start_of_node + sizeof(char) + sizeof(uint64_t) + sizeof(uint32_t)*6 + sizeof(uint8_t)*2));
-		// printf("yyy 3\n");
-		// printf("yyy 3 start of apdx = mapping start + %i\n", sizeof(uint32_t)*2 + sizeof(uint32_t)*num_root_nodes + SIZEOF_NODE_INFO*num_nodes);
-		// printf("yyy 3 numrootnodes = %i, SIZEOFNODEINFO = %i, num_nodes = %i\n", num_root_nodes, SIZEOF_NODE_INFO, num_nodes);
-		char* start_of_apdx = mapping_start + sizeof(uint32_t)*2 + sizeof(uint32_t)*num_root_nodes + SIZEOF_NODE_INFO*num_nodes;
-		for (uint32_t cnt=0; cnt<num_deps; cnt++) {
-			// printf("yyy 3.5 (%i, %i)\n", num_deps, cnt);
-			// printf("yyy (start of appendix: %i, deps startoffset in apdx %i, cnt %i)\n", start_of_apdx, deps_startoffset_in_apdx, cnt);
-			uint32_t depnode = (uint32_t) *( (uint32_t*) (start_of_apdx + (deps_startoffset_in_apdx + cnt)*sizeof(uint32_t)));
-			
-			//printf("num_root_nodes: %u\n", num_root_nodes);
-			//printf("SIZEOF_NODE_INFO: %i\n", SIZEOF_NODE_INFO);
-			//printf("num_nodes: %u\n", num_nodes);
-			//printf("start of appdx: %lu bytes after mapping_start\n", sizeof(uint32_t)*2 + sizeof(uint32_t)*num_root_nodes + SIZEOF_NODE_INFO*num_nodes );
-
-			assert(depnode < num_nodes);
-			
-			N.DependOnMe.push_back(depnode);
-			// printf("yyy 3.75\n");
+		const uint32_t dependency_count = load_node<uint32_t>(
+			offset, NODE_DEP_COUNT_OFFSET, "dependency count");
+		const uint32_t dependency_start = load_node<uint32_t>(
+			offset, NODE_DEP_START_OFFSET, "dependency start");
+		const uint32_t start_dependency_count = load_node<uint32_t>(
+			offset, NODE_START_DEP_COUNT_OFFSET, "start-dependency count");
+		const uint32_t start_dependency_start = load_node<uint32_t>(
+			offset, NODE_START_DEP_START_OFFSET, "start-dependency start");
+		node.DependOnMe.reserve(dependency_count);
+		node.StartDependOnMe.reserve(start_dependency_count);
+		for (size_t index = 0; index < dependency_count; ++index) {
+			node.DependOnMe.push_back(load_appendix(
+				static_cast<size_t>(dependency_start) + index));
 		}
-		// printf("yyy 4\n");
-		for (uint32_t cnt=0; cnt<num_startdeps; cnt++) {
-			N.StartDependOnMe.push_back((uint32_t) *( (uint32_t*) (start_of_apdx + (startdeps_startoffset_in_apdx + cnt)*sizeof(uint32_t))));
+		for (size_t index = 0; index < start_dependency_count; ++index) {
+			node.StartDependOnMe.push_back(load_appendix(
+				static_cast<size_t>(start_dependency_start) + index));
 		}
-		// printf("yyy 5\n");
-			
-		return N;
+		return node;
 	}
 
 
@@ -584,53 +868,81 @@ class SerializedGraph {
 
 	}
 
-	SerializedGraph(char* map_start, size_t map_length, uint32_t rank) {
-
-		 //printf("[timos] Creating graph for rank %i\n", rank);
-		
-		mapping_start = map_start;
-		my_rank = rank;
-		
-		uint64_t ssched;
-
-		//printf("xxx 1\n");	
-		num_ranks_in_schedule = *( ((uint32_t*) mapping_start) );
-
-		 //printf("xxx 2\n");	
-		char* tmp = mapping_start + sizeof(uint32_t) + sizeof(uint8_t)*2 + sizeof(uint64_t)*2*rank;
-		ssched = *( (uint64_t*) tmp); // jumping over num_schedules + max_cpu/max_nic + jumptable 
-
-		 //printf("xxx 3\n");	
-		//printf("ssched = %i\n", ssched);
-		
-		mapping_start += ssched;
-		executableNodes.clear();
-
-		 //printf("xxx 4\n");	
-		num_nodes = *((uint32_t*) mapping_start);
-		//printf("rank %u: %u nodes\n", rank, num_nodes);
-		//printf("num-nodes: %i\n", num_nodes);
-		 //printf("xxx 5\n");	
-		num_root_nodes = *((uint32_t*) (mapping_start+sizeof(uint32_t)));
-		//printf("num-root-nodes: %i\n", num_root_nodes);
-		 //printf("xxx 6\n");	
+	SerializedGraph(char* map_start, size_t map_length, uint32_t rank)
+			: mapping_start(nullptr),
+			  mapping_length(0),
+			  node_table_offset(0),
+			  appendix_offset(0),
+			  appendix_entries(0),
+			  num_root_nodes(0),
+			  num_nodes(0),
+			  num_ranks_in_schedule(0) {
+		constexpr size_t schedule_header_prefix =
+			sizeof(uint32_t) + sizeof(uint8_t)*2;
+		constexpr size_t jump_entry_bytes = sizeof(uint64_t)*2;
+		if (map_start == nullptr) {
+			throw goal_binary_detail::malformed("schedule mapping is null");
+		}
+		num_ranks_in_schedule = goal_binary_detail::load_bounded<uint32_t>(
+			map_start, map_length, 0, "rank count");
+		if (num_ranks_in_schedule == 0) {
+			throw goal_binary_detail::malformed("rank count is zero");
+		}
+		if (rank >= num_ranks_in_schedule) {
+			throw goal_binary_detail::malformed(
+				"requested rank is outside the jump table");
+		}
+		const size_t jump_table_bytes = goal_binary_detail::checked_multiply(
+			static_cast<size_t>(num_ranks_in_schedule), jump_entry_bytes,
+			"rank jump table");
+		const size_t header_bytes = goal_binary_detail::checked_add(
+			schedule_header_prefix, jump_table_bytes, "rank jump table");
+		if (header_bytes > map_length) {
+			throw goal_binary_detail::malformed("rank jump table is truncated");
+		}
+		const size_t entry_offset = goal_binary_detail::checked_add(
+			schedule_header_prefix,
+			goal_binary_detail::checked_multiply(
+				static_cast<size_t>(rank), jump_entry_bytes,
+				"rank jump table"),
+			"rank jump table");
+		const uint64_t rank_start_u64 =
+			goal_binary_detail::load_bounded<uint64_t>(
+				map_start, map_length, entry_offset, "rank start");
+		const uint64_t rank_end_u64 =
+			goal_binary_detail::load_bounded<uint64_t>(
+				map_start, map_length, entry_offset + sizeof(uint64_t),
+				"rank end");
+		if (rank_start_u64 > std::numeric_limits<size_t>::max()
+				|| rank_end_u64 > std::numeric_limits<size_t>::max()) {
+			throw goal_binary_detail::malformed(
+				"rank span does not fit the host address space");
+		}
+		const size_t rank_start = static_cast<size_t>(rank_start_u64);
+		const size_t rank_end = static_cast<size_t>(rank_end_u64);
+		if (rank_start < header_bytes || rank_start > rank_end
+				|| rank_end > map_length) {
+			throw goal_binary_detail::malformed(
+				"rank span is outside the schedule mapping");
+		}
+		mapping_start = map_start + rank_start;
+		mapping_length = rank_end - rank_start;
+		if (mapping_length < RANK_COUNTS_BYTES) {
+			throw goal_binary_detail::malformed("rank header is truncated");
+		}
+		num_nodes = load_rank<uint32_t>(0, "node count");
+		num_root_nodes = load_rank<uint32_t>(
+			sizeof(uint32_t), "root-node count");
+		validate_layout();
 		add_root_nodes();
-		 //printf("xxx 7\n");	
-
 	}
 
 	void MarkNodeAsStarted_DSN(DeserializedNode node) {
 
 		DeserializedNode N = get_node_by_offset(node.offset);
-		for (uint32_t cnt=0; cnt<N.StartDependOnMe.size(); cnt++) {
-			uint32_t offset = N.StartDependOnMe[cnt];
-	
-			int SIZEOF_NODE_INFO = sizeof(char) + sizeof(uint64_t) + sizeof(uint32_t)*7 + sizeof(uint8_t)*2;
-			uint32_t* dep_cnt = (uint32_t*) (mapping_start + sizeof(uint32_t)*2 + sizeof(uint32_t)*num_root_nodes + SIZEOF_NODE_INFO*offset);
-			(*dep_cnt)--;
-			if ((*dep_cnt) == 0) {
-				executableNodes.push_back(get_node_by_offset(offset));
-			}
+		for (const uint32_t offset :
+				decrement_dependencies(N.StartDependOnMe)) {
+			executableNodes.push_back(get_node_by_offset(offset));
 		}
 	}
 	
@@ -638,15 +950,8 @@ class SerializedGraph {
 	{
 		
 		DeserializedNode N = get_node_by_offset(node.offset);
-		for (uint32_t cnt=0; cnt<N.DependOnMe.size(); cnt++) {
-			uint32_t offset = N.DependOnMe[cnt];
-	
-			int SIZEOF_NODE_INFO = sizeof(char) + sizeof(uint64_t) + sizeof(uint32_t)*7 + sizeof(uint8_t)*2;
-			uint32_t* dep_cnt = (uint32_t*) (mapping_start + sizeof(uint32_t)*2 + sizeof(uint32_t)*num_root_nodes + SIZEOF_NODE_INFO*offset);
-			(*dep_cnt)--;
-			if ((*dep_cnt) == 0) {
-				executableNodes.push_back(get_node_by_offset(offset));
-			}
+		for (const uint32_t offset : decrement_dependencies(N.DependOnMe)) {
+			executableNodes.push_back(get_node_by_offset(offset));
 		}
 	}
 	
@@ -666,7 +971,7 @@ class SerializedGraph {
 		nodelist_t& ret = *ret_ptr;
 
 		for (uint32_t cnt=0; cnt<executableNodes.size(); cnt++) {	
-			graph_node_properties gp;
+			graph_node_properties gp{};
 			gp.target = executableNodes[cnt].Peer;
 			gp.size = executableNodes[cnt].Size;
 			gp.tag = executableNodes[cnt].Tag;
@@ -676,6 +981,7 @@ class SerializedGraph {
 			if (executableNodes[cnt].Type == OPTYPE_SEND) gp.type = OP_SEND;
 			else if (executableNodes[cnt].Type == OPTYPE_RECV) gp.type = OP_RECV;
 			else if (executableNodes[cnt].Type == OPTYPE_CALC) gp.type = OP_LOCOP;
+			else throw std::logic_error("validated GOAL node has an unknown type");
 			gp.offset = executableNodes[cnt].offset;
 			ret.push_back(gp);
 		}
@@ -685,18 +991,11 @@ class SerializedGraph {
 	void MarkNodeAsStarted(uint32_t offset) {
 
 		DeserializedNode N = get_node_by_offset(offset);
-		for (uint32_t cnt=0; cnt<N.StartDependOnMe.size(); cnt++) {
-			uint32_t offset = N.StartDependOnMe[cnt];
-			assert(offset < num_nodes);
-	
-			int SIZEOF_NODE_INFO = sizeof(char) + sizeof(uint64_t) + sizeof(uint32_t)*7 + sizeof(uint8_t)*2;
-			uint32_t* dep_cnt = (uint32_t*) (mapping_start + sizeof(uint32_t)*2 + sizeof(uint32_t)*num_root_nodes + SIZEOF_NODE_INFO*offset);
-			(*dep_cnt)--;
-			if ((*dep_cnt) == 0) {
-				DeserializedNode freed = get_node_by_offset(offset);
-				freed.start_time = 0;
-				executableNodes.push_back(freed);
-			}
+		for (const uint32_t unlocked_offset :
+				decrement_dependencies(N.StartDependOnMe)) {
+			DeserializedNode freed = get_node_by_offset(unlocked_offset);
+			freed.start_time = 0;
+			executableNodes.push_back(freed);
 		}
 	}
 
@@ -709,18 +1008,10 @@ class SerializedGraph {
             printf("Size depending on me %d - Rank %d Offset %d\n",
                    N.DependOnMe.size(), my_rank, offset);
         } */
-        for (uint32_t cnt = 0; cnt < N.DependOnMe.size(); cnt++) {
-            uint32_t offset = N.DependOnMe[cnt];
-
-            int SIZEOF_NODE_INFO = sizeof(char) + sizeof(uint64_t) + sizeof(uint32_t) * 7 + sizeof(uint8_t) * 2;
-            uint32_t *dep_cnt = (uint32_t *)(mapping_start + sizeof(uint32_t) * 2 + sizeof(uint32_t) * num_root_nodes +
-                                             SIZEOF_NODE_INFO * offset);
-            (*dep_cnt)--;
-            //printf("Node %u has %u dependencies - WRONG!\n", offset, *dep_cnt);	
-            if ((*dep_cnt) == 0) {
-                executableNodes.push_back(get_node_by_offset(offset));
-            }
-        }
+	        for (const uint32_t unlocked_offset :
+	                decrement_dependencies(N.DependOnMe)) {
+	            executableNodes.push_back(get_node_by_offset(unlocked_offset));
+	        }
     }
 	
 	/**
@@ -735,12 +1026,9 @@ class SerializedGraph {
 		DeserializedNode N = get_node_by_offset(offset);
 		//std::cout << "[INFO] " << "Host: " << my_rank << ", Node " << offset << " has " << N.DependOnMe.size() << " dependencies" << std::endl;
 		//printf("Executable1 Nodes: %u\n", executableNodes.size());
-		for (uint32_t cnt=0; cnt<N.DependOnMe.size(); cnt++) {
-			uint32_t offset = N.DependOnMe[cnt];
-			//printf("Node %u has %u dependencies\n", offset, N.DependOnMe.size());
-			int SIZEOF_NODE_INFO = sizeof(char) + sizeof(uint64_t) + sizeof(uint32_t)*7 + sizeof(uint8_t)*2;
-			uint32_t* dep_cnt = (uint32_t*) (mapping_start + sizeof(uint32_t)*2 + sizeof(uint32_t)*num_root_nodes + SIZEOF_NODE_INFO*offset);
-			(*dep_cnt)--;
+		const std::vector<uint32_t> unlocked =
+			decrement_dependencies(N.DependOnMe);
+		for (const uint32_t offset : N.DependOnMe) {
 			// Checks if offset is in node_start_time
 			if (node_start_time.find(offset) == node_start_time.end())
 			{
@@ -750,16 +1038,12 @@ class SerializedGraph {
 			{
 				node_start_time[offset] = std::max(node_start_time[offset], cpu_time);
 			}			
-			//printf("Node %u has %u dependencies\n", offset, *dep_cnt);	
-			//printf("Node %u has %u dependencies\n", offset, *dep_cnt);
-			if ((*dep_cnt) == 0) 
-			{
-				DeserializedNode freed = get_node_by_offset(offset);
-				freed.start_time = node_start_time[offset];
-				// Remove the node offset from `node_start_time`
-				node_start_time.erase(offset);
-				executableNodes.push_back(freed);
-			}
+		}
+		for (const uint32_t offset : unlocked) {
+			DeserializedNode freed = get_node_by_offset(offset);
+			freed.start_time = node_start_time[offset];
+			node_start_time.erase(offset);
+			executableNodes.push_back(freed);
 		}
 		//printf("[%d-%d] Unlocked Number Nodes: %u\n", my_rank, offset, executableNodes.size());
 	}
@@ -770,7 +1054,7 @@ class Parser {
 
 	private:
 
-	char* mapping_start; // argh. this should be void* but c++ is anal on void*-arithmetic
+	char* mapping_start;
 	size_t mapping_length;
 	uint32_t num_ranks_in_schedule;
 	uint8_t max_cpu;
@@ -778,11 +1062,23 @@ class Parser {
 	FILE *schedules_fd;
 
 	uint64_t get_file_size(FILE* fd) {
-		
 		struct stat f_info;
-		int r = fstat(fileno(fd), &f_info);
-		assert(r == 0);
-		return f_info.st_size;
+		if (fstat(fileno(fd), &f_info) != 0 || f_info.st_size < 0) {
+			throw std::runtime_error(
+				"could not determine serialized GOAL schedule size");
+		}
+		return static_cast<uint64_t>(f_info.st_size);
+	}
+
+	void release_mapping_and_file() noexcept {
+		if (mapping_start != nullptr && mapping_start != MAP_FAILED) {
+			(void)munmap(mapping_start, mapping_length);
+		}
+		mapping_start = nullptr;
+		if (schedules_fd != nullptr) {
+			(void)fclose(schedules_fd);
+		}
+		schedules_fd = nullptr;
 	}
 
 	public:
@@ -790,74 +1086,117 @@ class Parser {
   typedef std::vector<SerializedGraph> schedules_t ;
 	schedules_t schedules;
 
-	Parser(std::string filename, bool save_mem) {
-		
-		schedules_fd = fopen(filename.c_str(), "r+");
-	    
-		if (schedules_fd == NULL) {
-			fprintf(stderr, "Couldn't open input file %s!\n", filename.c_str());
-			exit(EXIT_FAILURE);
-		}
+	Parser(std::string filename, bool save_mem)
+			: mapping_start(nullptr),
+			  mapping_length(0),
+			  num_ranks_in_schedule(0),
+			  max_cpu(0),
+			  max_nic(0),
+			  schedules_fd(nullptr) {
+		try {
+			schedules_fd = fopen(filename.c_str(), "r+b");
+			if (schedules_fd == nullptr) {
+				throw std::runtime_error(
+					"could not open serialized GOAL schedule " + filename);
+			}
 
-		uint64_t magic_cookie = 0;
+			const uint64_t file_size = get_file_size(schedules_fd);
+			if (file_size > std::numeric_limits<size_t>::max()) {
+				throw goal_binary_detail::malformed(
+					"file does not fit the host address space");
+			}
+			mapping_length = static_cast<size_t>(file_size);
+			constexpr size_t fixed_file_header =
+				sizeof(uint64_t) + sizeof(uint32_t) + sizeof(uint8_t)*2;
+			if (mapping_length < fixed_file_header) {
+				throw goal_binary_detail::malformed("file header is truncated");
+			}
 
-		mapping_length = get_file_size(schedules_fd);
-		if (fread(&magic_cookie, sizeof(uint64_t), 1, schedules_fd) != 1) {
-			fprintf(stderr, "Failed to read magic cookie from %s\n", filename.c_str());
-			fclose(schedules_fd);
-			exit(EXIT_FAILURE);
-		}
-	
-		if (magic_cookie == MAGIC_COOKIE_INVALID) {
-			fprintf(stderr, "This is serialized goal schedule was invalidated by a prior simulation run!\n");
-			exit(EXIT_FAILURE);
-		}	
-		if (magic_cookie != MAGIC_COOKIE) {
-			fprintf(stderr, "This is not a serialized goal schedule - the magic cookie is missing\n");
-			exit(EXIT_FAILURE);
-		}
-		
-		if (fread(&num_ranks_in_schedule, sizeof(uint32_t), 1, schedules_fd) != 1) {
-			fprintf(stderr, "Failed to read number of ranks from %s\n", filename.c_str());
-			fclose(schedules_fd);
-			exit(EXIT_FAILURE);
-		}
-		if (fread(&max_cpu, sizeof(uint8_t), 1, schedules_fd) != 1) {
-			fprintf(stderr, "Failed to read max_cpu from %s\n", filename.c_str());
-			fclose(schedules_fd);
-			exit(EXIT_FAILURE);
-		}
-		if (fread(&max_nic, sizeof(uint8_t), 1, schedules_fd) != 1) {
-			fprintf(stderr, "Failed to read max_nic from %s\n", filename.c_str());
-			fclose(schedules_fd);
-			exit(EXIT_FAILURE);
-		}
+			uint64_t magic_cookie = 0;
+			if (fread(&magic_cookie, sizeof(uint64_t), 1, schedules_fd) != 1
+					|| fread(&num_ranks_in_schedule, sizeof(uint32_t), 1,
+					         schedules_fd) != 1
+					|| fread(&max_cpu, sizeof(uint8_t), 1, schedules_fd) != 1
+					|| fread(&max_nic, sizeof(uint8_t), 1, schedules_fd) != 1) {
+				throw goal_binary_detail::malformed("file header is truncated");
+			}
+			if (magic_cookie == MAGIC_COOKIE_INVALID) {
+				throw goal_binary_detail::malformed(
+					"schedule was invalidated by a prior shared-memory run");
+			}
+			if (magic_cookie != MAGIC_COOKIE) {
+				throw goal_binary_detail::malformed("magic cookie is missing");
+			}
+			if (num_ranks_in_schedule == 0) {
+				throw goal_binary_detail::malformed("rank count is zero");
+			}
 
-		if (save_mem == true) {
-			// mmap can fail with map_private and prot_write on machines where the virtual mem is smaller than
-			// the mapped region - so we fall back to map_shared. This destroys the schedule, so we invalidate
-			// the magic cookie if we do this
-			mapping_start = (char*) mmap(NULL, mapping_length, PROT_READ | PROT_WRITE, MAP_SHARED, fileno(schedules_fd), 0); 
-			//*((uint64_t*) mapping_start) = MAGIC_COOKIE_INVALID;
-			printf("The schedule will be invalid after this simulation!\n");
-		}
-		
-		else if (save_mem == false) {
-			mapping_start = (char*) mmap(NULL, mapping_length, PROT_READ | PROT_WRITE, MAP_PRIVATE, fileno(schedules_fd), 0);
-			// THIS NEEDS MORE MEMORY - but it is also more convinient for interacrive use
-			// because it preserves the schedules
-			// Note that there is no fall-through to MAP_SHARED, we put the user in charge now!
-		}
-		
-		if (mapping_start == MAP_FAILED) {
-			fprintf(stderr, "mmap does not work on your system! Try to use the --save-mem option.\n");
-			exit(EXIT_FAILURE);
-		}
-		
-		for (uint32_t cnt=0; cnt<num_ranks_in_schedule; cnt++) {
-			schedules.push_back(SerializedGraph(mapping_start+sizeof(uint64_t), mapping_length-sizeof(uint64_t), cnt));
+			const size_t schedule_bytes = mapping_length - sizeof(uint64_t);
+			const size_t jump_table_bytes = goal_binary_detail::checked_multiply(
+				static_cast<size_t>(num_ranks_in_schedule),
+				sizeof(uint64_t)*2, "rank jump table");
+			const size_t schedule_header_bytes = goal_binary_detail::checked_add(
+				sizeof(uint32_t) + sizeof(uint8_t)*2,
+				jump_table_bytes, "rank jump table");
+			if (schedule_header_bytes > schedule_bytes) {
+				throw goal_binary_detail::malformed("rank jump table is truncated");
+			}
+
+			const int mmap_flags = save_mem ? MAP_SHARED : MAP_PRIVATE;
+			mapping_start = static_cast<char*>(mmap(
+				nullptr, mapping_length, PROT_READ | PROT_WRITE,
+				mmap_flags, fileno(schedules_fd), 0));
+			if (mapping_start == MAP_FAILED) {
+				mapping_start = nullptr;
+				throw std::runtime_error(
+					"could not mmap serialized GOAL schedule " + filename);
+			}
+			if (save_mem) {
+				printf("The schedule will be invalid after this simulation!\n");
+			}
+
+			const char* schedule_start = mapping_start + sizeof(uint64_t);
+			size_t previous_rank_end = schedule_header_bytes;
+			for (uint32_t rank = 0; rank < num_ranks_in_schedule; ++rank) {
+				const size_t entry_offset =
+					sizeof(uint32_t) + sizeof(uint8_t)*2
+					+ static_cast<size_t>(rank)*sizeof(uint64_t)*2;
+				const uint64_t rank_start_u64 =
+					goal_binary_detail::load_bounded<uint64_t>(
+						schedule_start, schedule_bytes, entry_offset,
+						"rank start");
+				const uint64_t rank_end_u64 =
+					goal_binary_detail::load_bounded<uint64_t>(
+						schedule_start, schedule_bytes,
+						entry_offset + sizeof(uint64_t), "rank end");
+				if (rank_start_u64 > std::numeric_limits<size_t>::max()
+						|| rank_end_u64 > std::numeric_limits<size_t>::max()) {
+					throw goal_binary_detail::malformed(
+						"rank span does not fit the host address space");
+				}
+				const size_t rank_start = static_cast<size_t>(rank_start_u64);
+				const size_t rank_end = static_cast<size_t>(rank_end_u64);
+				if (rank_start < previous_rank_end || rank_start > rank_end
+						|| rank_end > schedule_bytes) {
+					throw goal_binary_detail::malformed(
+						"rank spans overlap or leave the schedule mapping");
+				}
+				previous_rank_end = rank_end;
+			}
+
+			schedules.reserve(num_ranks_in_schedule);
+			for (uint32_t rank = 0; rank < num_ranks_in_schedule; ++rank) {
+				schedules.emplace_back(
+					mapping_start + sizeof(uint64_t), schedule_bytes, rank);
+			}
+		} catch (...) {
+			release_mapping_and_file();
+			throw;
 		}
 	}
+
+	Parser(const Parser&) = delete;
+	Parser& operator=(const Parser&) = delete;
 
 	uint32_t GetNumCPU() {
 		return static_cast<uint32_t>(max_cpu) + 1;
@@ -869,9 +1208,7 @@ class Parser {
 
 
 	~Parser() {
-		int r = munmap(mapping_start, mapping_length);
-		assert(r == 0);
-		fclose(schedules_fd);
+		release_mapping_and_file();
 	}
 	
 };
