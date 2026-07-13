@@ -133,18 +133,28 @@ TEST(AtlahsFlowRuntimeTest, GoalLayoutMustMatchConfiguredPhysicalNodes) {
     CapturingAtlahsHtsimApi api;
 
     api.total_nodes = 16;
-    EXPECT_EQ(api.configureGoalLayoutFromBinaryHeader(16, 8, 2), 16U);
+    EXPECT_EQ(api.configureGoalLayoutFromBinaryHeader(16, 8, 2)
+                  .physical_node_count,
+              16U);
     EXPECT_EQ(api.getGoalRankMapping(),
               AtlahsHtsimApi::GoalRankMapping::GpuRank);
 
     api.total_nodes = 32;
-    EXPECT_EQ(api.configureGoalLayoutFromBinaryHeader(16, 16, 2), 32U);
+    EXPECT_EQ(api.configureGoalLayoutFromBinaryHeader(16, 16, 2)
+                  .physical_node_count,
+              32U);
     EXPECT_EQ(api.getGoalRankMapping(),
               AtlahsHtsimApi::GoalRankMapping::UniqueNic);
 
     api.total_nodes = 31;
     EXPECT_THROW(api.configureGoalLayoutFromBinaryHeader(16, 16, 2),
                  std::invalid_argument);
+    api.total_nodes = 0;
+    EXPECT_EQ(api.configureGoalLayoutFromBinaryHeader(7, 1, 1)
+                  .physical_node_count,
+              7U);
+    EXPECT_EQ(api.total_nodes, 7);
+
     api.total_nodes = 0;
     EXPECT_THROW(api.configureGoalLayoutFromBinaryHeader(0, 1, 1),
                  std::invalid_argument);

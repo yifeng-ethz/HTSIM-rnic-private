@@ -369,7 +369,9 @@ static inline int match(const graph_node_properties &elem, ruq_t *q, ruqelem_t *
 int size_queue(std::vector<ruq_t> my_queue, int num_proce);
 
 
-int start_lgs(std::string filename_goal, LogSimInterface &lgs) {
+int start_lgs(std::string filename_goal,
+              LogSimInterface& lgs,
+              AtlahsGoalLayoutReady goal_layout_ready) {
     LogSimInterface *lgs_interface = &lgs;
 
 
@@ -410,15 +412,23 @@ int start_lgs(std::string filename_goal, LogSimInterface &lgs) {
     const uint p = parser.schedules.size();
     const int ncpus = parser.GetNumCPU();
     const int nnics = parser.GetNumNIC();
-    const std::uint32_t physical_node_count =
+    const AtlahsHtsimApi::GoalLayout goal_layout =
         lgs_interface->htsim_api->configureGoalLayoutFromBinaryHeader(
-        static_cast<uint32_t>(p), ncpus, nnics);
+            static_cast<uint32_t>(p), ncpus, nnics);
     printf("[ATLAHS] GOAL rank mapping: %s (LGS ranks=%u, CPUs=%d, NICs=%d, HTSIM nodes=%u)\n",
            lgs_interface->htsim_api->getGoalRankMappingName(),
            p,
            ncpus,
            nnics,
-           physical_node_count);
+           goal_layout.physical_node_count);
+    if (goal_layout_ready) {
+        goal_layout_ready(goal_layout);
+    }
+    if (lgs_interface->htsim_api->total_nodes
+        != static_cast<int>(goal_layout.physical_node_count)) {
+        throw std::logic_error(
+            "ATLAHS layout-ready callback changed the physical node count");
+    }
     // Runtime setup belongs after GOAL rank-layout inference. In particular,
     // a unique-NIC schedule needs p * nnics physical nodes, whereas a V2
     // GPU-rank schedule needs p. The checked configuration above guarantees

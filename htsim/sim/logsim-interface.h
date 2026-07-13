@@ -13,6 +13,7 @@
 #include "atlahs_htsim_api.h"
 #include "atlahs_event.h"
 #include "atlahs_flow_runtime.h"
+#include <functional>
 #include <string>
 #include <unordered_map>
 
@@ -141,5 +142,10 @@ class LogSimInterface {
     int path_entropy_size = 256;
 };
 
-int start_lgs(std::string, LogSimInterface &);
+using AtlahsGoalLayoutReady =
+    std::function<void(const AtlahsHtsimApi::GoalLayout&)>;
+
+int start_lgs(std::string,
+              LogSimInterface&,
+              AtlahsGoalLayoutReady goal_layout_ready = {});
 #endif /* LOGSIM_HELPER_H */
