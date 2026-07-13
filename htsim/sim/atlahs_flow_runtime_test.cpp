@@ -23,6 +23,10 @@ public:
         requests.push_back(request);
     }
 
+    bool hasPendingPhysicalWork() const noexcept override {
+        return pending_physical_work;
+    }
+
     void complete(AtlahsFlowId flow_id) {
         ASSERT_TRUE(static_cast<bool>(completion));
         completion(flow_id);
@@ -32,6 +36,7 @@ public:
     std::uint32_t configured_node_count = 0;
     CompletionHandler completion;
     std::vector<AtlahsFlowRequest> requests;
+    bool pending_physical_work = false;
 };
 
 class CapturingAtlahsHtsimApi final : public AtlahsHtsimApi {
@@ -98,6 +103,30 @@ TEST(AtlahsFlowRuntimeTest, NetworkTimingIsLegacyUntilRuntimeInjection) {
 
     api.setFlowRuntime(nullptr);
     EXPECT_EQ(logsim.getNetworkTiming(), AtlahsNetworkTiming::LegacyLogSimGap);
+}
+
+TEST(AtlahsFlowRuntimeTest, PhysicalWorkQueryForwardsThroughApiAndLogSim) {
+    LogSimInterface logsim;
+    CapturingAtlahsHtsimApi api;
+    api.setLogSimInterface(&logsim);
+    logsim.htsim_api = &api;
+
+    EXPECT_FALSE(api.runtimeHasPendingPhysicalWork());
+    EXPECT_FALSE(logsim.runtimeHasPendingPhysicalWork());
+
+    auto runtime = std::make_unique<FakeFlowRuntime>();
+    FakeFlowRuntime* fake = runtime.get();
+    api.setFlowRuntime(std::move(runtime));
+    EXPECT_FALSE(api.runtimeHasPendingPhysicalWork());
+    EXPECT_FALSE(logsim.runtimeHasPendingPhysicalWork());
+
+    fake->pending_physical_work = true;
+    EXPECT_TRUE(api.runtimeHasPendingPhysicalWork());
+    EXPECT_TRUE(logsim.runtimeHasPendingPhysicalWork());
+
+    fake->pending_physical_work = false;
+    EXPECT_FALSE(api.runtimeHasPendingPhysicalWork());
+    EXPECT_FALSE(logsim.runtimeHasPendingPhysicalWork());
 }
 
 TEST(AtlahsFlowRuntimeTest, DelegatesExactPayloadForConcurrentSameSourceFlows) {

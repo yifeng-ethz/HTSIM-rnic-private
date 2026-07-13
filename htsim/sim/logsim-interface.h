@@ -69,6 +69,10 @@ class LogSimInterface {
     ProtocolName get_protocol() { return _protocolName; };
     void setNetworkTiming(AtlahsNetworkTiming timing) { _network_timing = timing; }
     AtlahsNetworkTiming getNetworkTiming() const { return _network_timing; }
+    bool runtimeHasPendingPhysicalWork() const noexcept {
+        return htsim_api != nullptr
+               && htsim_api->runtimeHasPendingPhysicalWork();
+    }
     void set_cwd(int cwd);
     void setReuse(bool reuse) { _use_good_entropies = reuse; };
     void setIgnoreEcnAck(bool ignore_ecn_ack) {
@@ -99,7 +103,7 @@ class LogSimInterface {
     std::uint64_t htsim_time = 0;
     bool nic_available[8192] = {true};
 
-    AtlahsHtsimApi* htsim_api;
+    AtlahsHtsimApi* htsim_api = nullptr;
     static int percentage_lgs;
     bool have_more = false;
     std::priority_queue<graph_node_properties,std::vector<graph_node_properties>,aqcompare_func> aq;

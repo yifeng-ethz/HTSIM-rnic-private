@@ -150,6 +150,15 @@ void RnicPacketizedManifoldRuntime::send(
     reschedule(candidate_next_event);
 }
 
+bool RnicPacketizedManifoldRuntime::hasPendingPhysicalWork() const noexcept {
+    for (const auto& item : _flows) {
+        if (!item.second.completion_notified) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::size_t RnicPacketizedManifoldRuntime::backloggedFlowCount() const noexcept {
     return backloggedFlowCount(_flows);
 }

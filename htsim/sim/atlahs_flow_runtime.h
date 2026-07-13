@@ -41,6 +41,11 @@ public:
     virtual void setup(std::uint32_t node_count,
                        CompletionHandler complete_flow) = 0;
     virtual void send(const AtlahsFlowRequest& request) = 0;
+
+    // True until every physical effect owned by this runtime has drained.
+    // This is deliberately stronger than "a completion callback is pending":
+    // rnic-cn, for example, remains live through its in-band RETIRE tail.
+    virtual bool hasPendingPhysicalWork() const noexcept = 0;
 };
 
 #endif  // ATLAHS_FLOW_RUNTIME_H

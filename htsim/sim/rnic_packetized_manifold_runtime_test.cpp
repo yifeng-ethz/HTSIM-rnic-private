@@ -63,7 +63,9 @@ TEST(RnicPacketizedManifoldRuntimeTest,
     runtime.setup(2, [&](AtlahsFlowId flow_id) {
         completed.emplace_back(flow_id, EventList::now());
     });
+    EXPECT_FALSE(runtime.hasPendingPhysicalWork());
     runtime.send(request(10, 0, 1, 18));
+    EXPECT_TRUE(runtime.hasPendingPhysicalWork());
 
     RnicPacketizedFlowSnapshot snapshot = runtime.flow(10);
     EXPECT_EQ(snapshot.total_packet_count, 3U);
@@ -102,6 +104,7 @@ TEST(RnicPacketizedManifoldRuntimeTest,
     EXPECT_EQ(runtime.backloggedFlowCount(), 0U);
     EXPECT_EQ(runtime.pendingSourcePacketCount(), 0U);
     EXPECT_EQ(runtime.pendingDeliveryPacketCount(), 0U);
+    EXPECT_FALSE(runtime.hasPendingPhysicalWork());
 }
 
 TEST(RnicPacketizedManifoldRuntimeTest,
@@ -262,6 +265,7 @@ TEST(RnicPacketizedManifoldRuntimeTest,
     EXPECT_EQ(runtime.flow(60).wire_rate_grant_bps, 0U);
     EXPECT_EQ(runtime.flow(61).wire_rate_grant_bps, 0U);
     EXPECT_FALSE(runtime.nextSlotStartPs().has_value());
+    EXPECT_TRUE(runtime.hasPendingPhysicalWork());
     EXPECT_FALSE(EventList::doNextEvent());
 }
 

@@ -90,6 +90,10 @@ public:
     void setFlowRuntime(std::unique_ptr<AtlahsFlowRuntime> runtime);
     AtlahsFlowRuntime* getFlowRuntime() const { return _flow_runtime.get(); }
     bool hasFlowRuntime() const { return _flow_runtime != nullptr; }
+    bool runtimeHasPendingPhysicalWork() const noexcept {
+        return _flow_runtime != nullptr
+               && _flow_runtime->hasPendingPhysicalWork();
+    }
 
     // Runtime completion is idempotent: only a currently pending flow can be
     // completed, and EventFinished is invoked exactly once for that flow ID.

@@ -72,6 +72,7 @@ public:
     void setup(std::uint32_t node_count,
                CompletionHandler complete_flow) override;
     void send(const AtlahsFlowRequest& request) override;
+    bool hasPendingPhysicalWork() const noexcept override;
 
     bool isSetup() const noexcept { return _is_setup; }
     std::uint32_t nodeCount() const noexcept { return _node_count; }

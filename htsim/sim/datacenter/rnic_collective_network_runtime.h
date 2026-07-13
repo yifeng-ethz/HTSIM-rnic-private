@@ -83,7 +83,7 @@ public:
     std::size_t receiverActiveFlowCount(std::uint32_t node_id) const;
     std::size_t pendingFabricPacketCount() const noexcept;
     std::size_t pendingDestinationDataCount() const noexcept;
-    bool hasPendingWork() const noexcept;
+    bool hasPendingPhysicalWork() const noexcept override;
     const RnicNode& node(std::uint32_t node_id) const;
 
     // Strong end-of-run assertion used by tests and manifest-producing

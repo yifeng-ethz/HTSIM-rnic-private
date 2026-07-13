@@ -1718,7 +1718,7 @@ RnicCollectiveNetworkRuntime::pendingDestinationDataCount() const noexcept {
     return _impl->destination_data.size();
 }
 
-bool RnicCollectiveNetworkRuntime::hasPendingWork() const noexcept {
+bool RnicCollectiveNetworkRuntime::hasPendingPhysicalWork() const noexcept {
     return _impl->hasPendingWork();
 }
 

@@ -57,7 +57,9 @@ TEST(RnicFluidManifoldRuntimeTest,
 
     RnicFluidManifoldRuntime runtime(event_list, 80, propagation_ps);
     runtime.setup(3, [&](AtlahsFlowId flow_id) { completed.push_back(flow_id); });
+    EXPECT_FALSE(runtime.hasPendingPhysicalWork());
     runtime.send(request(10, 0, 2, 10));
+    EXPECT_TRUE(runtime.hasPendingPhysicalWork());
     EXPECT_EQ(runtime.flow(10).rate_bps, 80U);
 
     CallbackEvent join(event_list, base + kSecondPs / 2, [&] {
@@ -88,6 +90,7 @@ TEST(RnicFluidManifoldRuntimeTest,
     EXPECT_EQ(EventList::now(), base + 2 * kSecondPs + propagation_ps);
     EXPECT_EQ(completed, std::vector<AtlahsFlowId>({10, 11}));
     EXPECT_EQ(runtime.activeFlowCount(), 0U);
+    EXPECT_FALSE(runtime.hasPendingPhysicalWork());
     EXPECT_FALSE(EventList::doNextEvent());
 }
 
@@ -141,8 +144,10 @@ TEST(RnicFluidManifoldRuntimeTest,
 
     ASSERT_TRUE(EventList::doNextEvent());
     EXPECT_EQ(completed, std::vector<AtlahsFlowId>({30}));
+    EXPECT_TRUE(runtime.hasPendingPhysicalWork());
     ASSERT_TRUE(EventList::doNextEvent());
     EXPECT_EQ(completed, std::vector<AtlahsFlowId>({30, 31}));
+    EXPECT_FALSE(runtime.hasPendingPhysicalWork());
     EXPECT_FALSE(EventList::doNextEvent());
 }
 

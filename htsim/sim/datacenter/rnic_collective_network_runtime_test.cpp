@@ -72,7 +72,9 @@ public:
     }
 
     void drainRuntime(RnicCollectiveNetworkRuntime& runtime) {
-        stepUntil([&runtime] { return !runtime.hasPendingWork(); });
+        stepUntil([&runtime] {
+            return !runtime.hasPendingPhysicalWork();
+        });
         runtime.validateQuiescent();
     }
 
@@ -109,10 +111,12 @@ TEST(RnicCollectiveNetworkRuntimeTest,
         completions.push_back(flow_id);
         completion_times.emplace(flow_id, EventList::now());
     });
+    EXPECT_FALSE(runtime.hasPendingPhysicalWork());
 
     const AtlahsFlowRequest request{
         0x100000001ULL, 0, 31, 2000, EventList::now(), 7};
     runtime.send(request);
+    EXPECT_TRUE(runtime.hasPendingPhysicalWork());
     EXPECT_FALSE(runtime.flow(request.flow_id).declaration_dispatched);
     EXPECT_EQ(runtime.flow(request.flow_id).source_payload_bytes_dispatched,
               0U);
@@ -138,6 +142,11 @@ TEST(RnicCollectiveNetworkRuntimeTest,
     EXPECT_FALSE(retired_early.receiver_retired);
     EXPECT_EQ(runtime.receiverActiveFlowCount(request.destination), 1U);
 
+    fixture.stepUntil([&] {
+        return runtime.flow(request.flow_id).completion_notified;
+    });
+    EXPECT_TRUE(runtime.hasPendingPhysicalWork());
+
     fixture.drainRuntime(runtime);
     const RnicCollectiveFlowSnapshot completed = runtime.flow(request.flow_id);
     EXPECT_EQ(completions, (std::vector<AtlahsFlowId>{request.flow_id}));
@@ -148,6 +157,7 @@ TEST(RnicCollectiveNetworkRuntimeTest,
     EXPECT_EQ(completed.delivered_data_packets, 3U);
     EXPECT_EQ(completed.source_payload_bytes_dispatched, 2000U);
     EXPECT_EQ(completed.source_wire_bytes_dispatched, 2192U);
+    EXPECT_FALSE(runtime.hasPendingPhysicalWork());
     EXPECT_EQ(completed.source_data_packets_dispatched, 3U);
     ASSERT_TRUE(completed.retirement_completion_time_ps.has_value());
     EXPECT_GT(*completed.retirement_completion_time_ps,

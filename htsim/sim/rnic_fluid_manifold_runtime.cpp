@@ -91,6 +91,15 @@ void RnicFluidManifoldRuntime::send(const AtlahsFlowRequest& request) {
     reschedule(next_event);
 }
 
+bool RnicFluidManifoldRuntime::hasPendingPhysicalWork() const noexcept {
+    for (const auto& entry : _deliveries) {
+        if (!entry.second.completion_notified) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::size_t RnicFluidManifoldRuntime::activeFlowCount() const {
     return requireManifold().activeFlowCount();
 }
