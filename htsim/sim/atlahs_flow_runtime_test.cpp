@@ -1,0 +1,152 @@
+#include <gtest/gtest.h>
+
+#include <cstdint>
+#include <memory>
+#include <utility>
+#include <vector>
+
+#include "atlahs_htsim_api.h"
+#include "logsim-interface.h"
+
+namespace {
+
+class FakeFlowRuntime final : public AtlahsFlowRuntime {
+public:
+    void setup(std::uint32_t node_count,
+               CompletionHandler complete_flow) override {
+        setup_count++;
+        configured_node_count = node_count;
+        completion = std::move(complete_flow);
+    }
+
+    void send(const AtlahsFlowRequest& request) override {
+        requests.push_back(request);
+    }
+
+    void complete(AtlahsFlowId flow_id) {
+        ASSERT_TRUE(static_cast<bool>(completion));
+        completion(flow_id);
+    }
+
+    int setup_count = 0;
+    std::uint32_t configured_node_count = 0;
+    CompletionHandler completion;
+    std::vector<AtlahsFlowRequest> requests;
+};
+
+class CapturingAtlahsHtsimApi final : public AtlahsHtsimApi {
+public:
+    void EventFinished(const EventOver& event) override {
+        completion_count++;
+        completed_flow = *event.node;
+        completed_payload_bytes = event.getSizeBytes();
+        completed_start_time_ps = event.getStartTimeEvent();
+    }
+
+    int completion_count = 0;
+    graph_node_properties completed_flow{};
+    std::uint64_t completed_payload_bytes = 0;
+    std::uint64_t completed_start_time_ps = 0;
+};
+
+graph_node_properties makeFlow(std::uint32_t host,
+                               std::uint32_t offset,
+                               std::uint32_t destination,
+                               std::uint64_t payload_bytes,
+                               std::uint32_t tag) {
+    graph_node_properties flow{};
+    flow.host = host;
+    flow.offset = offset;
+    flow.target = destination;
+    flow.size = payload_bytes;
+    flow.tag = tag;
+    flow.nic = 0;
+    flow.type = OP_SEND;
+    return flow;
+}
+
+TEST(AtlahsFlowRuntimeTest, SetupAndSendDoNotDereferenceLegacyTopology) {
+    CapturingAtlahsHtsimApi api;
+    api.total_nodes = 8;
+
+    auto runtime = std::make_unique<FakeFlowRuntime>();
+    FakeFlowRuntime* fake = runtime.get();
+    api.setFlowRuntime(std::move(runtime));
+
+    // Neither a topology nor a UEC/EventList object is installed.
+    EXPECT_NO_THROW(api.Setup());
+    EXPECT_EQ(fake->setup_count, 1);
+    EXPECT_EQ(fake->configured_node_count, 8U);
+
+    const auto flow = makeFlow(3, 17, 6, 4097, 91);
+    const SendEvent event(3, 6, flow.size, flow.tag, 123456789);
+    EXPECT_NO_THROW(api.Send(event, flow));
+
+    ASSERT_EQ(fake->requests.size(), 1U);
+    EXPECT_EQ(fake->requests.front().source, 3U);
+    EXPECT_EQ(fake->requests.front().destination, 6U);
+}
+
+TEST(AtlahsFlowRuntimeTest, NetworkTimingIsLegacyUntilRuntimeInjection) {
+    LogSimInterface logsim;
+    CapturingAtlahsHtsimApi api;
+    api.setLogSimInterface(&logsim);
+    EXPECT_EQ(logsim.getNetworkTiming(), AtlahsNetworkTiming::LegacyLogSimGap);
+
+    api.setFlowRuntime(std::make_unique<FakeFlowRuntime>());
+    EXPECT_EQ(logsim.getNetworkTiming(), AtlahsNetworkTiming::RuntimeOwned);
+
+    api.setFlowRuntime(nullptr);
+    EXPECT_EQ(logsim.getNetworkTiming(), AtlahsNetworkTiming::LegacyLogSimGap);
+}
+
+TEST(AtlahsFlowRuntimeTest, DelegatesExactPayloadForConcurrentSameSourceFlows) {
+    CapturingAtlahsHtsimApi api;
+    api.total_nodes = 16;
+    auto runtime = std::make_unique<FakeFlowRuntime>();
+    FakeFlowRuntime* fake = runtime.get();
+    api.setFlowRuntime(std::move(runtime));
+    api.Setup();
+
+    constexpr std::uint64_t large_exact_payload = (std::uint64_t{1} << 33) + 17;
+    const auto first = makeFlow(4, 100, 7, large_exact_payload, 5);
+    const auto second = makeFlow(4, 101, 9, 73, 6);
+    api.Send(SendEvent(4, 7, first.size, first.tag, 9000), first);
+    api.Send(SendEvent(4, 9, second.size, second.tag, 9010), second);
+
+    ASSERT_EQ(fake->requests.size(), 2U);
+    EXPECT_EQ(fake->requests[0].payload_bytes, large_exact_payload);
+    EXPECT_EQ(fake->requests[1].payload_bytes, 73U);
+    EXPECT_EQ(fake->requests[0].source, fake->requests[1].source);
+    EXPECT_NE(fake->requests[0].flow_id, fake->requests[1].flow_id);
+    EXPECT_EQ(fake->requests[0].flow_id, makeAtlahsFlowId(4, 100));
+    EXPECT_EQ(fake->requests[1].flow_id, makeAtlahsFlowId(4, 101));
+    EXPECT_EQ(fake->requests[0].start_time_ps, 9000U);
+}
+
+TEST(AtlahsFlowRuntimeTest, RoutesEachFlowCompletionExactlyOnce) {
+    CapturingAtlahsHtsimApi api;
+    api.total_nodes = 4;
+    auto runtime = std::make_unique<FakeFlowRuntime>();
+    FakeFlowRuntime* fake = runtime.get();
+    api.setFlowRuntime(std::move(runtime));
+    api.Setup();
+
+    const auto flow = makeFlow(1, 42, 2, 12345, 77);
+    api.Send(SendEvent(1, 2, flow.size, flow.tag, 8765), flow);
+    ASSERT_EQ(fake->requests.size(), 1U);
+
+    fake->complete(fake->requests.front().flow_id);
+    EXPECT_EQ(api.completion_count, 1);
+    EXPECT_EQ(api.completed_flow.host, 1U);
+    EXPECT_EQ(api.completed_flow.offset, 42U);
+    EXPECT_EQ(api.completed_payload_bytes, 12345U);
+    EXPECT_EQ(api.completed_start_time_ps, 8765U);
+
+    // A repeated runtime notification is harmless and cannot release GOAL a
+    // second time.
+    fake->complete(fake->requests.front().flow_id);
+    EXPECT_EQ(api.completion_count, 1);
+}
+
+}  // namespace

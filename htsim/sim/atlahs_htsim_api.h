@@ -2,9 +2,11 @@
 #define ATLAHS_HTSIM_API_H
 
 #include "atlahs_api.h"
+#include "atlahs_flow_runtime.h"
 #include <iostream>
 #include <functional>
 #include <memory>
+#include <unordered_map>
 #include "compute_event.h"
 #include "null_event.h"
 #include "atlahs_event.h"
@@ -80,8 +82,18 @@ public:
     FatTreeTopologyCfg* getTopologyCfg() const { return _topo_cfg; }
 
     // Getter and setter for LogSimInterface
-    void setLogSimInterface(LogSimInterface* logsim_interface) { _logsim_interface = logsim_interface; }
+    void setLogSimInterface(LogSimInterface* logsim_interface);
     LogSimInterface* getLogSimInterface() const { return _logsim_interface; }
+
+    // An injected runtime owns the network timing for delegated flows.  It is
+    // intentionally independent of the legacy UEC/topology objects.
+    void setFlowRuntime(std::unique_ptr<AtlahsFlowRuntime> runtime);
+    AtlahsFlowRuntime* getFlowRuntime() const { return _flow_runtime.get(); }
+    bool hasFlowRuntime() const { return _flow_runtime != nullptr; }
+
+    // Runtime completion is idempotent: only a currently pending flow can be
+    // completed, and EventFinished is invoked exactly once for that flow ID.
+    bool completeFlow(AtlahsFlowId flow_id);
 
     // Getter and setter for ComputeEvent
     void setComputeEvent(ComputeEvent* compute_event) { 
@@ -170,7 +182,7 @@ public:
     linkspeed_bps linkspeed; // TO DO
     int linkspeed_gbps = 100; // TO DO
     double htsim_G; // TO DO
-    int total_nodes; // TO DO
+    int total_nodes = 0; // TO DO
     bool send_done_return_control = false; // TO DO
     std::vector<FlowInfo> flowInfos;
     bool print_stats_flows = false;
@@ -189,6 +201,13 @@ private:
     FatTreeTopology* _topo = nullptr;
     FatTreeTopologyCfg* _topo_cfg = nullptr;
     LogSimInterface* _logsim_interface = nullptr;
+    std::unique_ptr<AtlahsFlowRuntime> _flow_runtime;
+
+    struct PendingFlow {
+        graph_node_properties node;
+        AtlahsFlowRequest request;
+    };
+    std::unordered_map<AtlahsFlowId, PendingFlow> _pending_flows;
     ComputeEvent *compute_events_handler = nullptr;
     NullEvent *null_events_handler = nullptr;
 

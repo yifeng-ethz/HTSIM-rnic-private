@@ -12,6 +12,7 @@
 #include "uec.h"
 #include "atlahs_htsim_api.h"
 #include "atlahs_event.h"
+#include "atlahs_flow_runtime.h"
 #include <string>
 #include <unordered_map>
 
@@ -66,6 +67,8 @@ class LogSimInterface {
     void execute_null_compute(graph_node_properties elem, int p);
     void set_protocol(ProtocolName name) { _protocolName = name; };
     ProtocolName get_protocol() { return _protocolName; };
+    void setNetworkTiming(AtlahsNetworkTiming timing) { _network_timing = timing; }
+    AtlahsNetworkTiming getNetworkTiming() const { return _network_timing; }
     void set_cwd(int cwd);
     void setReuse(bool reuse) { _use_good_entropies = reuse; };
     void setIgnoreEcnAck(bool ignore_ecn_ack) {
@@ -124,6 +127,7 @@ class LogSimInterface {
     bool compute_if_finished = false;
     bool time_over = false;
     ProtocolName _protocolName;
+    AtlahsNetworkTiming _network_timing = AtlahsNetworkTiming::LegacyLogSimGap;
     int _queuesize;
     std::unordered_map<int, NdpPullPacer *> _puller_map;
     bool _use_good_entropies;

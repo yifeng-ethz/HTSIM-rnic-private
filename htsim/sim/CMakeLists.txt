@@ -151,6 +151,7 @@ target_link_libraries(parse_output PRIVATE htsim)
 if ( ENABLE_TESTS )
     # Unit tests.
     set(UNIT_TEST_FILES
+        atlahs_flow_runtime_test
         pipe_test
         rnic_collective_control_test
         rnic_fluid_manifold_test
@@ -170,6 +171,10 @@ if ( ENABLE_TESTS )
             PROPERTIES TIMEOUT 60
         )
     endforeach()
+
+    # AtlahsHtsimApi retains its legacy Clos/UEC path alongside the injected
+    # runtime seam, so this focused test also needs the datacenter definitions.
+    target_link_libraries(atlahs_flow_runtime_test PRIVATE htsim_dc)
 endif()
 
 # Always print ENABLE_TESTS status, so folks don't miss it.

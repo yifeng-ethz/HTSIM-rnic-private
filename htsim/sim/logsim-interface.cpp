@@ -138,9 +138,9 @@ void LogSimInterface::send_event(graph_node_properties elem) {
     entry.to_parse = 42;
     active_sends[to_hash] = entry; */
 
-    // Testing New 
-    SendEvent* event = new SendEvent(elem.host, elem.target, elem.size, elem.tag, htsim_api->getGlobalTimeNs());    
-    htsim_api->Send(*event, elem);
+    SendEvent event(elem.host, elem.target, elem.size, elem.tag,
+                    htsim_api->getGlobalTimePs());
+    htsim_api->Send(event, elem);
 
     /* printf("LGS Send Event - Time %lu - Host %d - Dst %d - Tag %d - Size %d - "
            "StartTime %d\n",
@@ -172,7 +172,9 @@ void LogSimInterface::flow_over(const EventOver &event) {
   _latest_recv->type = OP_MSG;
   _latest_recv->target = event.node->host;
   _latest_recv->host = event.node->target;
-  _latest_recv->starttime = event.start_time_event;
+  // EventOver uses HTSIM's physical picosecond clock.  GOAL queue timestamps
+  // are nanoseconds, so normalize before re-inserting the completed message.
+  _latest_recv->starttime = event.start_time_event / 1000;
   _latest_recv->time = htsim_api->getGlobalTimeNs();
   _latest_recv->size = event.node->size;
   _latest_recv->offset = event.node->offset;
@@ -641,10 +643,15 @@ int start_lgs(std::string filename_goal, LogSimInterface &lgs) {
             
             case OP_SEND: { // a send op
               if(myprint) printf("[%i] found send to %i tag %lu - t: %lu (CPU: %i)\n", elem.host, elem.target, (ulint)elem.tag, (ulint)elem.time, elem.proc);
-  
-              uint64_t resource_time = std::max(nexto[elem.host][elem.proc], nextgs[elem.host][elem.nic]);
 
-              if(resource_time <= elem.time) { // local o,g available!
+              const bool runtime_owned =
+                  lgs_interface->getNetworkTiming() == AtlahsNetworkTiming::RuntimeOwned;
+              uint64_t resource_time = nexto[elem.host][elem.proc];
+              if (!runtime_owned) {
+                  resource_time = std::max(resource_time, nextgs[elem.host][elem.nic]);
+              }
+
+              if(resource_time <= elem.time) { // required local resources available
                   if(myprint) 
                     printf("-- satisfy local irequires\n");
 
@@ -653,31 +660,37 @@ int start_lgs(std::string filename_goal, LogSimInterface &lgs) {
                   check_hosts.insert(elem.host);
                   check_hosts.insert(elem.target);
 
-                  // This is a hack to make sure that the size is at least 1
-                  if (elem.size == 0)
+                  // Preserve the legacy zero-byte workaround only for the
+                  // legacy network model.  Runtime-owned timing receives the
+                  // exact GOAL payload, including zero bytes.
+                  if (!runtime_owned && elem.size == 0)
                       elem.size = 1;
-                  assert(elem.size > 0);
+                  assert(runtime_owned || elem.size > 0);
 
                   // Update CPU Availability
                   btime_t noise = 0;
                   uint64_t cpu_time = elem.time + lgs_interface->lgs_o + noise; // We don't model the other paramter in HTSIM
                   nexto[elem.host][elem.proc] = cpu_time;
-                  // Calc Actual Size in HTSIM
-                  int original_size = elem.size;
-                  int message_size = elem.size;
-                  int packet_size = 4096;
-                  int num_packets = (message_size + packet_size - 1) / packet_size;
-                  int updated_size = (num_packets+1) * 4160; // Parameterize this. This accounts for the header size
-                  elem.size = updated_size;
+                  if (!runtime_owned) {
+                      // Legacy LogSim gap reservation.  This intentionally
+                      // retains its historical packet/header inflation.
+                      const uint64_t original_size = elem.size;
+                      const uint64_t packet_size = 4096;
+                      const uint64_t num_packets =
+                          (original_size + packet_size - 1) / packet_size;
+                      const uint64_t updated_size =
+                          (num_packets + 1) * 4160; // Parameterize this. This accounts for the header size
+                      elem.size = updated_size;
 
-                  uint64_t bandwidth_cost2 = std::max(static_cast<uint64_t>(1),
-                                                       static_cast<uint64_t>(std::ceil((double)(elem.size) * G)));
-                  nextgs[elem.host][elem.nic] = elem.time + g + bandwidth_cost2; 
-                  can_simulate_until = nextgs[elem.host][elem.nic];
+                      uint64_t bandwidth_cost2 = std::max(static_cast<uint64_t>(1),
+                                                           static_cast<uint64_t>(std::ceil((double)(elem.size) * G)));
+                      nextgs[elem.host][elem.nic] = elem.time + g + bandwidth_cost2;
+                      can_simulate_until = nextgs[elem.host][elem.nic];
+                      lgs_interface->nic_available[elem.host] = false;
+                      elem.size = original_size;
+                  }
 
-                  lgs_interface->nic_available[elem.host] = false;
                   lgs_interface->sends_active++;
-                  elem.size = original_size;
                   lgs_interface->send_event(elem);
                   send_doing++;
 
@@ -690,10 +703,11 @@ int start_lgs(std::string filename_goal, LogSimInterface &lgs) {
                   //printf("Reinseringg send %d %d %d %d at %lu\n", elem.host, elem.target, elem.tag, elem.size, resource_time);
                   elem.time = resource_time;
                   lgs_interface->aq.push(std::move(elem));
-                  if (nexto[elem.host][elem.proc] > nextgs[elem.host][elem.nic])
+                  if (runtime_owned) {
+                      num_reinserts_o++;
+                  } else {
                       num_reinserts_g++;
-                  else
-                      num_reinserts_g++;
+                  }
               }
                                               
           } break;
@@ -956,7 +970,11 @@ int start_lgs(std::string filename_goal, LogSimInterface &lgs) {
                 printf("Freeop %i (%i,%i) loclop: %lu, time: %lu, offset: %i\n", host, freeop->proc, freeop->nic, (long unsigned int) freeop->size, (long unsigned int)freeop->time, freeop->offset);
               break;
             case OP_SEND:
-              freeop->time = std::max(nexto[host][freeop->proc], nextgs[host][freeop->nic]);
+              if (lgs_interface->getNetworkTiming() == AtlahsNetworkTiming::RuntimeOwned) {
+                freeop->time = nexto[host][freeop->proc];
+              } else {
+                freeop->time = std::max(nexto[host][freeop->proc], nextgs[host][freeop->nic]);
+              }
               freeop->time = std::max(lgs_interface->htsim_api->getGlobalTimeNs(), freeop->time);
               //freeop->time = lgs_interface->htsim_api->getGlobalTimeNs();
               // if (freeop->proc == 73)
