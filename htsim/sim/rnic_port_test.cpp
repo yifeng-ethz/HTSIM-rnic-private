@@ -25,6 +25,123 @@ TEST(RnicTxPortTest, DataIsIneligibleUntilTheGrantGateOpens) {
     EXPECT_EQ(active.packet->flow_id, 10u);
 }
 
+TEST(RnicTxPortTest, ReportsWhetherAnyGrantedDataCanDispatch) {
+    RnicTxPort port(1, 100000000000ULL, 1000, 7);
+    port.addFlow(10, 1000, 0);
+    EXPECT_FALSE(port.hasDispatchableData());
+
+    port.setWireRateGrant(10, 100000000000ULL);
+    EXPECT_FALSE(port.hasDispatchableData());
+    port.setDataEligible(10, true);
+    EXPECT_TRUE(port.hasDispatchableData());
+
+    const auto packet = port.dispatchOpportunity(0);
+    ASSERT_TRUE(packet.packet.has_value());
+    EXPECT_FALSE(port.hasDispatchableData());
+}
+
+TEST(RnicTxPortTest, ControlAndDataShareOnePhysicalSerializer) {
+    RnicTxPort port(1, 8000000000000ULL, 1000, 7);
+    port.addFlow(10, 1000, 0);
+    port.setWireRateGrant(10, 8000000000000ULL);
+    port.setDataEligible(10, true);
+
+    const auto control = port.dispatchControl(0, 64);
+    EXPECT_EQ(control.start_ps, 0u);
+    EXPECT_EQ(control.end_ps, 64u);
+    EXPECT_EQ(port.nextDataOpportunityPs(), 0u);
+    EXPECT_EQ(port.physicalSerializerAvailablePs(), 64u);
+
+    const auto data = port.dispatchOpportunity(control.end_ps);
+    ASSERT_TRUE(data.packet.has_value());
+    EXPECT_EQ(data.start_ps, control.end_ps);
+    EXPECT_EQ(data.end_ps, 1064u);
+    EXPECT_EQ(port.nextDataOpportunityPs(), data.end_ps);
+    EXPECT_EQ(port.physicalSerializerAvailablePs(), data.end_ps);
+}
+
+TEST(RnicTxPortTest, ControlCanUseAReservedPrbsIdleInterval) {
+    RnicTxPort port(1, 8000000000000ULL, 1000, 7);
+    port.addFlow(10, 1000, 0);
+
+    const auto idle = port.dispatchOpportunity(0);
+    EXPECT_FALSE(idle.packet.has_value());
+    EXPECT_EQ(idle.start_ps, 0u);
+    EXPECT_EQ(idle.end_ps, 1000u);
+    EXPECT_EQ(port.nextDataOpportunityPs(), 1000u);
+    EXPECT_EQ(port.physicalSerializerAvailablePs(), 0u);
+
+    const auto control = port.dispatchControl(100, 64);
+    EXPECT_EQ(control.start_ps, 100u);
+    EXPECT_EQ(control.end_ps, 164u);
+    EXPECT_EQ(port.nextDataOpportunityPs(), 1000u);
+
+    port.setWireRateGrant(10, 8000000000000ULL);
+    port.setDataEligible(10, true);
+    const auto data = port.dispatchOpportunity(1000);
+    ASSERT_TRUE(data.packet.has_value());
+    EXPECT_EQ(data.start_ps, 1000u);
+    EXPECT_EQ(data.end_ps, 2000u);
+}
+
+TEST(RnicTxPortTest, LongControlDelaysButDoesNotConsumeDataLottery) {
+    RnicTxPort port(1, 8000000000000ULL, 1000, 7);
+    port.addFlow(10, 1000, 0);
+
+    const auto idle = port.dispatchOpportunity(0);
+    ASSERT_FALSE(idle.packet.has_value());
+    const auto control = port.dispatchControl(900, 200);
+    EXPECT_EQ(control.end_ps, 1100u);
+
+    port.setWireRateGrant(10, 8000000000000ULL);
+    port.setDataEligible(10, true);
+    EXPECT_THROW(port.dispatchOpportunity(1000), std::invalid_argument);
+    const auto data = port.dispatchOpportunity(control.end_ps);
+    ASSERT_TRUE(data.packet.has_value());
+    EXPECT_EQ(data.start_ps, 1100u);
+    EXPECT_EQ(data.end_ps, 2100u);
+}
+
+TEST(RnicTxPortTest, ControlBeforeFractionalIdleBoundaryDoesNotShiftDataClock) {
+    RnicTxPort port(1, 9000000000000ULL, 2, 7);
+    port.addFlow(10, 2, 0);
+
+    const auto idle = port.dispatchOpportunity(0);  // Exact end: 16/9 ps.
+    ASSERT_FALSE(idle.packet.has_value());
+    ASSERT_EQ(idle.end_ps, 2u);
+    const auto control = port.dispatchControl(0, 1);  // Exact end: 8/9 ps.
+    ASSERT_EQ(control.end_ps, 1u);
+
+    port.setWireRateGrant(10, 9000000000000ULL);
+    port.setDataEligible(10, true);
+    const auto data = port.dispatchOpportunity(idle.end_ps);
+    ASSERT_TRUE(data.packet.has_value());
+    EXPECT_EQ(data.end_ps, 4u);  // Exact end remains 32/9 ps.
+
+    // This probe ends exactly at 8 ps only if the later virtual boundary won.
+    EXPECT_EQ(port.dispatchControl(data.end_ps, 5).end_ps, 8u);
+}
+
+TEST(RnicTxPortTest, SameCeilControlOverhangShiftsFractionalDataBoundary) {
+    RnicTxPort port(1, 9000000000000ULL, 2, 7);
+    port.addFlow(10, 2, 0);
+
+    const auto idle = port.dispatchOpportunity(0);  // Exact end: 16/9 ps.
+    ASSERT_FALSE(idle.packet.has_value());
+    ASSERT_EQ(idle.end_ps, 2u);
+    const auto control = port.dispatchControl(1, 1);  // Exact end: 17/9 ps.
+    ASSERT_EQ(control.end_ps, idle.end_ps);
+
+    port.setWireRateGrant(10, 9000000000000ULL);
+    port.setDataEligible(10, true);
+    const auto data = port.dispatchOpportunity(idle.end_ps);
+    ASSERT_TRUE(data.packet.has_value());
+    EXPECT_EQ(data.end_ps, 4u);  // Exact end: 33/9 ps.
+
+    // Comparing only published ceil ticks would retain 32/9 and end at 8 ps.
+    EXPECT_EQ(port.dispatchControl(data.end_ps, 5).end_ps, 9u);
+}
+
 TEST(RnicTxPortTest, OneNodePortNeverOverlapsWireOpportunitiesAndStampsAtDispatch) {
     RnicTxPort port(1, 100000000000ULL, 1000, 7);
     port.addFlow(10, 2000, 500);
@@ -291,6 +408,45 @@ TEST(RnicWireSerializationClockTest, RetainsRemainderAcrossBackToBackPackets) {
     const auto after_idle = serializer.serialize(20, 1);
     EXPECT_EQ(after_idle.start_ps, 20u);
     EXPECT_EQ(after_idle.end_ps, 23u);
+}
+
+TEST(RnicWireSerializationClockTest, ExplicitIdleRebaseDropsFractionAtEquality) {
+    RnicWireSerializationClock serializer(7000000000000ULL);
+    const auto first = serializer.serialize(0, 3);
+    ASSERT_EQ(first.end_ps, 4u);
+
+    serializer.rebaseIdle(first.end_ps);
+    const auto after_idle = serializer.serialize(first.end_ps, 1);
+    EXPECT_EQ(after_idle.start_ps, 4u);
+    EXPECT_EQ(after_idle.end_ps, 6u);
+}
+
+TEST(RnicWireSerializationClockTest, IdleRebaseRejectsBackwardTimeTransactionally) {
+    RnicWireSerializationClock serializer(7000000000000ULL);
+    EXPECT_EQ(serializer.serialize(0, 3).end_ps, 4u);
+    const uint64_t preserved = serializer.availablePs();
+    EXPECT_THROW(serializer.rebaseIdle(preserved - 1), std::invalid_argument);
+    EXPECT_EQ(serializer.availablePs(), preserved);
+
+    const auto second = serializer.serialize(preserved, 1);
+    EXPECT_EQ(second.end_ps, 5u);
+}
+
+TEST(RnicWireSerializationClockTest, SynchronizesAtLaterExactBoundary) {
+    RnicWireSerializationClock first(7000000000000ULL);
+    RnicWireSerializationClock second(7000000000000ULL);
+    EXPECT_EQ(first.serialize(0, 3).end_ps, 4u);   // 24/7 ps.
+    EXPECT_EQ(second.serialize(0, 2).end_ps, 3u);  // 16/7 ps.
+
+    second.synchronizeAvailableWith(first);
+    EXPECT_EQ(first.availablePs(), 4u);
+    EXPECT_EQ(second.availablePs(), 4u);
+    EXPECT_EQ(first.serialize(4, 1).end_ps, 5u);
+    EXPECT_EQ(second.serialize(4, 1).end_ps, 5u);
+
+    RnicWireSerializationClock mismatched(8000000000000ULL);
+    EXPECT_THROW(first.synchronizeAvailableWith(mismatched),
+                 std::invalid_argument);
 }
 
 TEST(RnicWireSerializationClockTest, RejectsInvalidAndOverflowingInputs) {

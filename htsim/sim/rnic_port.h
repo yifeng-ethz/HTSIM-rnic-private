@@ -52,8 +52,15 @@ public:
     bool sourcePayloadDispatched(uint64_t flow_id) const;
     uint64_t flowPayloadBytesDispatched(uint64_t flow_id) const;
     uint64_t effectiveWireRateBps(uint64_t flow_id) const;
+    bool hasDispatchableData() const;
     size_t flowCount() const { return _flows.size(); }
-    uint64_t nextWireOpportunityPs() const { return _wire_serializer.availablePs(); }
+    uint64_t nextDataOpportunityPs() const {
+        return _data_opportunity_serializer.availablePs();
+    }
+    uint64_t physicalSerializerAvailablePs() const {
+        return _wire_serializer.availablePs();
+    }
+    uint64_t nextWireOpportunityPs() const;
     uint64_t maxWirePacketBytes() const {
         return _packetization.maxWirePacketBytes();
     }
@@ -63,11 +70,24 @@ public:
     }
     const RnicPrbsManifest& prbsManifest() const { return _pacer.manifest(); }
 
-    // One call consumes one selected DATA extent or one max-wire-sized idle
-    // event. requested_start_ps may be later than the next free time but never
-    // earlier. A selected short final is serialized at its exact wire extent;
-    // the size-aware PRBS lottery preserves wire-byte rather than packet shares.
+    // One call consumes one selected DATA extent or advances one virtual,
+    // max-wire-sized idle opportunity.  Idle PRBS outcomes do not reserve the
+    // physical serializer, so a control frame may use that otherwise empty
+    // interval.  A selected short final is serialized at its exact wire
+    // extent; the size-aware lottery preserves wire-byte rather than packet
+    // shares.
     RnicTxOpportunity dispatchOpportunity(uint64_t requested_start_ps);
+
+    // Serialize one nonempty control frame on the same physical node wire as
+    // DATA.  The CN runtime owns the strict-priority queue and calls this at a
+    // packet boundary before dispatchOpportunity().  Control does not consume
+    // a PRBS DATA opportunity.
+    RnicWireSerializationInterval dispatchControl(
+        uint64_t requested_start_ps, uint64_t wire_bytes);
+
+    // The runtime calls this only after observing that no real frame is queued
+    // at a published completion boundary.
+    void rebasePhysicalIdle(uint64_t now_ps);
 
 private:
     struct FlowState {
@@ -89,6 +109,7 @@ private:
     uint64_t _access_capacity_bps;
     RnicDataPacketizationConfig _packetization;
     RnicWireSerializationClock _wire_serializer;
+    RnicWireSerializationClock _data_opportunity_serializer;
     RnicPrbsPacer _pacer;
     std::map<uint64_t, FlowState> _flows;
 };

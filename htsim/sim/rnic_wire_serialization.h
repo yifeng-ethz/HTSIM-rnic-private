@@ -79,6 +79,34 @@ public:
     uint64_t availablePs() const { return ceilBoundary(_available); }
     uint64_t wireCapacityBps() const noexcept { return _wire_capacity_bps; }
 
+    // End one physical busy period at an integral simulator timestamp.  This
+    // is deliberately explicit: equality with availablePs() may still hide a
+    // fractional boundary from the preceding packet, and a caller that has
+    // observed the wire idle must not let the next packet start before the
+    // published event time.
+    void rebaseIdle(uint64_t new_start_ps) {
+        if (new_start_ps < availablePs()) {
+            throw std::invalid_argument(
+                "RNIC wire serializer cannot rebase before availability");
+        }
+        _available = {new_start_ps, 0};
+    }
+
+    // DATA may be constrained both by the physical serializer and by the
+    // virtual PRBS-opportunity clock.  Before a real DATA frame is emitted,
+    // align both equal-capacity clocks to the later exact rational boundary.
+    void synchronizeAvailableWith(RnicWireSerializationClock& other) {
+        if (_wire_capacity_bps != other._wire_capacity_bps) {
+            throw std::invalid_argument(
+                "RNIC wire clocks require equal capacity to synchronize");
+        }
+        if (boundaryLess(_available, other._available)) {
+            _available = other._available;
+        } else {
+            other._available = _available;
+        }
+    }
+
 private:
     static constexpr uint64_t kSerializationNumeratorPerByte =
         UINT64_C(8000000000000);
@@ -101,6 +129,12 @@ private:
             boundary.floor_ps,
             boundary.remainder == 0 ? 0 : 1,
             "RNIC wire serialization timestamp overflow");
+    }
+
+    static bool boundaryLess(const Boundary& lhs, const Boundary& rhs) {
+        return lhs.floor_ps < rhs.floor_ps
+               || (lhs.floor_ps == rhs.floor_ps
+                   && lhs.remainder < rhs.remainder);
     }
 
     uint64_t _wire_capacity_bps;

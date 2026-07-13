@@ -33,6 +33,7 @@ RnicTxPort::RnicTxPort(uint64_t node_id,
     : _access_capacity_bps(access_capacity_bps),
       _packetization(std::move(packetization)),
       _wire_serializer(access_capacity_bps),
+      _data_opportunity_serializer(access_capacity_bps),
       _pacer(global_prbs_seed, node_id) {}
 
 void RnicTxPort::addFlow(
@@ -74,8 +75,24 @@ uint64_t RnicTxPort::effectiveWireRateBps(uint64_t flow_id) const {
     return requireFlow(flow_id).effective_wire_rate_bps;
 }
 
+bool RnicTxPort::hasDispatchableData() const {
+    for (const auto& item : _flows) {
+        const FlowState& state = item.second;
+        if (state.data_eligible
+            && state.payload_bytes_dispatched < state.payload_size_bytes
+            && state.effective_wire_rate_bps > 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+uint64_t RnicTxPort::nextWireOpportunityPs() const {
+    return std::max(nextDataOpportunityPs(), physicalSerializerAvailablePs());
+}
+
 RnicTxOpportunity RnicTxPort::dispatchOpportunity(uint64_t requested_start_ps) {
-    if (requested_start_ps < _wire_serializer.availablePs()) {
+    if (requested_start_ps < nextWireOpportunityPs()) {
         throw std::invalid_argument("RNIC TX opportunities cannot overlap");
     }
 
@@ -91,8 +108,9 @@ RnicTxOpportunity RnicTxPort::dispatchOpportunity(uint64_t requested_start_ps) {
         }
     }
 
+    RnicPrbsPacer next_pacer = _pacer;
     const std::optional<uint64_t> selected =
-        _pacer.selectWireEvent(
+        next_pacer.selectWireEvent(
             candidates,
             _access_capacity_bps,
             _packetization.maxWirePacketBytes());
@@ -115,8 +133,28 @@ RnicTxOpportunity RnicTxPort::dispatchOpportunity(uint64_t requested_start_ps) {
             "RNIC TX eligibility timestamp overflow");
     }
 
-    const RnicWireSerializationInterval interval =
-        _wire_serializer.serialize(requested_start_ps, event_wire_bytes);
+    RnicWireSerializationClock next_wire_serializer = _wire_serializer;
+    RnicWireSerializationClock next_data_opportunity_serializer =
+        _data_opportunity_serializer;
+    RnicWireSerializationInterval interval;
+    if (selected_state != nullptr) {
+        next_wire_serializer.synchronizeAvailableWith(
+            next_data_opportunity_serializer);
+        interval = next_wire_serializer.serialize(
+            requested_start_ps, event_wire_bytes);
+        next_data_opportunity_serializer = next_wire_serializer;
+    } else {
+        // The PRBS idle outcome advances only the virtual opportunity clock.
+        // The physical wire is known idle at this event boundary and remains
+        // available to a later high-priority control arrival.
+        next_wire_serializer.rebaseIdle(requested_start_ps);
+        interval = next_data_opportunity_serializer.serialize(
+            requested_start_ps, event_wire_bytes);
+    }
+
+    _pacer = next_pacer;
+    _wire_serializer = next_wire_serializer;
+    _data_opportunity_serializer = next_data_opportunity_serializer;
     if (selected_state != nullptr) {
         FlowState& state = *selected_state;
         packet = RnicTxPacket{state.flow_id,
@@ -134,6 +172,22 @@ RnicTxOpportunity RnicTxPort::dispatchOpportunity(uint64_t requested_start_ps) {
     }
 
     return {interval.start_ps, interval.end_ps, packet};
+}
+
+RnicWireSerializationInterval RnicTxPort::dispatchControl(
+        uint64_t requested_start_ps, uint64_t wire_bytes) {
+    if (requested_start_ps < physicalSerializerAvailablePs()) {
+        throw std::invalid_argument("RNIC TX control frames cannot overlap");
+    }
+    RnicWireSerializationClock next_wire_serializer = _wire_serializer;
+    const RnicWireSerializationInterval interval =
+        next_wire_serializer.serialize(requested_start_ps, wire_bytes);
+    _wire_serializer = next_wire_serializer;
+    return interval;
+}
+
+void RnicTxPort::rebasePhysicalIdle(uint64_t now_ps) {
+    _wire_serializer.rebaseIdle(now_ps);
 }
 
 RnicPacketExtent RnicTxPort::headExtent(const FlowState& state) const {

@@ -281,10 +281,18 @@ b_i = r_i M / l_i,       b_idle = C - sum_i r_i,
 B = b_idle + sum_i b_i,  p_i = b_i/B.
 ```
 
-The selected DATA extent or explicit `M`-byte idle event starts immediately at
-the physical serializer's available boundary; no positive random gap is added.
-This preserves exact wire rates before finite-precision quantization. Indeed,
-`sum_j b_j l_j = C M`, where the idle event has `l_idle = M`, so
+The selected DATA extent starts immediately at the later of the virtual PRBS
+opportunity boundary and the physical serializer boundary; no positive random
+gap is added. An `M`-byte idle outcome advances only the virtual opportunity
+clock: it leaves the physical wire free, so a high-priority CN control frame
+that arrives during that interval can serialize there. Control consumes the
+same physical node serializer as DATA but does not consume a DATA lottery draw.
+If a control frame extends past the next virtual DATA boundary, that DATA
+opportunity waits for the control frame to finish.
+
+In a control-free interval this preserves exact wire rates before
+finite-precision quantization. Indeed, `sum_j b_j l_j = C M`, where the virtual
+idle event has `l_idle = M`, so
 
 ```text
 E[event duration] = (8/C) sum_j p_j l_j = 8M/B,
