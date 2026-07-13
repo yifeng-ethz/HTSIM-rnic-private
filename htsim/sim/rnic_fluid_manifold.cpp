@@ -1,8 +1,6 @@
 // -*- c-basic-offset: 4; indent-tabs-mode: nil -*-
 #include "rnic_fluid_manifold.h"
 
-#include <algorithm>
-#include <cmath>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -34,7 +32,10 @@ void RnicFluidManifold::addFlow(const RnicFluidFlowSpec& flow, TimePs now_ps) {
 
     FlowState state;
     state.spec = flow;
-    state.remaining_bits = static_cast<long double>(flow.size_bytes) * 8.0L;
+    state.remaining_service_debt =
+        static_cast<ServiceDebt>(flow.size_bytes)
+        * static_cast<ServiceDebt>(8)
+        * kPicosecondsPerSecond;
     if (flow.size_bytes == 0) {
         state.service_completion_time_ps = now_ps;
         state.delivery_completion_time_ps = deliveryTimeFor(now_ps);
@@ -56,6 +57,10 @@ void RnicFluidManifold::advanceTo(TimePs now_ps) {
             break;
         }
 
+        // Delivery is part of the completion transition.  Validate its fixed
+        // propagation shift before changing time or service debt so an
+        // unrepresentable delivery cannot partially advance the manifold.
+        static_cast<void>(deliveryTimeFor(*next_completion));
         serveUntil(*next_completion);
         completeServicedFlows();
         recomputeAllocation();
@@ -87,31 +92,44 @@ RnicFluidFlowSnapshot RnicFluidManifold::flow(FlowId flow_id) const {
     }
     const FlowState& state = item->second;
     return {state.spec,
-            state.remaining_bits,
             state.rate_bps,
             state.service_completion_time_ps,
             state.delivery_completion_time_ps};
 }
 
+std::optional<RnicFluidManifold::TimePs>
+RnicFluidManifold::projectedServiceCompletionTime(FlowId flow_id) const {
+    const auto item = _flows.find(flow_id);
+    if (item == _flows.end()) {
+        throw std::out_of_range("unknown fluid flow id");
+    }
+    const FlowState& state = item->second;
+    if (state.service_completion_time_ps.has_value() || state.rate_bps == 0) {
+        return std::nullopt;
+    }
+    if (state.remaining_service_debt == 0) {
+        throw std::logic_error("active fluid flow has no remaining service");
+    }
+
+    const ServiceDebt rate = static_cast<ServiceDebt>(state.rate_bps);
+    ServiceDebt duration = state.remaining_service_debt / rate;
+    if (state.remaining_service_debt % rate != 0) {
+        ++duration;
+    }
+
+    const TimePs maximum_duration = std::numeric_limits<TimePs>::max() - _now_ps;
+    if (duration > static_cast<ServiceDebt>(maximum_duration)) {
+        throw std::overflow_error("fluid service completion time overflow");
+    }
+    return _now_ps + static_cast<TimePs>(duration);
+}
+
 std::optional<RnicFluidManifold::TimePs> RnicFluidManifold::nextServiceCompletionTime() const {
     std::optional<TimePs> next;
     for (const auto& item : _flows) {
-        const FlowState& state = item.second;
-        if (state.service_completion_time_ps.has_value() || state.rate_bps == 0) {
-            continue;
-        }
-
-        long double duration = std::ceil(
-            state.remaining_bits * kPicosecondsPerSecond
-            / static_cast<long double>(state.rate_bps));
-        duration = std::max(1.0L, duration);
-        const long double max_duration = static_cast<long double>(
-            std::numeric_limits<TimePs>::max() - _now_ps);
-        if (duration > max_duration) {
-            throw std::overflow_error("fluid service completion time overflow");
-        }
-        const TimePs completion = _now_ps + static_cast<TimePs>(duration);
-        if (!next.has_value() || completion < *next) {
+        const std::optional<TimePs> completion =
+            projectedServiceCompletionTime(item.first);
+        if (completion.has_value() && (!next.has_value() || *completion < *next)) {
             next = completion;
         }
     }
@@ -128,25 +146,45 @@ void RnicFluidManifold::serveUntil(TimePs time_ps) {
         if (state.service_completion_time_ps.has_value() || state.rate_bps == 0) {
             continue;
         }
-        const long double served_bits = static_cast<long double>(state.rate_bps)
-                                        * static_cast<long double>(duration_ps)
-                                        / kPicosecondsPerSecond;
-        state.remaining_bits = std::max(0.0L, state.remaining_bits - served_bits);
+        const ServiceDebt served =
+            static_cast<ServiceDebt>(state.rate_bps)
+            * static_cast<ServiceDebt>(duration_ps);
+        if (served >= state.remaining_service_debt) {
+            state.remaining_service_debt = 0;
+        } else {
+            state.remaining_service_debt -= served;
+        }
     }
     _now_ps = time_ps;
 }
 
 void RnicFluidManifold::completeServicedFlows() {
+    bool has_new_completion = false;
+    for (const auto& item : _flows) {
+        const FlowState& state = item.second;
+        if (!state.service_completion_time_ps.has_value()
+            && state.remaining_service_debt == 0) {
+            has_new_completion = true;
+            break;
+        }
+    }
+    if (!has_new_completion) {
+        return;
+    }
+
+    // All flows completed in this event share the same last-bit time and fixed
+    // propagation.  Compute it once before mutating any flow so tied
+    // completions commit together or not at all.
+    const TimePs delivery_completion_time_ps = deliveryTimeFor(_now_ps);
     for (auto& item : _flows) {
         FlowState& state = item.second;
         if (state.service_completion_time_ps.has_value()
-            || state.remaining_bits > kCompletionEpsilonBits) {
+            || state.remaining_service_debt != 0) {
             continue;
         }
-        state.remaining_bits = 0.0L;
         state.rate_bps = 0;
         state.service_completion_time_ps = _now_ps;
-        state.delivery_completion_time_ps = deliveryTimeFor(_now_ps);
+        state.delivery_completion_time_ps = delivery_completion_time_ps;
     }
 }
 

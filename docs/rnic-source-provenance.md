@@ -53,7 +53,7 @@ All paths below are local to the development machine.
 | RB restores the dispatch envelope within one tick/packet edge; shared storage scales with admitted peak rate times `Delta`, not flow count. | Patent p. 9, Equations 9--13; paper p. 17, Sections B.4--B.5; Ring-CAM slides 9--14 | Enforce `W_RB >= R_in_peak * Delta + MTU`; separate early, late, and capacity violations. |
 | `rnic-nn` has finite source/destination links, fixed propagation, instantaneous centralized max-min allocation, and no internal congestion queue, loss, backpressure, reorder, or variable delay. | Current discussion; paper pp. 2--3, Section 2.1; Appendix B.1/B.3 | Use a central collision-free source/destination packet calendar. Global state need not be broadcast as per-sender events. |
 | Packetized NN retains exact packet sizes and bounded serialization quantization. | Paper p. 3, Section 2.2; Appendix B.1/B.3 | The final short packet is not padded or charged as a full MTU. Packetization is not congestion. |
-| `rnic-nn-fluid` uses the same edge constraints and fixed propagation but continuous service. | Current discussion; paper p. 16, Sections B.1 and B.3 | No packets, PRBS, ACKs, Ring-CAM, or quantization; joins/leaves change max-min rates at the same timestamp. |
+| `rnic-nn-fluid` uses the same edge constraints and fixed propagation but continuous service. | Current discussion; paper p. 16, Sections B.1 and B.3 | No packets, packetization, packet-size quantization, PRBS, ACKs, or Ring-CAM. Joins/leaves change max-min rates at the same timestamp. Within its checked 128-bit domain, the oracle solves the ideal allocation as exact rationals, floors each flow independently to whole bps, and ceils exact last-bit boundaries to picoseconds; unsupported rationals are rejected without a floating fallback. A positive share below `1` bps therefore becomes zero by explicit numerical policy. |
 | Every Clos tier uses the Tomahawk 3 behavioral model with true ingress/egress VoQs. | Current discussion; NERSC slide 3 only supports TM3+ as a spraying-capable example | Exact switch scheduling is a declared simulator contract, not a reverse-engineered ASIC claim. |
 | Network-calculus checks precede plot matching. | Paper Appendix B; book Sections 1.2, 1.5 and 2.4.3 | Enforce edge feasibility, packet service-curve slack, fixed-delay causality, RB envelope, and buffer bounds before trend comparisons. |
 
@@ -80,9 +80,10 @@ These are directional/statistical tests, not exact-output tests:
 - Independent sender PRBS streams reduce aggregate phase alignment and
   short-window variance as sender count grows. PRBS alone is not expected to
   undo burstiness introduced by switches.
-- Packetized NN converges toward fluid NN as MTU decreases. Their difference is
-  bounded deterministic serialization/quantization, not a stochastic or
-  load-dependent manifold queue.
+- Packetized NN converges toward fluid NN as MTU decreases. Their packet-model
+  difference is bounded deterministic serialization/packet quantization, not a
+  stochastic or load-dependent manifold queue. The fluid reference still uses
+  the declared componentwise whole-bps floor and picosecond event ceiling.
 
 Historical slide-4 values and paper Figure 7 values may be plotted for context,
 but failed final-digit comparisons are investigations rather than regressions.
@@ -130,7 +131,9 @@ the model from the non-golden artifacts above:
 - [ ] NN oracle update semantics, max-min solver/tie rule, source/destination
   edge constraints, packet-slot matching policy, final-packet accounting, fixed
   in-flight delay, and confirmation that the manifold has no congestion queue;
-- [ ] fluid-NN rate-change accounting and whether propagation is charged before,
+- [ ] fluid-NN rate-change accounting, exact-rational allocation plus
+  componentwise whole-bps floor (including any sub-1-bps zero shares),
+  picosecond completion ceiling, and whether propagation is charged before,
   during, or after continuous service;
 - [ ] metric definitions and measurement windows, especially FCT/JCT/TTOP,
   payload-vs-wire goodput, slowdown denominator, warm-up, and drain interval;

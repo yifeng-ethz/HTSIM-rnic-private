@@ -102,6 +102,7 @@ set(SOURCE_FILES
     randomqueue.cpp
     rnic_collective_control.cpp
     rnic_fluid_manifold.cpp
+    rnic_fluid_manifold_runtime.cpp
     rnic_max_min_allocator.cpp
     rnic_packetized_manifold.cpp
     rnic_port.cpp
@@ -156,6 +157,7 @@ if ( ENABLE_TESTS )
         rnic_burst_trend_test
         rnic_collective_control_test
         rnic_fluid_manifold_test
+        rnic_fluid_manifold_runtime_test
         rnic_max_min_allocator_test
         rnic_packetized_manifold_test
         rnic_port_test

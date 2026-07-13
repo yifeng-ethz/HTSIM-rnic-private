@@ -142,9 +142,17 @@ sum(wire_bit_rate_f for f sourced at s) <= C_{b,up}(s)
 sum(wire_bit_rate_f for f destined to d) <= C_{b,down}(d).
 ```
 
-The central oracle uses progressive filling to produce a max-min fair feasible
-allocation. A symmetric `N:1` incast therefore assigns `C_{b,down}/N` to every
-active flow (subject to any smaller source-edge or demand limit).
+The central oracle uses progressive filling to produce the exact rational
+max-min fair allocation. The executable rate for each flow is then floored
+componentwise to whole bits per second; any fractional leftover remains idle
+rather than being assigned by flow-ID priority. A symmetric `N:1` incast has
+ideal share `C_{b,down}/N` (subject to any smaller source-edge or demand limit)
+and executable share `floor(C_{b,down}/N)` bps. An ideal share below `1` bps
+therefore becomes a zero-rate dormant flow until a later allocation change.
+This is an explicit numerical policy, not packetization or a congestion queue.
+Normalized exact-rational numerators and denominators must fit the allocator's
+checked unsigned 128-bit domain; an unsupported case is rejected rather than
+approximated with floating point.
 
 ## Packetized null-network manifold
 
@@ -188,7 +196,17 @@ single-packet slack implied by the packetized service curve.
 constraints to continuous bytes. A rate change splits an in-progress transfer
 at the change time, accounts service under the old rate, and reschedules its
 completion under the new rate. Propagation remains fixed. There are no packets,
-PRBS slots, acknowledgements, resequencing, loss recovery, or quantization.
+PRBS slots, acknowledgements, resequencing, loss recovery, packetization, or
+packet-size quantization.
+
+Payload service debt is exact at the allocator's whole-bps output: internally
+it is represented as `payload_bits * 10^12`, and an interval subtracts
+`rate_bps * elapsed_ps`. The ideal max-min rates are exact rationals before the
+componentwise whole-bps floor described above. A last-bit boundary is scheduled
+at the ceiling of its exact rational duration to the next representable
+picosecond, after which fixed propagation is added. Thus this profile removes
+packet quantization, but it does not claim an infinitely fine rate or time
+axis. In particular, a positive rational share below `1` bps floors to zero.
 
 This profile is the `M -> 0` idealization used to separate packetization effects
 from topology and control-loop effects.
@@ -333,7 +351,8 @@ ATLAHS commit.
 
 Tests are layered:
 
-1. exact invariants: max-min feasibility/fairness, no null-manifold queue or
+1. exact invariants: exact-rational ideal max-min fairness followed by the
+   declared componentwise whole-bps floor, no null-manifold queue or
    load-dependent latency, packet service-curve slack, declaration gate,
    resequencer window/tick rules, node-wide serialization, and deterministic
    seeded replay;
