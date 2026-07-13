@@ -100,6 +100,8 @@ set(SOURCE_FILES
     queue_lossless_input.cpp
     queue_lossless_output.cpp
     randomqueue.cpp
+    rnic_max_min_allocator.cpp
+    rnic_profile.cpp
     rng.cpp
     roce.cpp
     rocepacket.cpp
@@ -144,6 +146,8 @@ if ( ENABLE_TESTS )
     # Unit tests.
     set(UNIT_TEST_FILES
         pipe_test
+        rnic_max_min_allocator_test
+        rnic_profile_test
     )
 
     foreach(UNIT_TEST_FILE ${UNIT_TEST_FILES}) 
