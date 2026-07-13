@@ -131,7 +131,13 @@ void FatTreeTopologyCfg::initialize(uint32_t tiers, uint32_t no_of_nodes, linksp
                                     queue_type q, queue_type snd) {
     set_tiers(tiers);
     set_linkspeeds(linkspeed);
-    set_queue_sizes(queuesize);
+    // read_cfg() has already populated file-backed queue sizes, either from
+    // the caller's default or from explicit per-tier values in the file.
+    // Do not replace those values with the zero sentinel passed by the
+    // file-backed constructor while finalizing the remaining parameters.
+    if (!_from_file) {
+        set_queue_sizes(queuesize);
+    }
     if ((latency != 0 || switch_latency != 0)) {
         for (int tier = TOR_TIER; tier <= CORE_TIER; tier++) {
             if ((_link_latencies[tier] != 0 && _link_latencies[tier] != latency)

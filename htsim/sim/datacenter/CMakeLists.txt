@@ -71,3 +71,11 @@ foreach(EXECUTABLE ${ALL_EXECUTABLES})
     add_symlink_target(${EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR})
 endforeach()
 
+if ( ENABLE_TESTS )
+    add_executable(fat_tree_topology_cfg_test fat_tree_topology_cfg_test.cpp)
+    target_link_libraries(fat_tree_topology_cfg_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(fat_tree_topology_cfg_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+endif()
