@@ -27,8 +27,15 @@ public:
     using AllocationMap = std::map<FlowId, RateBps>;
 
     // Computes an unweighted max-min allocation over source access uplinks,
-    // destination access downlinks, and optional per-flow demand caps.
-    // Continuous fair rates are rounded down to whole bps in the result.
+    // destination access downlinks, and optional per-flow demand caps. The
+    // continuous allocation is solved with exact rational arithmetic, then
+    // each rate is independently rounded down to whole bps. Fractional
+    // leftovers remain idle rather than being assigned by flow-ID priority.
+    //
+    // Exact rational numerators and denominators are limited to 128 bits.
+    // Inputs whose normalized intermediate values exceed that supported domain
+    // throw std::overflow_error; the allocator never falls back to floating
+    // point or returns an approximate allocation.
     static AllocationMap allocate(const std::vector<RnicMaxMinFlow>& active_flows,
                                   const CapacityMap& source_uplink_capacity_bps,
                                   const CapacityMap& destination_downlink_capacity_bps);
