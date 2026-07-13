@@ -101,9 +101,15 @@ extent.
 Both endpoint serializers retain the fractional remainder of the exact
 rational wire boundary across back-to-back packets. Reported timestamps are
 ceilings of those cumulative boundaries, not independently rounded packet
-durations. The remainder resets only after a strictly later, observably idle
-start. Intermediate byte/rate products use 128-bit arithmetic; an extent is
-rejected only when its resulting simulator timestamp cannot be represented.
+durations. The remainder resets only for an observably idle busy-period
+restart. An arrival equal to the prior boundary's published ceiling still
+rebases when the exact fractional boundary lies earlier; otherwise the next
+packet would begin before its arrival. Intermediate byte/rate products use
+128-bit arithmetic; an extent is rejected when its resulting simulator
+timestamp cannot be represented. The fixed-envelope packet calendar also
+rejects a configured full-`M` envelope
+shorter than the simulator's one-picosecond tick because distinct slot
+boundaries would otherwise collapse.
 
 All packetized CN and NN grants are **wire-rate grants**. In particular,
 `margin * C_b / N_hat` divides a physical wire capacity. Treating that value as
@@ -174,6 +180,19 @@ choose among equally feasible matchings or flow ties, but it must never schedule
 two packets that violate a source or destination access-link slot. This is the
 packetized counterpart of max-min service, not a best-effort fabric.
 
+Scheduler version 1 uses a homogeneous full-`M` envelope grid. Within a
+selected envelope, an exact wire extent `l <= M` is right-aligned on the source
+edge, enters the manifold at the envelope's exact rational terminal boundary,
+crosses fixed delay `L`, and is serialized immediately on the destination edge.
+The unused source prefix and destination suffix stay idle; they are not charged
+to the payload or wire-byte ledgers. Published timestamps are ceilings of the
+exact rational boundaries. A join changes the next uncommitted envelope at the
+same simulation timestamp, but it cannot retroactively preempt an envelope
+whose scheduling event already ran at that timestamp. When the grant table has
+no positive service (including an all-dormant sub-1-bps epoch), the next busy
+period rebases its rational grid at the new arrival time instead of simulating
+empty envelopes; dormant credit and flow identity remain intact.
+
 For synchronized equal-size `N:1` flows, packetized round-robin has a useful
 legacy reference ledger. With flow size `S`, full packet size `M`,
 `P = ceil(S/M)`, final packet size `R = S - (P - 1)M`, and `U = S/C_B`, the
@@ -186,9 +205,22 @@ T_i = L + U + (N(P - 1)M + iR)/C_B.
 
 The physical engine pipelines source serialization, fixed-delay transit, and
 destination serialization whenever causality permits, so it must not be forced
-to reproduce that non-overlapped ledger. Tests retain the formula with its
-convention named, then independently enforce capacity lower bounds and the
-single-packet slack implied by the packetized service curve.
+to reproduce that non-overlapped ledger. There is also one intentional version-1
+difference: the paper packs final tails at `R/C_B`, whereas the fixed-envelope
+scheduler advances terminal packets at one `M/C_B` envelope per selected
+destination. For `K` terminal tails it can therefore leave
+`sum_j (M - l_j)` scheduled bytes idle. Full-size continuously backlogged
+aggregate traffic at every grant-saturated endpoint retains the endpoint-link
+packet service curve (the scheduler covers that endpoint in every envelope),
+but an arbitrary short-only incast does not. This is not a per-flow
+one-packet-discrepancy claim: matching constraints can move an individual
+flow's service lead or lag across several packet envelopes while its long-run
+grant is preserved. Tests retain the packed-tail formula as a named analytical
+comparison and separately lock the runtime's exact wire accounting, fixed
+delay, edge feasibility, saturated-endpoint coverage, and explicit
+terminal-envelope tax. A future packed-tail runtime requires an asynchronous
+variable-packet crossbar calendar, not a silent reinterpretation of this
+scheduler version.
 
 ## Fluid topology-free manifold (`rnic-nn-fluid`)
 
@@ -353,7 +385,8 @@ Tests are layered:
 
 1. exact invariants: exact-rational ideal max-min fairness followed by the
    declared componentwise whole-bps floor, no manifold-internal queue or
-   load-dependent latency, packet service-curve slack, declaration gate,
+   load-dependent latency, aggregate endpoint packet service curves,
+   declaration gate,
    resequencer window/tick rules, node-wide serialization, and deterministic
    seeded replay;
 2. trend regressions: packetized NN approaches fluid NN as `M` decreases,

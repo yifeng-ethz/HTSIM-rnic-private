@@ -16,6 +16,7 @@ namespace {
 using Calendar = RnicPacketizedSlotCalendar;
 using Grant = RnicPacketizedGrant;
 using Reservation = RnicPacketizedReservation;
+using Transmission = RnicPacketizedTransmission;
 
 constexpr uint64_t kCapacity = UINT64_C(12000000000);
 constexpr uint64_t kQuantumBytes = 1500;
@@ -71,6 +72,39 @@ TEST(RnicPacketizedSlotCalendarTest, FindsMaximumMatchingInsteadOfGreedySingleEd
 
     const auto second = calendar.reserveNextSlot();
     EXPECT_EQ(flowIds(second), (std::vector<uint64_t>{1}));
+}
+
+TEST(RnicPacketizedSlotCalendarTest, CoversEverySaturatedEndpointInEverySlot) {
+    constexpr uint64_t capacity = 120;
+    Calendar calendar(capacity, 1, 0);
+    calendar.beginEpoch(0,
+                        {{1, 0, 2, capacity / 2},
+                         {2, 0, 3, capacity / 2},
+                         {3, 1, 0, capacity / 2},
+                         {4, 1, 1, capacity / 2},
+                         {5, 2, 1, capacity / 2},
+                         {6, 2, 3, capacity / 2}});
+
+    std::map<uint64_t, uint64_t> packet_count;
+    for (uint64_t slot = 0; slot < 1000; ++slot) {
+        const auto reservations = calendar.reserveNextSlot();
+        ASSERT_EQ(reservations.size(), 3u) << "slot " << slot;
+
+        std::set<uint32_t> sources;
+        std::set<uint32_t> destinations;
+        for (const Reservation& reservation : reservations) {
+            sources.insert(reservation.sourceNode());
+            destinations.insert(reservation.destinationNode());
+            ++packet_count[reservation.flowId()];
+        }
+        EXPECT_EQ(sources, (std::set<uint32_t>{0, 1, 2})) << "slot " << slot;
+        EXPECT_NE(destinations.count(1), 0u) << "slot " << slot;
+        EXPECT_NE(destinations.count(3), 0u) << "slot " << slot;
+    }
+
+    for (uint64_t flow_id = 1; flow_id <= 6; ++flow_id) {
+        EXPECT_EQ(packet_count[flow_id], 500u) << "flow " << flow_id;
+    }
 }
 
 TEST(RnicPacketizedSlotCalendarTest, NeverOverlapsSourceOrDestinationInASlot) {
@@ -170,6 +204,81 @@ TEST(RnicPacketizedSlotCalendarTest, EpochAffectsOnlyUnreservedSlots) {
     EXPECT_EQ(next.sourceSlotStartPs(), committed.sourceSlotEndPs());
 }
 
+TEST(RnicPacketizedSlotCalendarTest, RebaseIdleStartsNewRationalBusyPeriod) {
+    constexpr uint64_t kSevenTerabits = UINT64_C(7000000000000);
+    Calendar calendar(kSevenTerabits, 3, 5);
+    calendar.beginEpoch(0, {{1, 10, 20, kSevenTerabits}});
+    calendar.reserveNextSlot();
+
+    const uint64_t preserved_slot = calendar.nextSlotIndex();
+    ASSERT_EQ(preserved_slot, 1u);
+    ASSERT_EQ(calendar.nextSlotStartPs(), 4u);
+    calendar.beginEpoch(preserved_slot, {});
+    const uint64_t preserved_epoch = calendar.allocationEpoch();
+
+    calendar.rebaseIdle(100);
+    EXPECT_EQ(calendar.nextSlotIndex(), preserved_slot);
+    EXPECT_EQ(calendar.allocationEpoch(), preserved_epoch);
+    EXPECT_EQ(calendar.nextSlotStartPs(), 100u);
+
+    calendar.beginEpoch(preserved_slot, {{1, 10, 20, kSevenTerabits}});
+    const Reservation reservation = calendar.reserveNextSlot().at(0);
+    EXPECT_EQ(reservation.slotIndex(), preserved_slot);
+    EXPECT_EQ(reservation.sourceSlotStartPs(), 100u);
+    EXPECT_EQ(reservation.sourceSlotEndPs(), 104u);
+
+    const Transmission full =
+        reservation.materializePacket(RnicPacketExtent(3, 3));
+    EXPECT_EQ(full.sourceSerializationStartPs(), 100u);
+    EXPECT_EQ(full.sourceSerializationEndPs(), 104u);
+}
+
+TEST(RnicPacketizedSlotCalendarTest, RebaseIdleValidatesStateTransactionally) {
+    constexpr uint64_t kSevenTerabits = UINT64_C(7000000000000);
+    Calendar calendar(kSevenTerabits, 3, 5);
+    calendar.beginEpoch(0, {{1, 10, 20, kSevenTerabits}});
+
+    EXPECT_THROW(calendar.rebaseIdle(100), std::logic_error);
+    EXPECT_EQ(calendar.nextSlotIndex(), 0u);
+    EXPECT_EQ(calendar.nextSlotStartPs(), 0u);
+
+    calendar.reserveNextSlot();
+    calendar.beginEpoch(calendar.nextSlotIndex(), {});
+    const uint64_t preserved_slot = calendar.nextSlotIndex();
+    const uint64_t preserved_epoch = calendar.allocationEpoch();
+    const uint64_t preserved_start = calendar.nextSlotStartPs();
+    ASSERT_GT(preserved_start, 0u);
+
+    EXPECT_THROW(calendar.rebaseIdle(preserved_start - 1), std::invalid_argument);
+    EXPECT_EQ(calendar.nextSlotIndex(), preserved_slot);
+    EXPECT_EQ(calendar.allocationEpoch(), preserved_epoch);
+    EXPECT_EQ(calendar.nextSlotStartPs(), preserved_start);
+
+    calendar.rebaseIdle(100);
+    EXPECT_THROW(calendar.beginEpoch(
+                     preserved_slot, {{1, 10, 21, kSevenTerabits}}),
+                 std::invalid_argument);
+    EXPECT_EQ(calendar.nextSlotIndex(), preserved_slot);
+    EXPECT_EQ(calendar.allocationEpoch(), preserved_epoch);
+    EXPECT_EQ(calendar.nextSlotStartPs(), 100u);
+}
+
+TEST(RnicPacketizedSlotCalendarTest, RebaseIdlePreservesDormantZeroGrantFlow) {
+    Calendar calendar(1, 1, 0);
+    calendar.beginEpoch(0, {{1, 10, 20, 0}});
+    const uint64_t preserved_epoch = calendar.allocationEpoch();
+
+    calendar.rebaseIdle(100);
+    EXPECT_EQ(calendar.nextSlotIndex(), 0U);
+    EXPECT_EQ(calendar.allocationEpoch(), preserved_epoch);
+    EXPECT_EQ(calendar.nextSlotStartPs(), 100U);
+
+    calendar.beginEpoch(0, {{1, 10, 20, 1}});
+    const Reservation reservation = calendar.reserveNextSlot().at(0);
+    EXPECT_EQ(reservation.flowId(), 1U);
+    EXPECT_EQ(reservation.sourceSlotStartPs(), 100U);
+}
+
 TEST(RnicPacketizedSlotCalendarTest, LowGrantCreatesSlotsNotPositiveGapJitter) {
     Calendar calendar(kCapacity, kQuantumBytes, 0);
     calendar.beginEpoch(0, {{1, 10, 20, kCapacity / 4}});
@@ -207,6 +316,25 @@ TEST(RnicPacketizedSlotCalendarTest, InputPermutationHasIdenticalReplay) {
     }
 }
 
+TEST(RnicPacketizedSlotCalendarTest, CopiedIdentityRegistryIsIsolatedOnWrite) {
+    Calendar original(kCapacity, kQuantumBytes, 0);
+    original.beginEpoch(0, {{1, 10, 20, kCapacity}});
+    Calendar fork = original;
+
+    EXPECT_NO_THROW(fork.beginEpoch(
+        0,
+        {{1, 10, 20, kCapacity}, {2, 30, 40, kCapacity}}));
+    EXPECT_NO_THROW(original.beginEpoch(
+        0,
+        {{1, 10, 20, kCapacity}, {2, 31, 41, kCapacity}}));
+
+    EXPECT_THROW(
+        fork.beginEpoch(
+            0,
+            {{1, 10, 20, kCapacity}, {2, 31, 41, kCapacity}}),
+        std::invalid_argument);
+}
+
 TEST(RnicPacketizedSlotCalendarTest, ReservesOnlyFullWireQuanta) {
     Calendar calendar(kCapacity, kQuantumBytes, 50);
     calendar.beginEpoch(0, {{1, 10, 20, kCapacity}});
@@ -216,6 +344,145 @@ TEST(RnicPacketizedSlotCalendarTest, ReservesOnlyFullWireQuanta) {
     EXPECT_EQ(reservation.sourceSlotEndPs() - reservation.sourceSlotStartPs(),
               kExactSlotPs);
     EXPECT_GT(reservation.destinationSlotEndPs(), reservation.manifoldExitPs());
+}
+
+TEST(RnicPacketizedReservationTest, MaterializesFromExactNonintegralBoundaries) {
+    constexpr uint64_t kSevenTerabits = UINT64_C(7000000000000);
+    Calendar calendar(kSevenTerabits, 3, 5);
+    calendar.beginEpoch(0, {{1, 10, 20, kSevenTerabits}});
+
+    const Reservation reservation = calendar.reserveNextSlot().at(0);
+    const Transmission packet =
+        reservation.materializePacket(RnicPacketExtent(1, 1));
+
+    // Exact boundaries, in ps, are source [16/7, 24/7], manifold exit
+    // 59/7, and destination end 67/7. Each exported event timestamp is the
+    // ceiling of that cumulative boundary.
+    EXPECT_EQ(packet.sourceSerializationStartPs(), 3u);
+    EXPECT_EQ(packet.sourceSerializationEndPs(), 4u);
+    EXPECT_EQ(packet.manifoldEntryPs(), 4u);
+    EXPECT_EQ(packet.manifoldExitPs(), 9u);
+    EXPECT_EQ(packet.destinationSerializationStartPs(), 9u);
+    EXPECT_EQ(packet.destinationSerializationEndPs(), 10u);
+
+    // Starting a fresh integer serializer at ceil(59/7) would instead end at
+    // 11 ps. The destination must retain the cumulative rational boundary.
+    EXPECT_NE(packet.destinationSerializationEndPs(),
+              packet.destinationSerializationStartPs() + 2);
+}
+
+TEST(RnicPacketizedReservationTest, RightAlignsShortTailInSourceEnvelope) {
+    Calendar calendar(kCapacity, kQuantumBytes, 11);
+    calendar.beginEpoch(0, {{1, 10, 20, kCapacity}});
+
+    const Reservation reservation = calendar.reserveNextSlot().at(0);
+    const Transmission tail =
+        reservation.materializePacket(RnicPacketExtent(80, 100));
+
+    // The 100-byte duration is 66,666 2/3 ps. Subtracting its rounded-up
+    // integer duration from the 1,000,000 ps envelope end would incorrectly
+    // produce 933,333 ps; exact right alignment rounds to 933,334 ps.
+    EXPECT_EQ(tail.sourceSerializationStartPs(), 933334u);
+    EXPECT_EQ(tail.sourceSerializationEndPs(), kExactSlotPs);
+    EXPECT_GT(tail.sourceSerializationStartPs(),
+              reservation.sourceSlotStartPs());
+    EXPECT_EQ(tail.sourceSerializationEndPs(), reservation.sourceSlotEndPs());
+    EXPECT_EQ(tail.manifoldEntryPs(), tail.sourceSerializationEndPs());
+}
+
+TEST(RnicPacketizedReservationTest, PreservesFixedResidenceForShortPacket) {
+    constexpr uint64_t kSevenTerabits = UINT64_C(7000000000000);
+    constexpr uint64_t kPropagationPs = 123;
+    Calendar calendar(kSevenTerabits, 3, kPropagationPs);
+    calendar.beginEpoch(0, {{1, 10, 20, kSevenTerabits}});
+
+    const Transmission packet = calendar.reserveNextSlot()
+                                    .at(0)
+                                    .materializePacket(RnicPacketExtent(0, 1));
+
+    EXPECT_EQ(packet.manifoldExitPs() - packet.manifoldEntryPs(),
+              kPropagationPs);
+    EXPECT_EQ(packet.destinationSerializationStartPs(), packet.manifoldExitPs());
+}
+
+TEST(RnicPacketizedReservationTest, DestinationUsesExactSameWireExtent) {
+    Calendar calendar(kCapacity, kQuantumBytes, 11);
+    calendar.beginEpoch(0, {{1, 10, 20, kCapacity}});
+
+    const Transmission packet = calendar.reserveNextSlot()
+                                    .at(0)
+                                    .materializePacket(RnicPacketExtent(80, 100));
+
+    EXPECT_EQ(packet.extent().payloadBytes(), 80u);
+    EXPECT_EQ(packet.extent().wireBytes(), 100u);
+    EXPECT_EQ(packet.destinationSerializationStartPs(), 1000011u);
+    EXPECT_EQ(packet.destinationSerializationEndPs(), 1066678u);
+}
+
+TEST(RnicPacketizedReservationTest, AdjacentSlotsNeverOverlapAfterMaterialization) {
+    constexpr uint64_t kSevenTerabits = UINT64_C(7000000000000);
+    Calendar calendar(kSevenTerabits, 3, 5);
+    calendar.beginEpoch(0, {{1, 10, 20, kSevenTerabits}});
+
+    uint64_t previous_source_end = 0;
+    uint64_t previous_destination_end = 0;
+    for (uint64_t wire_bytes : {1u, 2u, 3u, 1u, 3u, 2u}) {
+        const Reservation reservation = calendar.reserveNextSlot().at(0);
+        const Transmission packet = reservation.materializePacket(
+            RnicPacketExtent(wire_bytes, wire_bytes));
+
+        EXPECT_GE(packet.sourceSerializationStartPs(), previous_source_end);
+        EXPECT_GE(packet.destinationSerializationStartPs(),
+                  previous_destination_end);
+        EXPECT_GE(packet.sourceSerializationStartPs(),
+                  reservation.sourceSlotStartPs());
+        EXPECT_LE(packet.destinationSerializationEndPs(),
+                  reservation.destinationSlotEndPs());
+        previous_source_end = packet.sourceSerializationEndPs();
+        previous_destination_end = packet.destinationSerializationEndPs();
+    }
+}
+
+TEST(RnicPacketizedReservationTest, FullExtentMatchesReservationEnvelope) {
+    constexpr uint64_t kSevenTerabits = UINT64_C(7000000000000);
+    Calendar calendar(kSevenTerabits, 3, 17, 101);
+    calendar.beginEpoch(0, {{7, 10, 20, kSevenTerabits}});
+
+    calendar.reserveNextSlot();
+    calendar.reserveNextSlot();
+    const Reservation reservation = calendar.reserveNextSlot().at(0);
+    const Transmission packet =
+        reservation.materializePacket(RnicPacketExtent(2, 3));
+
+    EXPECT_EQ(packet.slotIndex(), reservation.slotIndex());
+    EXPECT_EQ(packet.allocationEpoch(), reservation.allocationEpoch());
+    EXPECT_EQ(packet.flowId(), reservation.flowId());
+    EXPECT_EQ(packet.sourceNode(), reservation.sourceNode());
+    EXPECT_EQ(packet.destinationNode(), reservation.destinationNode());
+    EXPECT_EQ(packet.sourceSerializationStartPs(),
+              reservation.sourceSlotStartPs());
+    EXPECT_EQ(packet.sourceSerializationEndPs(), reservation.sourceSlotEndPs());
+    EXPECT_EQ(packet.manifoldEntryPs(), reservation.manifoldEntryPs());
+    EXPECT_EQ(packet.manifoldExitPs(), reservation.manifoldExitPs());
+    EXPECT_EQ(packet.destinationSerializationStartPs(),
+              reservation.destinationSlotStartPs());
+    EXPECT_EQ(packet.destinationSerializationEndPs(),
+              reservation.destinationSlotEndPs());
+}
+
+TEST(RnicPacketizedReservationTest, RejectsExtentLargerThanEnvelopeTransactionally) {
+    Calendar calendar(kCapacity, 100, 7);
+    calendar.beginEpoch(0, {{1, 10, 20, kCapacity}});
+    const Reservation reservation = calendar.reserveNextSlot().at(0);
+
+    EXPECT_THROW(reservation.materializePacket(RnicPacketExtent(101, 101)),
+                 std::invalid_argument);
+
+    const Transmission valid =
+        reservation.materializePacket(RnicPacketExtent(100, 100));
+    EXPECT_EQ(valid.sourceSerializationStartPs(), reservation.sourceSlotStartPs());
+    EXPECT_EQ(valid.destinationSerializationEndPs(),
+              reservation.destinationSlotEndPs());
 }
 
 TEST(RnicPacketizedSlotCalendarTest, PacketizedServiceNeverBeatsFluidCapacityFloor) {
@@ -255,6 +522,22 @@ TEST(RnicPacketizedSlotCalendarTest, RejectsInvalidConfigurationAndSnapshots) {
     EXPECT_THROW(calendar.beginEpoch(calendar.nextSlotIndex(),
                                      {{1, 9, 2, kCapacity}}),
                  std::invalid_argument);
+}
+
+TEST(RnicPacketizedSlotCalendarTest, AcceptsWideWireQuantumWhenTimeFits) {
+    constexpr uint64_t maximum = std::numeric_limits<uint64_t>::max();
+    Calendar calendar(maximum, maximum, 0);
+    calendar.beginEpoch(0, {{1, 10, 20, maximum}});
+
+    const Reservation reservation = calendar.reserveNextSlot().at(0);
+    const Transmission transmission = reservation.materializePacket(
+        RnicPacketExtent(maximum, maximum));
+
+    EXPECT_EQ(reservation.reservedWireBytes(), maximum);
+    EXPECT_EQ(transmission.extent().wireBytes(), maximum);
+    EXPECT_GT(transmission.sourceSerializationEndPs(), 0U);
+    EXPECT_GT(transmission.destinationSerializationEndPs(),
+              transmission.sourceSerializationEndPs());
 }
 
 }  // namespace

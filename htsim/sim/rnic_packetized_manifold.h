@@ -4,10 +4,12 @@
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <optional>
 #include <vector>
 
 #include "rnic_max_min_allocator.h"
+#include "rnic_packet_extent.h"
 
 struct RnicPacketizedGrant {
     using FlowId = RnicMaxMinFlow::FlowId;
@@ -21,6 +23,70 @@ struct RnicPacketizedGrant {
 };
 
 class RnicPacketizedSlotCalendar;
+class RnicPacketizedReservation;
+
+// One packet materialized inside a full-wire-quantum reservation. The source
+// serializer is right-aligned to the reservation's exact rational terminal
+// boundary; the destination serializer starts after fixed propagation and
+// consumes the same exact wire extent.
+class RnicPacketizedTransmission {
+public:
+    using FlowId = RnicPacketizedGrant::FlowId;
+    using NodeId = RnicPacketizedGrant::NodeId;
+    using TimePs = uint64_t;
+
+    uint64_t slotIndex() const noexcept { return _slot_index; }
+    uint64_t allocationEpoch() const noexcept { return _allocation_epoch; }
+    FlowId flowId() const noexcept { return _flow_id; }
+    NodeId sourceNode() const noexcept { return _source_node; }
+    NodeId destinationNode() const noexcept { return _destination_node; }
+    const RnicPacketExtent& extent() const noexcept { return _extent; }
+
+    TimePs sourceSerializationStartPs() const noexcept {
+        return _source_serialization_start_ps;
+    }
+    TimePs sourceSerializationEndPs() const noexcept {
+        return _source_serialization_end_ps;
+    }
+    TimePs manifoldEntryPs() const noexcept { return _manifold_entry_ps; }
+    TimePs manifoldExitPs() const noexcept { return _manifold_exit_ps; }
+    TimePs destinationSerializationStartPs() const noexcept {
+        return _destination_serialization_start_ps;
+    }
+    TimePs destinationSerializationEndPs() const noexcept {
+        return _destination_serialization_end_ps;
+    }
+
+private:
+    friend class RnicPacketizedReservation;
+
+    RnicPacketizedTransmission(
+        uint64_t slot_index,
+        uint64_t allocation_epoch,
+        FlowId flow_id,
+        NodeId source_node,
+        NodeId destination_node,
+        RnicPacketExtent extent,
+        TimePs source_serialization_start_ps,
+        TimePs source_serialization_end_ps,
+        TimePs manifold_entry_ps,
+        TimePs manifold_exit_ps,
+        TimePs destination_serialization_start_ps,
+        TimePs destination_serialization_end_ps);
+
+    uint64_t _slot_index;
+    uint64_t _allocation_epoch;
+    FlowId _flow_id;
+    NodeId _source_node;
+    NodeId _destination_node;
+    RnicPacketExtent _extent;
+    TimePs _source_serialization_start_ps;
+    TimePs _source_serialization_end_ps;
+    TimePs _manifold_entry_ps;
+    TimePs _manifold_exit_ps;
+    TimePs _destination_serialization_start_ps;
+    TimePs _destination_serialization_end_ps;
+};
 
 // An immutable value describing one full-wire-quantum reservation. The
 // topology-free manifold adds no route, internal queue, loss, marking, or
@@ -47,6 +113,13 @@ public:
     TimePs destinationSlotEndPs() const noexcept { return _destination_slot_end_ps; }
     uint64_t reservedWireBytes() const noexcept { return _reserved_wire_bytes; }
 
+    // Materializes exactly one packet without changing this reservation or
+    // the calendar. Short packets retain the binding full-quantum envelope:
+    // unused source time precedes the right-aligned packet and unused
+    // destination time follows it.
+    RnicPacketizedTransmission materializePacket(
+        const RnicPacketExtent& extent) const;
+
 private:
     friend class RnicPacketizedSlotCalendar;
 
@@ -61,7 +134,11 @@ private:
                               TimePs manifold_exit_ps,
                               TimePs destination_slot_start_ps,
                               TimePs destination_slot_end_ps,
-                              uint64_t reserved_wire_bytes);
+                              uint64_t reserved_wire_bytes,
+                              uint64_t access_capacity_bps,
+                              TimePs exact_source_end_floor_ps,
+                              uint64_t exact_source_end_remainder,
+                              TimePs fixed_propagation_delay_ps);
 
     uint64_t _slot_index;
     uint64_t _allocation_epoch;
@@ -75,6 +152,10 @@ private:
     TimePs _destination_slot_start_ps;
     TimePs _destination_slot_end_ps;
     uint64_t _reserved_wire_bytes;
+    uint64_t _access_capacity_bps;
+    TimePs _exact_source_end_floor_ps;
+    uint64_t _exact_source_end_remainder;
+    TimePs _fixed_propagation_delay_ps;
 };
 
 // Deterministic version-1 packet calendar for the validated homogeneous-C,
@@ -108,9 +189,16 @@ public:
     void beginMaxMinEpoch(uint64_t effective_slot,
                           const std::vector<RnicMaxMinFlow>& active_flows);
 
-    // Adds one grant quantum to each signed credit, selects a deterministic
-    // maximum-cardinality matching over positive-credit flows, and reserves
-    // one non-overlapping source/destination slot for every selected edge.
+    // Starts a new rational wire busy period without manufacturing empty
+    // slots. This is legal only when every current grant is zero and cannot
+    // move simulator time backwards. Dormant credits, logical slot/epoch
+    // history, and the endpoint identity registry are deliberately preserved.
+    void rebaseIdle(TimePs new_start_ps);
+
+    // Adds one grant quantum to each signed credit, first covers every endpoint
+    // whose incident grants sum to access capacity, then maximizes concurrent
+    // positive-credit service without losing that coverage. Reserves one
+    // non-overlapping source/destination slot for every selected edge.
     std::vector<RnicPacketizedReservation> reserveNextSlot();
 
     RateBps accessCapacityBps() const noexcept { return _access_capacity_bps; }
@@ -139,7 +227,10 @@ private:
     };
 
     using Adjacency = std::map<NodeId, std::vector<FlowId>>;
+    using ReverseAdjacency = std::map<NodeId, std::vector<FlowId>>;
     using DestinationMatching = std::map<NodeId, FlowId>;
+    using SourceMatching = std::map<NodeId, FlowId>;
+    using KnownEndpointMap = std::map<FlowId, std::pair<NodeId, NodeId>>;
 
     static void addCredit(SignedCredit& credit, uint64_t amount);
     static void subtractCredit(SignedCredit& credit, uint64_t amount);
@@ -149,10 +240,18 @@ private:
     BoundaryState advanceBoundary(BoundaryState boundary) const;
     TimePs absoluteBoundary(const BoundaryState& boundary) const;
     std::vector<FlowId> maximumCardinalityMatching() const;
+    DestinationMatching saturatedPortMatching() const;
     bool augmentSource(NodeId source,
                        const Adjacency& adjacency,
                        std::map<NodeId, bool>& visited_destinations,
                        DestinationMatching& matching) const;
+    bool augmentDestination(
+        NodeId destination,
+        const ReverseAdjacency& reverse_adjacency,
+        const std::map<NodeId, bool>& required_destinations,
+        std::map<NodeId, bool>& visited_sources,
+        DestinationMatching& destination_matching,
+        SourceMatching& source_matching) const;
     void validateGrantSnapshot(const std::vector<RnicPacketizedGrant>& grants) const;
     void advanceCredits();
 
@@ -160,7 +259,6 @@ private:
     uint64_t _wire_quantum_bytes;
     TimePs _fixed_propagation_delay_ps;
     TimePs _first_slot_start_ps;
-    uint64_t _serialization_numerator;
     TimePs _boundary_floor_increment_ps;
     uint64_t _boundary_remainder_increment;
     BoundaryState _next_boundary;
@@ -168,7 +266,11 @@ private:
     TimePs _next_slot_start_ps;
     uint64_t _allocation_epoch = 0;
     std::map<FlowId, FlowState> _flows;
-    std::map<FlowId, std::pair<NodeId, NodeId>> _known_endpoints;
+    // Calendar previews are copied once per committed packet envelope. Flow
+    // identity history can be much larger than the active grant table, so it
+    // is immutable and shared until a copy admits a genuinely new flow ID.
+    std::shared_ptr<const KnownEndpointMap> _known_endpoints =
+        std::make_shared<const KnownEndpointMap>();
 };
 
 #endif

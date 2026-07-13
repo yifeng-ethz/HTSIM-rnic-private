@@ -105,6 +105,7 @@ set(SOURCE_FILES
     rnic_fluid_manifold_runtime.cpp
     rnic_max_min_allocator.cpp
     rnic_packetized_manifold.cpp
+    rnic_packetized_manifold_runtime.cpp
     rnic_port.cpp
     rnic_prbs_pacer.cpp
     rnic_profile.cpp
@@ -160,6 +161,7 @@ if ( ENABLE_TESTS )
         rnic_fluid_manifold_runtime_test
         rnic_max_min_allocator_test
         rnic_packetized_manifold_test
+        rnic_packetized_manifold_runtime_test
         rnic_port_test
         rnic_prbs_pacer_test
         rnic_profile_test

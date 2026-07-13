@@ -55,7 +55,7 @@ All paths below are local to the development machine.
 | Packetized NN retains exact packet sizes and bounded serialization quantization. | Paper p. 3, Section 2.2; Appendix B.1/B.3 | The final short packet is not padded or charged as a full MTU. Packetization is not congestion. |
 | `rnic-nn-fluid` uses the same edge constraints and fixed propagation but continuous service. | Current discussion; paper p. 16, Sections B.1 and B.3 | No packets, packetization, packet-size quantization, PRBS, ACKs, or Ring-CAM. Joins/leaves change max-min rates at the same timestamp. Within its checked 128-bit domain, the oracle solves the ideal allocation as exact rationals, floors each flow independently to whole bps, and ceils exact last-bit boundaries to picoseconds; unsupported rationals are rejected without a floating fallback. A positive share below `1` bps therefore becomes zero by explicit numerical policy. |
 | Every Clos tier uses the Tomahawk 3 behavioral model with true ingress/egress VoQs. | Current discussion; NERSC slide 3 only supports TM3+ as a spraying-capable example | Exact switch scheduling is a declared simulator contract, not a reverse-engineered ASIC claim. |
-| Network-calculus checks precede plot matching. | Paper Appendix B; book Sections 1.2, 1.5 and 2.4.3 | Enforce edge feasibility, packet service-curve slack, fixed-delay causality, RB envelope, and buffer bounds before trend comparisons. |
+| Network-calculus checks precede plot matching. | Paper Appendix B; book Sections 1.2, 1.5 and 2.4.3 | Enforce edge feasibility, aggregate endpoint packet service curves, fixed-delay causality, RB envelope, and buffer bounds before trend comparisons. |
 
 ## Trend acceptance targets
 
@@ -80,10 +80,13 @@ These are directional/statistical tests, not exact-output tests:
 - Independent sender PRBS streams reduce aggregate phase alignment and
   short-window variance as sender count grows. PRBS alone is not expected to
   undo burstiness introduced by switches.
-- Packetized NN converges toward fluid NN as MTU decreases. Their packet-model
-  difference is bounded deterministic serialization/packet quantization, not a
-  stochastic or load-dependent manifold queue. The fluid reference still uses
-  the declared componentwise whole-bps floor and picosecond event ceiling.
+- For messages large relative to MTU, packetized NN converges toward fluid NN
+  as MTU decreases. Their packet-model difference is deterministic
+  serialization/packet quantization, not a stochastic or load-dependent
+  manifold queue. Version 1's fixed envelope also has an explicit terminal-tail
+  tax; short-only workloads are compared separately against the paper's packed
+  final-pass convention. The fluid reference still uses the declared
+  componentwise whole-bps floor and picosecond event ceiling.
 
 Historical slide-4 values and paper Figure 7 values may be plotted for context,
 but failed final-digit comparisons are investigations rather than regressions.
@@ -97,7 +100,8 @@ but failed final-digit comparisons are investigations rather than regressions.
 | Patent Appendix C.1 explicit-rate controller | It contains legacy soft-window tokens, service estimation, smoothing, ramping, stochastic probes, and payback. | Superseded by the conversation and paper's declaration/ACCEPT/direct-grant path. ETA calibration probes elsewhere in the patent are distinct from rate probes. |
 | Legacy `htsim_clos_voq` “TM-3/VoQ” | Its README admits it is HTsim lossless-input plus lossless-output behavior, not a true VoQ traffic manager or proprietary TM3 model. No primary source specifies exact TM3 arbitration. | Do not preserve its queue behavior or numbers as golden. Record the new behavioral scheduler explicitly in every manifest. |
 | Paper Section 8 RTT independence | The current implementation is not expected to remain correct under heterogeneous control-loop RTTs; the discussion places that case outside this paper/model scope. | Do not make mixed-RTT fairness an acceptance gate. Reject, constrain, or clearly label such runs as out of scope. |
-| Paper Section 2.2 packet ledger | The closed form uses a named source-charged, non-overlapped accounting convention. A physical event engine may pipeline source serialization, propagation, and destination serialization. | Keep the ledger as an explicitly named analytical reference, not an event-timing golden trace. Enforce capacity and packet service-curve bounds instead. |
+| Paper Section 2.2 packet ledger | The closed form uses a named source-charged, non-overlapped accounting convention. A physical event engine may pipeline source serialization, propagation, and destination serialization. | Keep the ledger as an explicitly named analytical reference, not an event-timing golden trace. Enforce edge capacity and the applicable scheduler-version service bounds instead. |
+| Paper packed final-tail pass versus packet-calendar v1 | The paper drains final tails at their exact `R/C` serialization time. The collision-free v1 calendar reserves a full `M/C` envelope for each selected tail and leaves the unused portion idle. | Record scheduler version 1 and its terminal-envelope tax. Apply the packet service curve to full-size continuously backlogged aggregate service at a grant-saturated endpoint, not as a per-flow one-packet-discrepancy claim or to arbitrary short-only incast. Treat a packed-tail asynchronous calendar as a separate future scheduler increment. |
 | Paper Axiom A2 endpoint-local knowledge | `rnic-nn` deliberately uses a centralized oracle and global rate table. | The current discussion wins for NN profiles; avoid event-expensive broadcasts when a central table preserves the same instantaneous allocation. |
 | Network-calculus book's “null system” | Book Section 5.1 uses a transparent `delta_0` system, while the project NN retains finite edge rates, fixed latency, and optional packetization. | Do not equate the terminology. Use the project's physical topology-free manifold contract. |
 | Ring-CAM slide wording about finishing the earliest timestamp | Taken literally, it could imply waiting for entries that never arrived. | Interpret it over present/ready entries only; the patent's no-HOL rule is authoritative. |
