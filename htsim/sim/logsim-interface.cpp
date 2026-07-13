@@ -16,6 +16,7 @@
 #include <iostream>
 #include <queue>
 #include <regex>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <unordered_set>
@@ -239,36 +240,44 @@ void LogSimInterface::htsim_simulate_until(int64_t until) {
 
     //printf("While1 - Size eventlist %lu\n", _eventlist->getPendingSources().size());
 
+    bool returned_control = false;
     while (_eventlist->doNextEvent()) {
 
         if (htsim_api->send_done_return_control) {
             htsim_api->send_done_return_control = false;
             //printf("While2\n");
 
-            if (_eventlist->now() == _eventlist->getPendingSources().begin()->first) {
-              have_more = true;
-            }
+            have_more = EventList::hasPendingSourceAt(_eventlist->now());
+            returned_control = true;
             break;
         }
 
         ////printf("While3\n");
         if (_latest_recv->updated) {
           this->reset_latest_receive();
-          if (_eventlist->now() == _eventlist->getPendingSources().begin()->first) {
-            have_more = true;
+          if (_network_timing == AtlahsNetworkTiming::LegacyLogSimGap) {
+            have_more = EventList::hasPendingSourceAt(_eventlist->now());
           }
-            break;
+          // Runtime-owned DATA completion is a boundary between HTSIM and
+          // GOAL. Return immediately so the newly queued OP_MSG can unlock
+          // re-entrant work; the runtime itself owns same-time microphases.
+          returned_control = true;
+          break;
         }
 
         //printf("While4\n");
         if (compute_if_finished) {
           //printf("While5\n");
-          if (_eventlist->now() == _eventlist->getPendingSources().begin()->first) {
-            have_more = true;
-          }
+          have_more = EventList::hasPendingSourceAt(_eventlist->now());
             compute_if_finished = false;
+            returned_control = true;
             break;
         }
+    }
+
+    if (!returned_control && (sends_active > 0 || compute_started > 0)) {
+      throw std::logic_error(
+          "HTSIM event list exhausted while LogSim work remains active");
     }
 
     return;
@@ -1001,7 +1010,11 @@ int start_lgs(std::string filename_goal, LogSimInterface &lgs) {
 
       if (custom_print) {
         printf("1) Sends Active %d - Compute Started %d\n", lgs_interface->sends_active, lgs_interface->compute_started);
-        printf("1) Can Simulate Until %" PRId64 " - Top Time %lu\n", can_simulate_until, lgs_interface->aq.top().time);
+        if (lgs_interface->aq.empty()) {
+          printf("1) Can Simulate Until %" PRId64 " - Active Queue Empty\n", can_simulate_until);
+        } else {
+          printf("1) Can Simulate Until %" PRId64 " - Top Time %lu\n", can_simulate_until, lgs_interface->aq.top().time);
+        }
       }
 
       bool just_running = false;
@@ -1012,9 +1025,15 @@ int start_lgs(std::string filename_goal, LogSimInterface &lgs) {
           }
       } 
       if (custom_print) {
-        printf("2) Time %lu > htsim time %lu, unlocked_elem %d, just_running %d\n", lgs_interface->aq.top().time, lgs_interface->htsim_api->getGlobalTimeNs(), unlocked_elem, just_running);
+        if (lgs_interface->aq.empty()) {
+          printf("2) Active Queue Empty - htsim time %lu, unlocked_elem %d, just_running %d\n", lgs_interface->htsim_api->getGlobalTimeNs(), unlocked_elem, just_running);
+        } else {
+          printf("2) Time %lu > htsim time %lu, unlocked_elem %d, just_running %d\n", lgs_interface->aq.top().time, lgs_interface->htsim_api->getGlobalTimeNs(), unlocked_elem, just_running);
+        }
       }
-      if (lgs_interface->aq.top().time > (lgs_interface->htsim_api->getGlobalTimeNs()) && !unlocked_elem && !just_running) { // Let htim catchup
+      if (!lgs_interface->aq.empty() &&
+          lgs_interface->aq.top().time > lgs_interface->htsim_api->getGlobalTimeNs() &&
+          !unlocked_elem && !just_running) { // Let htim catchup
         lgs_interface->htsim_simulate_until(lgs_interface->aq.top().time);
       }
 
@@ -1035,6 +1054,20 @@ int start_lgs(std::string filename_goal, LogSimInterface &lgs) {
           num_reinserts_o=0;
           num_reinserts_g=0;
           num_reinserts_net=0;
+        }
+      }
+    }
+
+    // GOAL completion and physical network quiescence are distinct for an
+    // RNIC runtime: application DATA may be delivered before the in-band
+    // RETIRE wave and source cleanup finish. Drain only work owned by the
+    // selected runtime; recurring global sources such as Clock are left
+    // pending once the runtime reports quiescence.
+    if (lgs_interface->getNetworkTiming() == AtlahsNetworkTiming::RuntimeOwned) {
+      while (lgs_interface->runtimeHasPendingPhysicalWork()) {
+        if (!EventList::doNextEvent()) {
+          throw std::logic_error(
+              "ATLAHS runtime reports physical work without a pending HTSIM event");
         }
       }
     }
