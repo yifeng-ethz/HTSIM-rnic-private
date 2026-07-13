@@ -129,6 +129,27 @@ TEST(AtlahsFlowRuntimeTest, PhysicalWorkQueryForwardsThroughApiAndLogSim) {
     EXPECT_FALSE(logsim.runtimeHasPendingPhysicalWork());
 }
 
+TEST(AtlahsFlowRuntimeTest, GoalLayoutMustMatchConfiguredPhysicalNodes) {
+    CapturingAtlahsHtsimApi api;
+
+    api.total_nodes = 16;
+    EXPECT_EQ(api.configureGoalLayoutFromBinaryHeader(16, 8, 2), 16U);
+    EXPECT_EQ(api.getGoalRankMapping(),
+              AtlahsHtsimApi::GoalRankMapping::GpuRank);
+
+    api.total_nodes = 32;
+    EXPECT_EQ(api.configureGoalLayoutFromBinaryHeader(16, 16, 2), 32U);
+    EXPECT_EQ(api.getGoalRankMapping(),
+              AtlahsHtsimApi::GoalRankMapping::UniqueNic);
+
+    api.total_nodes = 31;
+    EXPECT_THROW(api.configureGoalLayoutFromBinaryHeader(16, 16, 2),
+                 std::invalid_argument);
+    api.total_nodes = 0;
+    EXPECT_THROW(api.configureGoalLayoutFromBinaryHeader(0, 1, 1),
+                 std::invalid_argument);
+}
+
 TEST(AtlahsFlowRuntimeTest, DelegatesExactPayloadForConcurrentSameSourceFlows) {
     CapturingAtlahsHtsimApi api;
     api.total_nodes = 16;

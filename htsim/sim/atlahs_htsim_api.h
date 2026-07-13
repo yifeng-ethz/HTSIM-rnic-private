@@ -5,7 +5,9 @@
 #include "atlahs_flow_runtime.h"
 #include <iostream>
 #include <functional>
+#include <limits>
 #include <memory>
+#include <stdexcept>
 #include <unordered_map>
 #include "compute_event.h"
 #include "null_event.h"
@@ -145,7 +147,14 @@ public:
     void setGoalRankMapping(GoalRankMapping mapping) { goal_rank_mapping = mapping; }
     GoalRankMapping getGoalRankMapping() const { return goal_rank_mapping; }
 
-    void setGoalRankMappingFromBinaryHeader(uint32_t rank_count, int cpu_count, int nic_count) {
+    std::uint32_t configureGoalLayoutFromBinaryHeader(
+        std::uint32_t rank_count,
+        int cpu_count,
+        int nic_count) {
+        if (rank_count == 0 || cpu_count <= 0 || nic_count <= 0) {
+            throw std::invalid_argument(
+                "GOAL layout requires positive rank, CPU, and NIC counts");
+        }
         setNumberNic(nic_count);
 
         // The binary GOAL format does not store the generator version. Infer
@@ -157,6 +166,25 @@ public:
             (nic_count == 2 && rank_count > static_cast<uint32_t>(nic_count) && cpu_count <= 8);
         goal_rank_mapping =
             looks_like_v2_gpu_rank ? GoalRankMapping::GpuRank : GoalRankMapping::UniqueNic;
+
+        const std::uint64_t required_nodes =
+            usesUniqueNicRankMapping()
+                ? static_cast<std::uint64_t>(rank_count)
+                      * static_cast<std::uint64_t>(nic_count)
+                : static_cast<std::uint64_t>(rank_count);
+        if (required_nodes > std::numeric_limits<std::uint32_t>::max()) {
+            throw std::overflow_error(
+                "GOAL physical node count exceeds uint32_t");
+        }
+        if (total_nodes < 0
+            || static_cast<std::uint64_t>(total_nodes) != required_nodes) {
+            throw std::invalid_argument(
+                "configured HTSIM node count does not match GOAL "
+                + std::string(getGoalRankMappingName()) + " layout: expected "
+                + std::to_string(required_nodes) + ", configured "
+                + std::to_string(total_nodes));
+        }
+        return static_cast<std::uint32_t>(required_nodes);
     }
 
     bool usesUniqueNicRankMapping() const {

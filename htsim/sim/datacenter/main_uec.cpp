@@ -860,7 +860,6 @@ int main(int argc, char **argv) {
         printf("<HTSIM> G %f\n", lgs->htsim_api->htsim_G);
 
         lgs->htsim_api->total_nodes = no_of_nodes;
-        lgs->htsim_api->Setup();
         printf("Started LGS\n");
         
         start_lgs(goal_filename, *lgs);
@@ -1167,4 +1166,3 @@ int main(int argc, char **argv) {
 
     return EXIT_SUCCESS;
 }
-

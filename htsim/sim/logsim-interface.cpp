@@ -410,14 +410,20 @@ int start_lgs(std::string filename_goal, LogSimInterface &lgs) {
     const uint p = parser.schedules.size();
     const int ncpus = parser.GetNumCPU();
     const int nnics = parser.GetNumNIC();
-    lgs_interface->htsim_api->setGoalRankMappingFromBinaryHeader(
+    const std::uint32_t physical_node_count =
+        lgs_interface->htsim_api->configureGoalLayoutFromBinaryHeader(
         static_cast<uint32_t>(p), ncpus, nnics);
     printf("[ATLAHS] GOAL rank mapping: %s (LGS ranks=%u, CPUs=%d, NICs=%d, HTSIM nodes=%u)\n",
            lgs_interface->htsim_api->getGoalRankMappingName(),
            p,
            ncpus,
            nnics,
-           lgs_interface->htsim_api->usesUniqueNicRankMapping() ? p * nnics : p);
+           physical_node_count);
+    // Runtime setup belongs after GOAL rank-layout inference. In particular,
+    // a unique-NIC schedule needs p * nnics physical nodes, whereas a V2
+    // GPU-rank schedule needs p. The checked configuration above guarantees
+    // that no flow can be submitted against a differently sized runtime.
+    lgs_interface->htsim_api->Setup();
     bool comm_dep_file_arg = false;
 
     
