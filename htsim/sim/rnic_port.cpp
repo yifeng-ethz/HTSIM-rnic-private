@@ -59,6 +59,36 @@ void RnicTxPort::setDataEligible(uint64_t flow_id, bool eligible) {
     recomputeEffectiveRates();
 }
 
+void RnicTxPort::removeRetiredFlow(uint64_t flow_id) {
+    const auto flow = _flows.find(flow_id);
+    if (flow == _flows.end()) {
+        throw std::out_of_range("unknown flow on RNIC TX port");
+    }
+
+    const FlowState& state = flow->second;
+    if (state.payload_bytes_dispatched != state.payload_size_bytes) {
+        throw std::logic_error(
+            "cannot remove RNIC TX flow before source payload dispatch");
+    }
+    if (state.data_eligible) {
+        throw std::logic_error(
+            "cannot remove RNIC TX flow while DATA remains eligible");
+    }
+    if (state.wire_rate_grant_bps != 0) {
+        throw std::logic_error(
+            "cannot remove RNIC TX flow with a nonzero wire-rate grant");
+    }
+    if (state.effective_wire_rate_bps != 0) {
+        throw std::logic_error(
+            "retired RNIC TX flow retains an effective wire rate");
+    }
+
+    // All validation precedes the only mutation.  The proven terminal state
+    // is excluded from recomputeEffectiveRates()'s active set, so erasing it
+    // preserves every remaining flow's already-current effective allocation.
+    _flows.erase(flow);
+}
+
 bool RnicTxPort::contains(uint64_t flow_id) const {
     return _flows.count(flow_id) != 0;
 }

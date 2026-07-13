@@ -40,6 +40,82 @@ TEST(RnicTxPortTest, ReportsWhetherAnyGrantedDataCanDispatch) {
     EXPECT_FALSE(port.hasDispatchableData());
 }
 
+TEST(RnicTxPortTest,
+     RemovesOnlyCommittedRetiredStateAndPreservesRemainingRates) {
+    RnicTxPort port(1, 100, 1, 7);
+    port.addFlow(10, 1, 0);
+    port.setWireRateGrant(10, 100);
+    port.setDataEligible(10, true);
+    const RnicTxOpportunity terminal = port.dispatchOpportunity(0);
+    ASSERT_TRUE(terminal.packet.has_value());
+    ASSERT_EQ(terminal.packet->flow_id, 10u);
+    ASSERT_TRUE(port.sourcePayloadDispatched(10));
+
+    port.addFlow(11, 100, 0);
+    port.addFlow(12, 100, 0);
+    port.setDataEligible(11, true);
+    port.setDataEligible(12, true);
+    port.setWireRateGrant(11, 20);
+    port.setWireRateGrant(12, 100);
+    ASSERT_EQ(port.effectiveWireRateBps(11), 20u);
+    ASSERT_EQ(port.effectiveWireRateBps(12), 80u);
+
+    port.setDataEligible(10, false);
+    port.setWireRateGrant(10, 0);
+    const uint64_t data_boundary = port.nextDataOpportunityPs();
+    const uint64_t wire_boundary = port.physicalSerializerAvailablePs();
+
+    port.removeRetiredFlow(10);
+
+    EXPECT_FALSE(port.contains(10));
+    EXPECT_EQ(port.flowCount(), 2u);
+    EXPECT_EQ(port.effectiveWireRateBps(11), 20u);
+    EXPECT_EQ(port.effectiveWireRateBps(12), 80u);
+    EXPECT_EQ(port.nextDataOpportunityPs(), data_boundary);
+    EXPECT_EQ(port.physicalSerializerAvailablePs(), wire_boundary);
+    EXPECT_TRUE(port.hasDispatchableData());
+    EXPECT_THROW(port.sourcePayloadDispatched(10), std::out_of_range);
+}
+
+TEST(RnicTxPortTest, RetiredFlowRemovalRejectsEveryPrematureStateAtomically) {
+    RnicTxPort port(1, 100, 1, 7);
+    port.addFlow(10, 2, 0);
+    port.addFlow(11, 100, 0);
+    port.setWireRateGrant(11, 100);
+    port.setDataEligible(11, true);
+    ASSERT_EQ(port.effectiveWireRateBps(11), 100u);
+
+    EXPECT_THROW(port.removeRetiredFlow(10), std::logic_error);
+    EXPECT_TRUE(port.contains(10));
+    EXPECT_EQ(port.flowCount(), 2u);
+    EXPECT_EQ(port.flowPayloadBytesDispatched(10), 0u);
+    EXPECT_EQ(port.effectiveWireRateBps(11), 100u);
+
+    // A zero-payload flow is source-complete, but retirement cleanup still
+    // requires both independent runtime gates to be closed.
+    port.addFlow(20, 0, 0);
+    port.setDataEligible(20, true);
+    EXPECT_THROW(port.removeRetiredFlow(20), std::logic_error);
+    EXPECT_TRUE(port.contains(20));
+    EXPECT_EQ(port.flowCount(), 3u);
+    EXPECT_EQ(port.effectiveWireRateBps(11), 100u);
+
+    port.setDataEligible(20, false);
+    port.setWireRateGrant(20, 1);
+    EXPECT_THROW(port.removeRetiredFlow(20), std::logic_error);
+    EXPECT_TRUE(port.contains(20));
+    EXPECT_EQ(port.flowCount(), 3u);
+    EXPECT_EQ(port.effectiveWireRateBps(11), 100u);
+
+    port.setWireRateGrant(20, 0);
+    port.removeRetiredFlow(20);
+    EXPECT_FALSE(port.contains(20));
+    EXPECT_EQ(port.flowCount(), 2u);
+    EXPECT_THROW(port.removeRetiredFlow(20), std::out_of_range);
+    EXPECT_EQ(port.flowCount(), 2u);
+    EXPECT_EQ(port.effectiveWireRateBps(11), 100u);
+}
+
 TEST(RnicTxPortTest, ControlAndDataShareOnePhysicalSerializer) {
     RnicTxPort port(1, 8000000000000ULL, 1000, 7);
     port.addFlow(10, 1000, 0);

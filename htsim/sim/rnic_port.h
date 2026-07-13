@@ -48,6 +48,11 @@ public:
     void setWireRateGrant(uint64_t flow_id, uint64_t wire_rate_grant_bps);
     void setDataEligible(uint64_t flow_id, bool eligible);
 
+    // Runtime-only terminal cleanup after receiver retirement has committed.
+    // The source payload must already be fully dispatched, and the runtime
+    // must first close DATA eligibility and clear the receiver grant.
+    void removeRetiredFlow(uint64_t flow_id);
+
     bool contains(uint64_t flow_id) const;
     bool sourcePayloadDispatched(uint64_t flow_id) const;
     uint64_t flowPayloadBytesDispatched(uint64_t flow_id) const;
