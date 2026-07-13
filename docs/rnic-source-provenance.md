@@ -78,9 +78,12 @@ These are directional/statistical tests, not exact-output tests:
   `Delta`, within tick and packet-edge allowances.
 - Ring-CAM occupancy remains bounded by the bandwidth--jitter product and does
   not scale with flow count merely because fan-in increases.
-- Independent sender PRBS streams reduce aggregate phase alignment and
-  short-window variance as sender count grows. PRBS alone is not expected to
-  undo burstiness introduced by switches.
+- Independent sender PRBS streams suppress the periodic impulse peak and
+  variance of synchronized fixed phases. At fixed aggregate intensity, raw
+  slot-count variance approaches the Poisson value and need not decrease with
+  sender count; relative fluctuation decays as the aggregate event count in
+  the observation window grows. PRBS alone is not expected to undo burstiness
+  introduced by switches.
 - For messages large relative to MTU, packetized NN converges toward fluid NN
   as MTU decreases. Their packet-model difference is deterministic
   serialization/packet quantization, not a stochastic or load-dependent

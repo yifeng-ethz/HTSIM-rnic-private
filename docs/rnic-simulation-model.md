@@ -465,9 +465,10 @@ Tests are layered:
    resequencer window/tick rules, node-wide serialization, and deterministic
    seeded replay;
 2. trend regressions: packetized NN approaches fluid NN as `M` decreases,
-   PRBS aggregate variance decreases with sender count, RB release suppresses
-   incast burst peaks, CN stays near NN for the validated paper workload, and
-   conventional reactive transports degrade more strongly under large incast;
+   independent PRBS streams suppress synchronized phase impulses relative to
+   aligned fixed phases, RB release suppresses incast burst peaks, CN stays
+   near NN for the validated paper workload, and conventional reactive
+   transports degrade more strongly under large incast;
 3. historical comparisons: slide and paper values with tolerances and written
    provenance. A mismatch here is an investigation, not permission to violate
    an exact invariant.
