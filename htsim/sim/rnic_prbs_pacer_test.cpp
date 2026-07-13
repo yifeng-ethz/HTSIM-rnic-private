@@ -16,10 +16,16 @@ TEST(RnicPrbsPacerTest, ManifestIdentifiesStableGeneratorAndNodeSeed) {
     RnicPrbsPacer pacer(1234, 56);
     const RnicPrbsManifest& manifest = pacer.manifest();
 
-    EXPECT_EQ(manifest.algorithm_name, "galois-lfsr64");
-    EXPECT_EQ(manifest.algorithm_version, 1u);
+    EXPECT_EQ(manifest.algorithm_name,
+              "galois-lfsr64-block64");
+    EXPECT_EQ(manifest.algorithm_version, 2u);
     EXPECT_EQ(manifest.polynomial, "x^64+x^63+x^61+x^60+1");
     EXPECT_EQ(manifest.feedback_mask, UINT64_C(0xd800000000000000));
+    EXPECT_EQ(manifest.word_extraction,
+              "prestep-lsb-block64-lsb-first");
+    EXPECT_EQ(manifest.lfsr_steps_per_word, 64u);
+    EXPECT_EQ(manifest.bounded_draw,
+              "nonzero-rejection-modulo-v1");
     EXPECT_EQ(manifest.seed_derivation, "splitmix64-pair-v1");
     EXPECT_EQ(manifest.global_seed, 1234u);
     EXPECT_EQ(manifest.node_id, 56u);
@@ -27,25 +33,36 @@ TEST(RnicPrbsPacerTest, ManifestIdentifiesStableGeneratorAndNodeSeed) {
     EXPECT_EQ(pacer.state(), manifest.derived_node_seed);
 }
 
-TEST(RnicPrbsPacerTest, GaloisStepUsesDocumentedPolynomialConvention) {
-    // Seed derivation is separately tested; derive a known state through the
-    // public stream and reproduce its next step using the manifest mask.
+TEST(RnicPrbsPacerTest, WordConsumesSixtyFourConsecutiveOutputBits) {
+    // Independently reproduce one complete word.  This catches the retired
+    // v1 behavior, which advanced by one bit and exposed the whole register,
+    // making adjacent lottery draws strongly linearly related.
     RnicPrbsPacer pacer(9, 4);
     const uint64_t initial = pacer.state();
-    const uint64_t expected =
-        (initial >> 1) ^ ((initial & 1) ? RnicPrbsPacer::kFeedbackMask : 0);
+    uint64_t expected_state = initial;
+    uint64_t expected_word = 0;
+    for (uint32_t bit_index = 0;
+         bit_index < RnicPrbsPacer::kLfsrStepsPerWord;
+         ++bit_index) {
+        const uint64_t output_bit = expected_state & UINT64_C(1);
+        expected_word |= output_bit << bit_index;
+        expected_state =
+            (expected_state >> 1)
+            ^ (output_bit ? RnicPrbsPacer::kFeedbackMask : 0);
+    }
 
-    EXPECT_EQ(pacer.nextPrbsWord(), expected);
-    EXPECT_NE(pacer.state(), 0u);
+    EXPECT_EQ(pacer.nextPrbsWord(), expected_word);
+    EXPECT_EQ(pacer.state(), expected_state);
+    EXPECT_NE(expected_state, 0u);
 }
 
-TEST(RnicPrbsPacerTest, FrozenGoldenVectorProtectsReplayCompatibility) {
+TEST(RnicPrbsPacerTest, FrozenV2GoldenVectorProtectsReplayCompatibility) {
     RnicPrbsPacer pacer(1234, 56);
     constexpr std::array<uint64_t, 4> kExpectedWords{
-        UINT64_C(0x660326f99e058495),
-        UINT64_C(0xeb01937ccf02c24a),
-        UINT64_C(0x7580c9be67816125),
-        UINT64_C(0xe2c064df33c0b092),
+        UINT64_C(0x2c064df33c0b092a),
+        UINT64_C(0xbd45c66bf64f5c08),
+        UINT64_C(0x0f9bc1f5ccc5ec4d),
+        UINT64_C(0xa95ce52ecff3f926),
     };
 
     EXPECT_EQ(pacer.manifest().derived_node_seed, UINT64_C(0xcc064df33c0b092a));
@@ -167,18 +184,19 @@ TEST(RnicPrbsPacerTest, OpportunityLotteryDoesNotAddPositiveGapJitter) {
     EXPECT_TRUE(saw_adjacent_selected_opportunities);
 }
 
-TEST(RnicPrbsPacerTest, EqualWireHeadsReplayLegacySelectorExactly) {
-    RnicPrbsPacer legacy(123456, 71);
+TEST(RnicPrbsPacerTest, EqualWireHeadsReplayEqualQuantumSelectorExactly) {
+    RnicPrbsPacer equal_quantum(123456, 71);
     RnicPrbsPacer size_aware(123456, 71);
-    const std::vector<RnicPrbsCandidate> legacy_candidates{
+    const std::vector<RnicPrbsCandidate> equal_quantum_candidates{
         {30, 200}, {10, 300}};
     const std::vector<RnicPrbsWireCandidate> wire_candidates{
         {30, 200, 1000}, {10, 300, 1000}};
 
     for (int opportunity = 0; opportunity < 10000; ++opportunity) {
-        EXPECT_EQ(legacy.selectEqualWireQuantum(legacy_candidates, 1000),
+        EXPECT_EQ(equal_quantum.selectEqualWireQuantum(
+                      equal_quantum_candidates, 1000),
                   size_aware.selectWireEvent(wire_candidates, 1000, 1000));
-        EXPECT_EQ(legacy.state(), size_aware.state());
+        EXPECT_EQ(equal_quantum.state(), size_aware.state());
     }
 }
 

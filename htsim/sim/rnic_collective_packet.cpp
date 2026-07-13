@@ -118,6 +118,14 @@ void RnicCollectivePacket::validateData(
     }
 }
 
+void RnicCollectivePacket::validateDeclaration(
+        const RnicCollectiveDeclareMetadata& metadata) {
+    if (metadata.nflow == 0) {
+        throw std::invalid_argument(
+            "rnic-cn DECLARE nflow must be nonzero");
+    }
+}
+
 void RnicCollectivePacket::validateGrant(
         const RnicCollectiveGrant& grant,
         RnicCollectivePacketKind packet_kind) {
@@ -174,6 +182,7 @@ RnicCollectivePacket* RnicCollectivePacket::newData(
         metadata,
         std::nullopt,
         std::nullopt,
+        std::nullopt,
         std::move(observer));
 }
 
@@ -185,7 +194,9 @@ RnicCollectivePacket* RnicCollectivePacket::newDeclare(
         std::uint32_t source,
         std::uint32_t destination,
         std::uint64_t wire_bytes,
+        const RnicCollectiveDeclareMetadata& metadata,
         std::shared_ptr<RnicCollectivePacketLifecycleObserver> observer) {
+    validateDeclaration(metadata);
     return newPacket(
         flow,
         route,
@@ -196,6 +207,7 @@ RnicCollectivePacket* RnicCollectivePacket::newDeclare(
         destination,
         checkedWireBytes(wire_bytes),
         std::nullopt,
+        metadata,
         std::nullopt,
         std::nullopt,
         std::move(observer));
@@ -221,6 +233,7 @@ RnicCollectivePacket* RnicCollectivePacket::newAccept(
         destination,
         checkedWireBytes(wire_bytes),
         std::nullopt,
+        std::nullopt,
         grant,
         std::nullopt,
         std::move(observer));
@@ -245,6 +258,7 @@ RnicCollectivePacket* RnicCollectivePacket::newGrantUpdate(
         source,
         destination,
         checkedWireBytes(wire_bytes),
+        std::nullopt,
         std::nullopt,
         grant,
         std::nullopt,
@@ -273,6 +287,7 @@ RnicCollectivePacket* RnicCollectivePacket::newRetire(
         checkedWireBytes(wire_bytes),
         std::nullopt,
         std::nullopt,
+        std::nullopt,
         final_ledger,
         std::move(observer));
 }
@@ -287,6 +302,7 @@ RnicCollectivePacket* RnicCollectivePacket::newPacket(
         std::uint32_t destination,
         std::uint16_t wire_bytes,
         std::optional<RnicCollectiveDataMetadata> data,
+        std::optional<RnicCollectiveDeclareMetadata> declaration,
         std::optional<RnicCollectiveGrant> grant,
         std::optional<RnicCollectiveFinalLedger> retire_ledger,
         std::shared_ptr<RnicCollectivePacketLifecycleObserver> observer) {
@@ -297,28 +313,33 @@ RnicCollectivePacket* RnicCollectivePacket::newPacket(
     }
 
     const bool has_data = data.has_value();
+    const bool has_declaration = declaration.has_value();
     const bool has_grant = grant.has_value();
     const bool has_retire_ledger = retire_ledger.has_value();
     switch (kind) {
     case RnicCollectivePacketKind::DATA:
-        if (!has_data || has_grant || has_retire_ledger) {
+        if (!has_data || has_declaration || has_grant
+            || has_retire_ledger) {
             throw std::logic_error("rnic-cn DATA metadata shape is invalid");
         }
         break;
     case RnicCollectivePacketKind::DECLARE:
-        if (has_data || has_grant || has_retire_ledger) {
+        if (has_data || !has_declaration || has_grant
+            || has_retire_ledger) {
             throw std::logic_error(
                 "rnic-cn DECLARE metadata shape is invalid");
         }
         break;
     case RnicCollectivePacketKind::ACCEPT:
     case RnicCollectivePacketKind::GRANT_UPDATE:
-        if (has_data || !has_grant || has_retire_ledger) {
+        if (has_data || has_declaration || !has_grant
+            || has_retire_ledger) {
             throw std::logic_error("rnic-cn grant metadata shape is invalid");
         }
         break;
     case RnicCollectivePacketKind::RETIRE:
-        if (has_data || has_grant || !has_retire_ledger) {
+        if (has_data || has_declaration || has_grant
+            || !has_retire_ledger) {
             throw std::logic_error("rnic-cn RETIRE metadata shape is invalid");
         }
         break;
@@ -336,6 +357,7 @@ RnicCollectivePacket* RnicCollectivePacket::newPacket(
         destination,
         wire_bytes,
         std::move(data),
+        std::move(declaration),
         std::move(grant),
         std::move(retire_ledger),
         std::move(observer),
@@ -353,6 +375,7 @@ void RnicCollectivePacket::initialize(
         std::uint32_t destination,
         std::uint16_t wire_bytes,
         std::optional<RnicCollectiveDataMetadata> data,
+        std::optional<RnicCollectiveDeclareMetadata> declaration,
         std::optional<RnicCollectiveGrant> grant,
         std::optional<RnicCollectiveFinalLedger> retire_ledger,
         std::shared_ptr<RnicCollectivePacketLifecycleObserver> observer,
@@ -384,6 +407,7 @@ void RnicCollectivePacket::initialize(
     _wire_bytes = wire_bytes;
     _lifecycle_id = lifecycle_id;
     _data = std::move(data);
+    _declaration = std::move(declaration);
     _grant = std::move(grant);
     _retire_ledger = std::move(retire_ledger);
     _observer = std::move(observer);
@@ -397,6 +421,15 @@ const RnicCollectiveDataMetadata& RnicCollectivePacket::data() const {
         throw std::logic_error("rnic-cn packet does not carry DATA metadata");
     }
     return *_data;
+}
+
+const RnicCollectiveDeclareMetadata&
+RnicCollectivePacket::declaration() const {
+    if (!_declaration.has_value()) {
+        throw std::logic_error(
+            "rnic-cn packet does not carry DECLARE metadata");
+    }
+    return *_declaration;
 }
 
 const RnicCollectiveGrant& RnicCollectivePacket::grant() const {
@@ -489,6 +522,7 @@ void RnicCollectivePacket::terminate(
     std::shared_ptr<RnicCollectivePacketLifecycleObserver> observer =
         std::move(_observer);
     _data.reset();
+    _declaration.reset();
     _grant.reset();
     _retire_ledger.reset();
     _pool_state = PoolState::RECYCLED;

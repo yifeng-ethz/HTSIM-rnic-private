@@ -205,13 +205,14 @@ selected feasible source/destination slot and then enters a constant-delay
 in-flight calendar. The manifold never builds a congestion queue, drops a
 packet, applies backpressure, or adds load-dependent latency.
 
-Independent sender PRBS streams at aggregate load exactly equal to a downlink
-capacity would create a stochastic `rho = 1` destination queue. That would
-contradict the topology-free contract. Consequently, `rnic-nn` uses a central
-collision-free packet-slot scheduler. It may use deterministic PRBS state to
-choose among equally feasible matchings or flow ties, but it must never schedule
-two packets that violate a source or destination access-link slot. This is the
-packetized counterpart of max-min service, not a best-effort fabric.
+Uncoordinated sender-side lottery pacing at aggregate load exactly equal to a
+downlink capacity would create a statistical `rho = 1` destination queue under
+the intended renewal model. That would contradict the topology-free contract.
+Consequently, `rnic-nn` uses a central collision-free packet-slot scheduler. It
+may use deterministic PRBS state to choose among equally feasible matchings or
+flow ties, but it must never schedule two packets that violate a source or
+destination access-link slot. This is the packetized counterpart of max-min
+service, not a best-effort fabric.
 
 Scheduler version 1 uses a homogeneous full-`M` envelope grid. Within a
 selected envelope, an exact wire extent `l <= M` is right-aligned on the source
@@ -281,12 +282,23 @@ from topology and control-loop effects.
 `rnic-cn` has no central oracle and does not read global simulator flow state.
 Its startup sequence is:
 
-1. a flow sends a declaration before any DATA;
-2. the receiver-side controller counts the declared active flow;
+1. a flow sends a declaration with `nflow = 1` before any DATA;
+2. the receiver-side controller adds that `nflow` contribution to the active
+   receiver count;
 3. DATA remains hard-gated until an ACCEPT grant returns in band;
 4. the sender moves directly from zero to the wire-rate grant
    `margin * C_b / N_hat`;
 5. subsequent grants use the same controller and travel in band.
+
+`nflow` is the only DECLARE field available to the RX CCA. The packet may also
+carry `collective_id` and `expected_fan_in`, but those names are explicitly
+debug-only: the endpoint discards them before constructing the receiver
+membership batch. In particular, expected fan-in cannot pre-install future
+senders, change `N_hat`, or affect a grant. The transport flow identity remains
+necessary to route the matching ACCEPT and RETIRE, but it is not a collective
+size oracle. The current hard startup declaration admits one L4 flow and
+therefore requires `nflow = 1`; the patent's separate soft-window weighted
+token design is not silently folded into this path.
 
 A join wave cannot safely open the new sender before incumbent reductions take
 effect: with one incumbent, the transient would otherwise be
@@ -340,8 +352,9 @@ already-constructed pipes and serializers.
 The `rnic-cn` sender schedules one wire event at a time across all eligible
 flows on an `RnicTxPort`. Let flow `i` have a wire-rate grant `r_i`, head wire
 extent `l_i`, access capacity `C`, and maximum/idle wire extent `M`. Equal
-`l_i = M` heads use the original `r_i/C` lottery verbatim, including flow-id
-ordering, bounded draw, LFSR-word consumption, and idle sequence.
+`l_i = M` heads use the selected generator version's `r_i/C` lottery path
+verbatim, including flow-id ordering, one bounded draw per opportunity, and
+the resulting idle sequence.
 
 For unequal heads, selection uses size-normalized hazards
 
@@ -378,11 +391,32 @@ word against the exact cumulative/total 128-bit weights without a narrowing
 ticket range or 192-bit product; its finite-grid probability error is at most
 `2^-64`.
 
-The generator is an independent per-node LFSR stream seeded from
-`(global_seed, node_id)`. The run manifest records the algorithm name, version,
-polynomial, global seed, and derived node seed. A deterministic pacer remains
-available only as a named diagnostic (`-rnic_pacer deterministic`); the profile
-default is `-rnic_pacer prbs`.
+Each node receives a distinct deterministic phase of the LFSR stream derived
+from `(global_seed, node_id)`; these reproducible pseudorandom phases are
+intended to approximate independent renewal streams. Version 2 is named
+`galois-lfsr64-block64`. For each lottery word, bit `j` is the register LSB
+before Galois transition `j`, for `j = 0..63`; consecutive calls therefore
+consume disjoint 64-bit output blocks. The bounded draw is
+`nonzero-rejection-modulo-v1`. Version 1 advanced the LFSR by only one bit and
+exposed the whole shifted register, so adjacent draws were separated by one
+transition and strongly linearly related. That implementation is retired: it
+created excess short-range correlation and incast burstiness rather than the
+renewal-like approximation required by the patent. The rendered run manifest
+records the algorithm and extraction versions, polynomial, bounded-draw rule,
+and global seed. Each in-memory per-node pacer manifest additionally records
+the node ID and derived node seed.
+
+PRBS is used as a statistical pacing approximation, not as a deterministic
+arrival regulator. The aggregate grant ceiling bounds sustainable rate `rho`;
+it does not configure or enforce a finite burst term `sigma`. The intended
+independent-renewal model therefore has an unbounded queue-delay support. The
+implemented block64 trace is deterministic and finite-period, but the
+simulator neither computes nor enforces a useful per-period `(sigma,rho)` or
+`Delta` guarantee. A sufficiently long replay can consequently exceed
+`Delta = 4.096 us` even with correct `N_hat` and aggregate grant `0.9C`. A hard
+all-time delay bound would require a separately named bounded-discrepancy or
+token-bucket regulator. The current profile does not claim that PRBS alone
+proves such a bound.
 
 Adding a random fraction of a deterministic inter-packet gap is not PRBS
 pacing: it changes the mean rate and is prohibited.
@@ -462,7 +496,7 @@ must not be confused with endpoint resequencing capacity.
 ## Reproducibility and acceptance gates
 
 Every reported run records the resolved profile dimensions, link rates, fixed
-latencies, MTU, `Delta`, `delta`, control margin/RTT, PRBS identity and seeds,
+latencies, MTU, `Delta`, `delta`, control margin/RTT, PRBS identity and global seed,
 Tomahawk 3 scheduler policy, topology, workload hash, simulator commit, and
 ATLAHS commit.
 
@@ -475,8 +509,8 @@ Tests are layered:
    resequencer window/tick rules, node-wide serialization, and deterministic
    seeded replay;
 2. trend regressions: packetized NN approaches fluid NN as `M` decreases,
-   independent PRBS streams suppress synchronized phase impulses relative to
-   aligned fixed phases, RB release suppresses incast burst peaks, CN stays
+   node-distinct PRBS phases suppress synchronized impulses relative to aligned
+   fixed phases, RB release suppresses incast burst peaks, CN stays
    near NN for the validated paper workload, and conventional reactive
    transports degrade more strongly under large incast;
 3. historical comparisons: slide and paper values with tolerances and written

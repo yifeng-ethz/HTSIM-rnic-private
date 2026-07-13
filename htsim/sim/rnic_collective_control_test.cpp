@@ -69,6 +69,32 @@ uint64_t aggregateWireRate(
     return result;
 }
 
+RnicCollectiveMembershipDelta unitDelta(
+        std::initializer_list<uint64_t> declarations,
+        std::initializer_list<uint64_t> retirements) {
+    RnicCollectiveMembershipDelta delta;
+    delta.declarations.reserve(declarations.size());
+    for (const uint64_t flow_id : declarations) {
+        delta.declarations.push_back({flow_id, 1});
+    }
+    delta.retired_flow_ids.assign(
+        retirements.begin(), retirements.end());
+    return delta;
+}
+
+RnicCollectiveMembershipDelta unitDelta(
+        const std::vector<uint64_t>& declarations,
+        std::initializer_list<uint64_t> retirements) {
+    RnicCollectiveMembershipDelta delta;
+    delta.declarations.reserve(declarations.size());
+    for (const uint64_t flow_id : declarations) {
+        delta.declarations.push_back({flow_id, 1});
+    }
+    delta.retired_flow_ids.assign(
+        retirements.begin(), retirements.end());
+    return delta;
+}
+
 TEST(RnicCollectiveControllerTest, GrantIsDirectMarginCapacityDivision) {
     RnicCollectiveController controller(400000000000ULL, 100);
     std::vector<RnicSenderGrantGate> gates;
@@ -76,7 +102,7 @@ TEST(RnicCollectiveControllerTest, GrantIsDirectMarginCapacityDivision) {
     gates.emplace_back(1);
     gates[0].declarationDispatched();
     const std::optional<RnicCollectiveGrantWave> one =
-        controller.beginMembershipWave({{1}, {}}, 0);
+        controller.beginMembershipWave(unitDelta({1}, {}), 0);
     ASSERT_TRUE(one.has_value());
     ASSERT_EQ(one->grants.size(), 1u);
     EXPECT_EQ(one->wire_rate_bps, 360000000000ULL);
@@ -87,11 +113,28 @@ TEST(RnicCollectiveControllerTest, GrantIsDirectMarginCapacityDivision) {
     gates.emplace_back(2);
     gates[1].declarationDispatched();
     const std::optional<RnicCollectiveGrantWave> two =
-        controller.beginMembershipWave({{2}, {}}, 100);
+        controller.beginMembershipWave(unitDelta({2}, {}), 100);
     ASSERT_TRUE(two.has_value());
     ASSERT_EQ(two->grants.size(), 2u);
     EXPECT_EQ(two->wire_rate_bps, 180000000000ULL);
     EXPECT_EQ(two->n_hat, 2u);
+}
+
+TEST(RnicCollectiveControllerTest, DeclaredNflowDefinesEffectiveCount) {
+    RnicCollectiveController controller(1000, 100);
+    const RnicCollectiveMembershipDelta declaration{
+        {{10, 3}}, {}};
+
+    const std::optional<RnicCollectiveGrantWave> wave =
+        controller.beginMembershipWave(declaration, 0);
+
+    ASSERT_TRUE(wave.has_value());
+    EXPECT_EQ(controller.activeFlowCount(), 1u);
+    EXPECT_EQ(controller.effectiveFlowCount(), 3u);
+    EXPECT_EQ(wave->n_hat, 3u);
+    EXPECT_EQ(wave->wire_rate_bps, 300u);
+    ASSERT_EQ(wave->grants.size(), 1u);
+    EXPECT_EQ(wave->grants[0].n_hat, 3u);
 }
 
 TEST(RnicCollectiveControllerTest, MembershipChangeProducesOneVerticalStep) {
@@ -101,7 +144,7 @@ TEST(RnicCollectiveControllerTest, MembershipChangeProducesOneVerticalStep) {
     gates.emplace_back(10);
     gates[0].declarationDispatched();
     const std::optional<RnicCollectiveGrantWave> before =
-        controller.beginMembershipWave({{10}, {}}, 0);
+        controller.beginMembershipWave(unitDelta({10}, {}), 0);
     ASSERT_TRUE(before.has_value());
     deliverWave(*before, gates, 50);
     activateWave(*before, gates, controller, 100);
@@ -109,7 +152,7 @@ TEST(RnicCollectiveControllerTest, MembershipChangeProducesOneVerticalStep) {
     gates.emplace_back(11);
     gates[1].declarationDispatched();
     const std::optional<RnicCollectiveGrantWave> after =
-        controller.beginMembershipWave({{11}, {}}, 100);
+        controller.beginMembershipWave(unitDelta({11}, {}), 100);
     ASSERT_TRUE(after.has_value());
     EXPECT_EQ(before->wire_rate_bps, 900u);
     EXPECT_EQ(after->wire_rate_bps, 450u);
@@ -122,23 +165,32 @@ TEST(RnicCollectiveControllerTest, DeclarationAndRetirementAreIdempotent) {
     gates.emplace_back(10);
     gates[0].declarationDispatched();
     const std::optional<RnicCollectiveGrantWave> declaration =
-        controller.beginMembershipWave({{10}, {}}, 0);
+        controller.beginMembershipWave(unitDelta({10}, {}), 0);
     ASSERT_TRUE(declaration.has_value());
     deliverWave(*declaration, gates, 50);
     activateWave(*declaration, gates, controller, 100);
     const uint64_t declared_epoch = controller.membershipEpoch();
-    EXPECT_FALSE(controller.beginMembershipWave({{10}, {}}, 100).has_value());
+    EXPECT_FALSE(
+        controller.beginMembershipWave(unitDelta({10}, {}), 100)
+            .has_value());
     EXPECT_EQ(controller.membershipEpoch(), declared_epoch);
+    EXPECT_THROW(
+        controller.beginMembershipWave({{{10, 2}}, {}}, 100),
+        std::invalid_argument);
+    EXPECT_EQ(controller.membershipEpoch(), declared_epoch);
+    EXPECT_EQ(controller.effectiveFlowCount(), 1u);
 
     const std::optional<RnicCollectiveGrantWave> retirement =
-        controller.beginMembershipWave({{}, {10}}, 100);
+        controller.beginMembershipWave(unitDelta({}, {10}), 100);
     ASSERT_TRUE(retirement.has_value());
     std::vector<RnicSenderGrantGate*> no_gates;
     RnicCollectiveGrantWaveBarrier::activate(
         *retirement, no_gates, controller, 200);
     gates[0].receiverRetirementCommitted();
     const uint64_t retired_epoch = controller.membershipEpoch();
-    EXPECT_FALSE(controller.beginMembershipWave({{}, {10}}, 200).has_value());
+    EXPECT_FALSE(
+        controller.beginMembershipWave(unitDelta({}, {10}), 200)
+            .has_value());
     EXPECT_EQ(controller.membershipEpoch(), retired_epoch);
 }
 
@@ -151,14 +203,14 @@ TEST(RnicCollectiveControllerTest, RetirementChangesTheNextReceiverGrant) {
     gates[0].declarationDispatched();
     gates[1].declarationDispatched();
     const std::optional<RnicCollectiveGrantWave> initial =
-        controller.beginMembershipWave({{10, 11}, {}}, 0);
+        controller.beginMembershipWave(unitDelta({10, 11}, {}), 0);
     ASSERT_TRUE(initial.has_value());
     EXPECT_EQ(initial->wire_rate_bps, 450u);
     deliverWave(*initial, gates, 50);
     activateWave(*initial, gates, controller, 100);
 
     const std::optional<RnicCollectiveGrantWave> retirement =
-        controller.beginMembershipWave({{}, {11}}, 100);
+        controller.beginMembershipWave(unitDelta({}, {11}), 100);
     ASSERT_TRUE(retirement.has_value());
     EXPECT_EQ(retirement->wire_rate_bps, 900u);
     ASSERT_EQ(retirement->grants.size(), 1u);
@@ -173,7 +225,7 @@ TEST(RnicCollectiveControllerTest, RetirementChangesTheNextReceiverGrant) {
 TEST(RnicCollectiveControllerTest, GrantsForAllAreStableByFlowIdAndKind) {
     RnicCollectiveController controller(1000, 1234);
     const std::optional<RnicCollectiveGrantWave> wave =
-        controller.beginMembershipWave({{20, 10}, {}}, 0);
+        controller.beginMembershipWave(unitDelta({20, 10}, {}), 0);
     ASSERT_TRUE(wave.has_value());
     const std::vector<RnicCollectiveGrant>& grants = wave->grants;
     ASSERT_EQ(grants.size(), 2u);
@@ -189,7 +241,7 @@ TEST(RnicCollectiveControllerTest, GrantsForAllAreStableByFlowIdAndKind) {
 TEST(RnicCollectiveControllerTest, MembershipBatchCreatesOneImmutableWave) {
     RnicCollectiveController controller(1000, 500);
     const std::optional<RnicCollectiveGrantWave> result =
-        controller.beginMembershipWave({{30, 10, 20}, {}}, 0);
+        controller.beginMembershipWave(unitDelta({30, 10, 20}, {}), 0);
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(controller.membershipEpoch(), 1u);
 
@@ -213,20 +265,35 @@ TEST(RnicCollectiveControllerTest, MembershipBatchCreatesOneImmutableWave) {
 
 TEST(RnicCollectiveControllerTest, MembershipMutationIsTransactional) {
     RnicCollectiveController controller(1000, 100);
-    EXPECT_THROW(controller.beginMembershipWave({{10, 10}, {}}, 0),
+    EXPECT_THROW(
+        controller.beginMembershipWave(unitDelta({10, 10}, {}), 0),
                  std::invalid_argument);
-    EXPECT_THROW(controller.beginMembershipWave({{}, {10, 10}}, 0),
+    EXPECT_THROW(
+        controller.beginMembershipWave(unitDelta({}, {10, 10}), 0),
                  std::invalid_argument);
-    EXPECT_THROW(controller.beginMembershipWave({{10}, {10}}, 0),
+    EXPECT_THROW(
+        controller.beginMembershipWave(unitDelta({10}, {10}), 0),
+                 std::invalid_argument);
+    EXPECT_THROW(controller.beginMembershipWave({{{10, 0}}, {}}, 0),
                  std::invalid_argument);
     EXPECT_EQ(controller.membershipEpoch(), 0u);
     EXPECT_EQ(controller.activeFlowCount(), 0u);
 
     RnicCollectiveController sub_bit_capacity(1, 100);
-    EXPECT_THROW(sub_bit_capacity.beginMembershipWave({{1}, {}}, 0),
+    EXPECT_THROW(
+        sub_bit_capacity.beginMembershipWave(unitDelta({1}, {}), 0),
                  std::overflow_error);
     EXPECT_EQ(sub_bit_capacity.membershipEpoch(), 0u);
     EXPECT_EQ(sub_bit_capacity.activeFlowCount(), 0u);
+
+    RnicCollectiveController overflowing_nflow(20000000000000ULL, 100);
+    EXPECT_THROW(
+        overflowing_nflow.beginMembershipWave(
+            {{{1, std::numeric_limits<uint32_t>::max()}, {2, 1}}, {}},
+            0),
+        std::overflow_error);
+    EXPECT_EQ(overflowing_nflow.membershipEpoch(), 0u);
+    EXPECT_EQ(overflowing_nflow.activeFlowCount(), 0u);
 }
 
 TEST(RnicCollectiveControllerWaveTest,
@@ -240,14 +307,15 @@ TEST(RnicCollectiveControllerWaveTest,
     gates[1].declarationDispatched();
 
     const std::optional<RnicCollectiveGrantWave> first =
-        controller.beginMembershipWave({{10, 20}, {}}, 100);
+        controller.beginMembershipWave(unitDelta({10, 20}, {}), 100);
     ASSERT_TRUE(first.has_value());
     EXPECT_EQ(first->membership_epoch, 1u);
     EXPECT_EQ(first->effective_time_ps, 180u);
     EXPECT_TRUE(controller.waveOutstanding());
     EXPECT_EQ(controller.outstandingEpoch(), 1u);
     EXPECT_EQ(controller.outstandingEffectiveTimePs(), 180u);
-    EXPECT_THROW(controller.beginMembershipWave({{30}, {}}, 120),
+    EXPECT_THROW(controller.beginMembershipWave(
+                     unitDelta({30}, {}), 120),
                  std::logic_error);
 
     deliverWave(*first, gates, 170);
@@ -260,7 +328,7 @@ TEST(RnicCollectiveControllerWaveTest,
     gates.emplace_back(30);
     gates.back().declarationDispatched();
     const std::optional<RnicCollectiveGrantWave> second =
-        controller.beginMembershipWave({{30}, {}}, 180);
+        controller.beginMembershipWave(unitDelta({30}, {}), 180);
     ASSERT_TRUE(second.has_value());
     EXPECT_EQ(second->membership_epoch, 2u);
     EXPECT_EQ(second->effective_time_ps, 260u);
@@ -275,19 +343,20 @@ TEST(RnicCollectiveControllerWaveTest, NoOpAndFailureAreTransactional) {
     gates[0].declarationDispatched();
 
     const std::optional<RnicCollectiveGrantWave> initial =
-        controller.beginMembershipWave({{10}, {}}, 0);
+        controller.beginMembershipWave(unitDelta({10}, {}), 0);
     ASSERT_TRUE(initial.has_value());
     deliverWave(*initial, gates, 80);
     activateWave(*initial, gates, controller, 80);
 
     EXPECT_FALSE(
-        controller.beginMembershipWave({{10}, {}}, 80).has_value());
+        controller.beginMembershipWave(unitDelta({10}, {}), 80)
+            .has_value());
     EXPECT_FALSE(controller.waveOutstanding());
     EXPECT_EQ(controller.membershipEpoch(), 1u);
 
     EXPECT_THROW(
         controller.beginMembershipWave(
-            {{20}, {}},
+            unitDelta({20}, {}),
             std::numeric_limits<uint64_t>::max() - 79),
         std::overflow_error);
     EXPECT_FALSE(controller.contains(20));
@@ -303,7 +372,7 @@ TEST(RnicCollectiveControllerWaveTest,
     gates[0].declarationDispatched();
 
     const std::optional<RnicCollectiveGrantWave> initial =
-        controller.beginMembershipWave({{10}, {}}, 0);
+        controller.beginMembershipWave(unitDelta({10}, {}), 0);
     ASSERT_TRUE(initial.has_value());
     deliverWave(*initial, gates, 90);
     activateWave(*initial, gates, controller, 100);
@@ -311,7 +380,7 @@ TEST(RnicCollectiveControllerWaveTest,
     gates.emplace_back(20);
     gates[1].declarationDispatched();
     const std::optional<RnicCollectiveGrantWave> mixed =
-        controller.beginMembershipWave({{10, 20}, {}}, 100);
+        controller.beginMembershipWave(unitDelta({10, 20}, {}), 100);
     ASSERT_TRUE(mixed.has_value());
     ASSERT_EQ(mixed->grants.size(), 2u);
     EXPECT_EQ(mixed->grants[0].flow_id, 10u);
@@ -332,12 +401,12 @@ TEST(RnicCollectiveControllerWaveTest, EmptyRetirementWaveCompletes) {
     gates[0].declarationDispatched();
 
     const std::optional<RnicCollectiveGrantWave> initial =
-        controller.beginMembershipWave({{10}, {}}, 0);
+        controller.beginMembershipWave(unitDelta({10}, {}), 0);
     ASSERT_TRUE(initial.has_value());
     deliverWave(*initial, gates, 50);
     activateWave(*initial, gates, controller, 100);
     const std::optional<RnicCollectiveGrantWave> retirement =
-        controller.beginMembershipWave({{}, {10}}, 100);
+        controller.beginMembershipWave(unitDelta({}, {10}), 100);
     ASSERT_TRUE(retirement.has_value());
     EXPECT_EQ(retirement->n_hat, 0u);
     EXPECT_TRUE(retirement->grants.empty());
@@ -357,7 +426,7 @@ TEST(RnicSenderGrantGateTest, DataIsHardGatedUntilAtomicBoundary) {
     gates[0].declarationDispatched();
 
     const std::optional<RnicCollectiveGrantWave> wave =
-        controller.beginMembershipWave({{10}, {}}, 0);
+        controller.beginMembershipWave(unitDelta({10}, {}), 0);
     ASSERT_TRUE(wave.has_value());
     deliverWave(*wave, gates, 50);
     EXPECT_EQ(gates[0].phase(),
@@ -381,7 +450,7 @@ TEST(RnicSenderGrantGateTest, ActiveSenderStepsDirectlyAtWaveBoundary) {
     gates[0].declarationDispatched();
 
     const std::optional<RnicCollectiveGrantWave> initial =
-        controller.beginMembershipWave({{10}, {}}, 0);
+        controller.beginMembershipWave(unitDelta({10}, {}), 0);
     ASSERT_TRUE(initial.has_value());
     deliverWave(*initial, gates, 50);
     activateWave(*initial, gates, controller, 100);
@@ -389,7 +458,7 @@ TEST(RnicSenderGrantGateTest, ActiveSenderStepsDirectlyAtWaveBoundary) {
     gates.emplace_back(20);
     gates[1].declarationDispatched();
     const std::optional<RnicCollectiveGrantWave> joined =
-        controller.beginMembershipWave({{20}, {}}, 100);
+        controller.beginMembershipWave(unitDelta({20}, {}), 100);
     ASSERT_TRUE(joined.has_value());
     deliverWave(*joined, gates, 150);
     EXPECT_EQ(gates[0].currentWireRateBps(), 900u);
@@ -418,7 +487,7 @@ TEST(RnicSenderGrantGateTest, JoinSweepNeverExceedsMarginCapacity) {
         }
 
         const std::optional<RnicCollectiveGrantWave> initial =
-            controller.beginMembershipWave({initial_ids, {}}, 0);
+            controller.beginMembershipWave(unitDelta(initial_ids, {}), 0);
         ASSERT_TRUE(initial.has_value());
         deliverWave(*initial, gates, 99);
         activateWave(*initial, gates, controller, 100);
@@ -428,7 +497,8 @@ TEST(RnicSenderGrantGateTest, JoinSweepNeverExceedsMarginCapacity) {
         gates.emplace_back(joiner_id);
         gates.back().declarationDispatched();
         const std::optional<RnicCollectiveGrantWave> joined =
-            controller.beginMembershipWave({{joiner_id}, {}}, 100);
+            controller.beginMembershipWave(
+                unitDelta({joiner_id}, {}), 100);
         ASSERT_TRUE(joined.has_value());
 
         // The ACCEPT may physically arrive first. It remains gated while the
@@ -455,7 +525,7 @@ TEST(RnicSenderGrantGateTest, MissingFeedbackCannotPartiallyActivateWave) {
     gates[0].declarationDispatched();
 
     const std::optional<RnicCollectiveGrantWave> initial =
-        controller.beginMembershipWave({{10}, {}}, 0);
+        controller.beginMembershipWave(unitDelta({10}, {}), 0);
     ASSERT_TRUE(initial.has_value());
     deliverWave(*initial, gates, 50);
     activateWave(*initial, gates, controller, 100);
@@ -463,7 +533,7 @@ TEST(RnicSenderGrantGateTest, MissingFeedbackCannotPartiallyActivateWave) {
     gates.emplace_back(20);
     gates[1].declarationDispatched();
     const std::optional<RnicCollectiveGrantWave> joined =
-        controller.beginMembershipWave({{20}, {}}, 100);
+        controller.beginMembershipWave(unitDelta({20}, {}), 100);
     ASSERT_TRUE(joined.has_value());
     ASSERT_EQ(joined->grants.size(), 2u);
     deliverGrant(gates[1], joined->grants[1], 150);
@@ -493,7 +563,7 @@ TEST(RnicSenderGrantGateTest, ControllerAuthenticatesImmutableWave) {
     gates[1].declarationDispatched();
 
     const std::optional<RnicCollectiveGrantWave> wave =
-        controller.beginMembershipWave({{10, 20}, {}}, 0);
+        controller.beginMembershipWave(unitDelta({10, 20}, {}), 0);
     ASSERT_TRUE(wave.has_value());
     deliverWave(*wave, gates, 50);
 
@@ -521,7 +591,8 @@ TEST(RnicSenderGrantGateTest, EveryGrantArrivalPermutationCommitsOnce) {
             gates.back().declarationDispatched();
         }
         const std::optional<RnicCollectiveGrantWave> wave =
-            controller.beginMembershipWave({{1, 2, 3}, {}}, 0);
+            controller.beginMembershipWave(
+                unitDelta({1, 2, 3}, {}), 0);
         ASSERT_TRUE(wave.has_value());
         for (const size_t index : order) {
             deliverGrant(findGate(gates, wave->grants[index].flow_id),
@@ -543,7 +614,7 @@ TEST(RnicSenderGrantGateTest,
     gates.emplace_back(10);
     gates[0].declarationDispatched();
     const std::optional<RnicCollectiveGrantWave> wave =
-        controller.beginMembershipWave({{10}, {}}, 0);
+        controller.beginMembershipWave(unitDelta({10}, {}), 0);
     ASSERT_TRUE(wave.has_value());
     const RnicCollectiveGrant accept = wave->grants[0];
 
@@ -570,7 +641,7 @@ TEST(RnicSenderGrantGateTest, MissedEffectiveDeadlineFailsClosed) {
     gates.emplace_back(10);
     gates[0].declarationDispatched();
     const std::optional<RnicCollectiveGrantWave> wave =
-        controller.beginMembershipWave({{10}, {}}, 0);
+        controller.beginMembershipWave(unitDelta({10}, {}), 0);
     ASSERT_TRUE(wave.has_value());
 
     EXPECT_THROW(gates[0].receiveAccept(wave->grants[0], 101),
@@ -585,12 +656,12 @@ TEST(RnicSenderGrantGateTest, RetirementClosesDataGate) {
     gates.emplace_back(10);
     gates[0].declarationDispatched();
     const std::optional<RnicCollectiveGrantWave> wave =
-        controller.beginMembershipWave({{10}, {}}, 0);
+        controller.beginMembershipWave(unitDelta({10}, {}), 0);
     ASSERT_TRUE(wave.has_value());
     deliverWave(*wave, gates, 50);
     activateWave(*wave, gates, controller, 100);
     const std::optional<RnicCollectiveGrantWave> retirement =
-        controller.beginMembershipWave({{}, {10}}, 100);
+        controller.beginMembershipWave(unitDelta({}, {10}), 100);
     ASSERT_TRUE(retirement.has_value());
     std::vector<RnicSenderGrantGate*> no_gates;
     RnicCollectiveGrantWaveBarrier::activate(

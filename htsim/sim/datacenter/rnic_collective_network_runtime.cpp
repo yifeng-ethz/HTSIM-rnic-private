@@ -118,7 +118,7 @@ struct RnicCollectiveNetworkRuntime::Impl {
     };
 
     struct MembershipBatch {
-        std::set<AtlahsFlowId> declared_flow_ids;
+        std::map<AtlahsFlowId, std::uint32_t> declared_nflow_by_flow;
         std::set<AtlahsFlowId> retired_flow_ids;
     };
 
@@ -133,6 +133,7 @@ struct RnicCollectiveNetworkRuntime::Impl {
         std::uint32_t source;
         std::uint32_t destination;
         std::uint64_t wire_bytes;
+        std::optional<RnicCollectiveDeclareMetadata> declaration;
         std::optional<RnicCollectiveGrant> grant;
         std::optional<RnicCollectiveFinalLedger> final_ledger;
         TimePs eligible_time_ps;
@@ -147,6 +148,7 @@ struct RnicCollectiveNetworkRuntime::Impl {
         std::uint32_t destination;
         std::uint64_t wire_bytes;
         std::optional<RnicCollectiveDataMetadata> data;
+        std::optional<RnicCollectiveDeclareMetadata> declaration;
         std::optional<RnicCollectiveGrant> grant;
         std::optional<RnicCollectiveFinalLedger> final_ledger;
     };
@@ -165,6 +167,7 @@ struct RnicCollectiveNetworkRuntime::Impl {
         std::uint32_t source;
         std::uint32_t destination;
         std::optional<RnicCollectiveDataMetadata> data;
+        std::optional<RnicCollectiveDeclareMetadata> declaration;
         std::optional<RnicCollectiveGrant> grant;
         std::optional<RnicCollectiveFinalLedger> final_ledger;
     };
@@ -500,6 +503,8 @@ void RnicCollectiveNetworkRuntime::Impl::send(
         request.source,
         request.destination,
         config.control_wire_bytes,
+        RnicCollectiveDeclareMetadata{
+            1, {std::nullopt, std::nullopt}},
         std::nullopt,
         std::nullopt,
         EventList::now(),
@@ -598,6 +603,7 @@ void RnicCollectiveNetworkRuntime::Impl::stageEndpointArrival(
         std::nullopt,
         std::nullopt,
         std::nullopt,
+        std::nullopt,
     };
     switch (collective->kind()) {
     case RnicCollectivePacketKind::DATA:
@@ -612,6 +618,7 @@ void RnicCollectiveNetworkRuntime::Impl::stageEndpointArrival(
         arrival.final_ledger = collective->finalLedger();
         break;
     case RnicCollectivePacketKind::DECLARE:
+        arrival.declaration = collective->declaration();
         break;
     }
 
@@ -789,6 +796,10 @@ void RnicCollectiveNetworkRuntime::Impl::launchFrame(
             packet_observer);
         break;
     case RnicCollectivePacketKind::DECLARE:
+        if (!frame.declaration.has_value()) {
+            throw std::logic_error(
+                "rnic-cn DECLARE launch lost its nflow metadata");
+        }
         if (flow.declaration_dispatched) {
             throw std::logic_error("rnic-cn dispatched DECLARE twice");
         }
@@ -802,6 +813,7 @@ void RnicCollectiveNetworkRuntime::Impl::launchFrame(
             frame.source,
             frame.destination,
             frame.wire_bytes,
+            *frame.declaration,
             packet_observer);
         break;
     case RnicCollectivePacketKind::ACCEPT:
@@ -908,6 +920,7 @@ void RnicCollectiveNetworkRuntime::Impl::queueRetireControl(
          flow.request.destination,
          config.control_wire_bytes,
          std::nullopt,
+         std::nullopt,
          flow.final_ledger,
          eligible_time_ps,
          false,
@@ -944,6 +957,18 @@ void RnicCollectiveNetworkRuntime::Impl::processEndpointArrivals(
             processDataArrival(arrival, completions);
             break;
         case RnicCollectivePacketKind::DECLARE: {
+            if (!arrival.declaration.has_value()) {
+                throw std::logic_error(
+                    "rnic-cn receiver observed DECLARE without nflow");
+            }
+            // The current hard start declaration represents exactly one L4
+            // flow.  Debug collective identity and expected fan-in are
+            // deliberately not copied into MembershipBatch, so they are
+            // structurally unavailable to the RX CCA.
+            if (arrival.declaration->nflow != 1) {
+                throw std::invalid_argument(
+                    "rnic-cn startup DECLARE requires nflow=1");
+            }
             if (flow.declaration_observed) {
                 throw std::logic_error(
                     "rnic-cn receiver observed DECLARE twice");
@@ -951,7 +976,9 @@ void RnicCollectiveNetworkRuntime::Impl::processEndpointArrivals(
             NodeState& receiver = requireNode(flow.request.destination);
             MembershipBatch& batch =
                 receiver.membership_batches[now_ps];
-            if (!batch.declared_flow_ids.insert(flow.request.flow_id).second) {
+            if (!batch.declared_nflow_by_flow.emplace(
+                     flow.request.flow_id,
+                     arrival.declaration->nflow).second) {
                 throw std::logic_error(
                     "rnic-cn membership batch duplicates DECLARE");
             }
@@ -1260,15 +1287,20 @@ void RnicCollectiveNetworkRuntime::Impl::beginMembershipWave(
         TimePs observation_time_ps,
         MembershipBatch batch) {
     RnicCollectiveMembershipDelta delta;
-    delta.declared_flow_ids.assign(
-        batch.declared_flow_ids.begin(), batch.declared_flow_ids.end());
+    delta.declarations.reserve(batch.declared_nflow_by_flow.size());
+    for (const auto& declaration : batch.declared_nflow_by_flow) {
+        delta.declarations.push_back(
+            {declaration.first, declaration.second});
+    }
     delta.retired_flow_ids.assign(
         batch.retired_flow_ids.begin(), batch.retired_flow_ids.end());
-    if (delta.declared_flow_ids.empty()
+    if (delta.declarations.empty()
         && delta.retired_flow_ids.empty()) {
         throw std::logic_error("rnic-cn membership batch is empty");
     }
-    for (const AtlahsFlowId flow_id : delta.declared_flow_ids) {
+    for (const RnicCollectiveMembershipDeclaration& declaration :
+         delta.declarations) {
+        const AtlahsFlowId flow_id = declaration.flow_id;
         const FlowState& flow = requireFlow(flow_id);
         if (&requireNode(flow.request.destination) != &receiver
             || receiver.controller.contains(flow_id)) {
@@ -1294,9 +1326,10 @@ void RnicCollectiveNetworkRuntime::Impl::beginMembershipWave(
     }
     receiver.outstanding_wave = OutstandingWave{*wave, delta};
     const std::uint32_t receiver_node =
-        delta.declared_flow_ids.empty()
+        delta.declarations.empty()
             ? requireFlow(delta.retired_flow_ids.front()).request.destination
-            : requireFlow(delta.declared_flow_ids.front()).request.destination;
+            : requireFlow(delta.declarations.front().flow_id)
+                  .request.destination;
     queueGrantFrames(*wave, receiver_node);
 }
 
@@ -1326,6 +1359,7 @@ void RnicCollectiveNetworkRuntime::Impl::queueGrantFrames(
              receiver_node,
              flow.request.source,
              config.control_wire_bytes,
+             std::nullopt,
              grant,
              std::nullopt,
              EventList::now(),
@@ -1403,6 +1437,7 @@ bool RnicCollectiveNetworkRuntime::Impl::dispatchControls(TimePs now_ps) {
                             frame.destination,
                             frame.wire_bytes,
                             std::nullopt,
+                            frame.declaration,
                             frame.grant,
                             frame.final_ledger});
         source.control_queue.pop_front();
@@ -1480,6 +1515,7 @@ bool RnicCollectiveNetworkRuntime::Impl::dispatchData(TimePs now_ps) {
                             flow.request.destination,
                             transmitted.extent.wireBytes(),
                             metadata,
+                            std::nullopt,
                             std::nullopt,
                             flow.final_ledger});
         flow.source_payload_bytes_dispatched = next_payload;

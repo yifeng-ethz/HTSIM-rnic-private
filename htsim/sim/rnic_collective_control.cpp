@@ -33,39 +33,69 @@ RnicCollectiveController::RnicCollectiveController(
 
 bool RnicCollectiveController::applyMembershipDelta(
         const RnicCollectiveMembershipDelta& delta) {
-    const std::set<uint64_t> declarations(
-        delta.declared_flow_ids.begin(), delta.declared_flow_ids.end());
+    std::map<uint64_t, uint32_t> declarations;
+    for (const RnicCollectiveMembershipDeclaration& declaration :
+         delta.declarations) {
+        if (declaration.nflow == 0) {
+            throw std::invalid_argument(
+                "rnic-cn membership declaration nflow must be nonzero");
+        }
+        if (!declarations.emplace(
+                 declaration.flow_id, declaration.nflow).second) {
+            throw std::invalid_argument(
+                "rnic-cn membership delta contains duplicate flow ids");
+        }
+    }
     const std::set<uint64_t> retirements(
         delta.retired_flow_ids.begin(), delta.retired_flow_ids.end());
-    if (declarations.size() != delta.declared_flow_ids.size()
-        || retirements.size() != delta.retired_flow_ids.size()) {
+    if (retirements.size() != delta.retired_flow_ids.size()) {
         throw std::invalid_argument(
             "rnic-cn membership delta contains duplicate flow ids");
     }
-    for (const uint64_t flow_id : declarations) {
-        if (retirements.count(flow_id) != 0) {
+    for (const auto& declaration : declarations) {
+        if (retirements.count(declaration.first) != 0) {
             throw std::invalid_argument(
                 "rnic-cn membership delta both declares and retires a flow");
         }
     }
 
-    std::set<uint64_t> next_active = _active_flow_ids;
+    std::map<uint64_t, uint32_t> next_active = _active_nflow_by_flow;
     for (const uint64_t flow_id : retirements) {
         next_active.erase(flow_id);
     }
-    next_active.insert(declarations.begin(), declarations.end());
-    if (next_active == _active_flow_ids) {
+    for (const auto& declaration : declarations) {
+        const auto existing = next_active.find(declaration.first);
+        if (existing != next_active.end()) {
+            if (existing->second != declaration.second) {
+                throw std::invalid_argument(
+                    "rnic-cn repeated DECLARE changed nflow");
+            }
+            continue;
+        }
+        next_active.emplace(declaration.first, declaration.second);
+    }
+    if (next_active == _active_nflow_by_flow) {
         return false;
     }
-    if (next_active.size() > std::numeric_limits<uint32_t>::max()) {
+
+    uint64_t next_n_hat = 0;
+    for (const auto& active : next_active) {
+        if (active.second
+            > std::numeric_limits<uint32_t>::max() - next_n_hat) {
+            throw std::overflow_error(
+                "rnic-cn effective nflow exceeds feedback field");
+        }
+        next_n_hat += active.second;
+    }
+    if (next_n_hat > std::numeric_limits<uint32_t>::max()) {
         throw std::overflow_error(
-            "rnic-cn active-flow count exceeds feedback field");
+            "rnic-cn effective nflow exceeds feedback field");
     }
     if (!next_active.empty()) {
         const uint64_t numerator =
             _bottleneck_wire_capacity_bps * _margin_ppm;
         const uint64_t denominator =
-            static_cast<uint64_t>(kPartsPerMillion) * next_active.size();
+            static_cast<uint64_t>(kPartsPerMillion) * next_n_hat;
         if (numerator / denominator == 0) {
             throw std::overflow_error(
                 "rnic-cn active membership produces a zero wire-rate grant");
@@ -74,13 +104,25 @@ bool RnicCollectiveController::applyMembershipDelta(
     if (_membership_epoch == std::numeric_limits<uint64_t>::max()) {
         throw std::overflow_error("rnic-cn membership epoch overflow");
     }
-    _active_flow_ids = std::move(next_active);
+    _active_nflow_by_flow = std::move(next_active);
     ++_membership_epoch;
     return true;
 }
 
 bool RnicCollectiveController::contains(uint64_t flow_id) const {
-    return _active_flow_ids.count(flow_id) != 0;
+    return _active_nflow_by_flow.count(flow_id) != 0;
+}
+
+uint32_t RnicCollectiveController::effectiveFlowCount() const {
+    uint64_t result = 0;
+    for (const auto& active : _active_nflow_by_flow) {
+        result += active.second;
+    }
+    if (result > std::numeric_limits<uint32_t>::max()) {
+        throw std::overflow_error(
+            "rnic-cn effective nflow exceeds feedback field");
+    }
+    return static_cast<uint32_t>(result);
 }
 
 RnicCollectiveGrant RnicCollectiveController::grantFor(
@@ -101,7 +143,7 @@ RnicCollectiveGrant RnicCollectiveController::grantFor(
     }
     return {flow_id,
             _membership_epoch,
-            static_cast<uint32_t>(_active_flow_ids.size()),
+            effectiveFlowCount(),
             wire_rate_bps,
             effective_time_ps,
             kind};
@@ -117,8 +159,9 @@ std::vector<RnicCollectiveGrant> RnicCollectiveController::grantsForAll(
         }
     }
     std::vector<RnicCollectiveGrant> grants;
-    grants.reserve(_active_flow_ids.size());
-    for (const uint64_t flow_id : _active_flow_ids) {
+    grants.reserve(_active_nflow_by_flow.size());
+    for (const auto& active : _active_nflow_by_flow) {
+        const uint64_t flow_id = active.first;
         const RnicCollectiveGrantKind kind =
             accepted_flow_ids.count(flow_id) == 0
                 ? RnicCollectiveGrantKind::Update
@@ -131,7 +174,7 @@ std::vector<RnicCollectiveGrant> RnicCollectiveController::grantsForAll(
 RnicCollectiveGrantWave RnicCollectiveController::grantWave(
         uint64_t effective_time_ps,
         const std::set<uint64_t>& accepted_flow_ids) const {
-    if (_active_flow_ids.empty()) {
+    if (_active_nflow_by_flow.empty()) {
         if (!accepted_flow_ids.empty()) {
             throw std::invalid_argument(
                 "rnic-cn empty wave cannot ACCEPT a sender");
@@ -148,16 +191,13 @@ RnicCollectiveGrantWave RnicCollectiveController::grantWave(
 }
 
 uint64_t RnicCollectiveController::currentWireRateBps() const {
-    if (_active_flow_ids.empty()) {
+    if (_active_nflow_by_flow.empty()) {
         return 0;
     }
-    if (_active_flow_ids.size() > std::numeric_limits<uint32_t>::max()) {
-        throw std::overflow_error(
-            "rnic-cn active-flow count exceeds feedback field");
-    }
+    const uint32_t n_hat = effectiveFlowCount();
     const uint64_t numerator = _bottleneck_wire_capacity_bps * _margin_ppm;
     const uint64_t denominator = static_cast<uint64_t>(kPartsPerMillion)
-                                 * _active_flow_ids.size();
+                                 * n_hat;
     return numerator / denominator;
 }
 
@@ -172,12 +212,13 @@ RnicCollectiveController::beginMembershipWave(
 
     RnicCollectiveController next_controller(
         _bottleneck_wire_capacity_bps, _control_deadline_ps, _margin_ppm);
-    next_controller._active_flow_ids = _active_flow_ids;
+    next_controller._active_nflow_by_flow = _active_nflow_by_flow;
     next_controller._membership_epoch = _membership_epoch;
     std::set<uint64_t> accepted_flow_ids;
-    for (const uint64_t flow_id : delta.declared_flow_ids) {
-        if (!contains(flow_id)) {
-            accepted_flow_ids.insert(flow_id);
+    for (const RnicCollectiveMembershipDeclaration& declaration :
+         delta.declarations) {
+        if (!contains(declaration.flow_id)) {
+            accepted_flow_ids.insert(declaration.flow_id);
         }
     }
     if (!next_controller.applyMembershipDelta(delta)) {
@@ -198,7 +239,8 @@ RnicCollectiveController::beginMembershipWave(
     // The barrier later compares the caller's wave against this retained copy,
     // so it cannot complete an epoch with fabricated or partial metadata.
     RnicCollectiveGrantWave retained_wave = wave;
-    _active_flow_ids = std::move(next_controller._active_flow_ids);
+    _active_nflow_by_flow =
+        std::move(next_controller._active_nflow_by_flow);
     _membership_epoch = next_controller._membership_epoch;
     _outstanding_wave = std::move(retained_wave);
     return wave;

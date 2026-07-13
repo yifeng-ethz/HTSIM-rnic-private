@@ -24,8 +24,13 @@ struct RnicCollectiveGrant {
     RnicCollectiveGrantKind kind;
 };
 
+struct RnicCollectiveMembershipDeclaration {
+    uint64_t flow_id;
+    uint32_t nflow;
+};
+
 struct RnicCollectiveMembershipDelta {
-    std::vector<uint64_t> declared_flow_ids;
+    std::vector<RnicCollectiveMembershipDeclaration> declarations;
     std::vector<uint64_t> retired_flow_ids;
 };
 
@@ -44,7 +49,9 @@ struct RnicCollectiveGrantWave {
 class RnicCollectiveGrantWaveBarrier;
 
 // Receiver-side membership and direct explicit-rate calculation for the
-// collective-network (`rnic-cn`) profile.
+// collective-network (`rnic-cn`) profile. N_hat is the sum of active DECLARE
+// nflow contributions; no collective identity or expected fan-in enters this
+// object.
 // Transport of declarations and grants is deliberately outside this class: the
 // integration must carry them in band through the simulated Clos.
 class RnicCollectiveController {
@@ -68,7 +75,10 @@ public:
 
     bool contains(uint64_t flow_id) const;
 
-    size_t activeFlowCount() const { return _active_flow_ids.size(); }
+    size_t activeFlowCount() const {
+        return _active_nflow_by_flow.size();
+    }
+    uint32_t effectiveFlowCount() const;
     uint64_t membershipEpoch() const { return _membership_epoch; }
     uint64_t bottleneckWireCapacityBps() const {
         return _bottleneck_wire_capacity_bps;
@@ -114,7 +124,7 @@ private:
     uint32_t _margin_ppm;
     uint64_t _control_deadline_ps;
     uint64_t _membership_epoch = 0;
-    std::set<uint64_t> _active_flow_ids;
+    std::map<uint64_t, uint32_t> _active_nflow_by_flow;
     std::optional<RnicCollectiveGrantWave> _outstanding_wave;
 };
 

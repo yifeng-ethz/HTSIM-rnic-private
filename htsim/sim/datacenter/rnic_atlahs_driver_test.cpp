@@ -135,11 +135,30 @@ TEST(RnicAtlahsDriverTest, CollectiveManifestNamesPhysicalModelExactly) {
     EXPECT_NE(manifest.find("pfc=off ecn=off"), std::string::npos);
     EXPECT_NE(manifest.find("declaration_gate=physical-accept"),
               std::string::npos);
+    EXPECT_NE(manifest.find("declare_cca_field=nflow startup_nflow=1"),
+              std::string::npos);
+    EXPECT_NE(manifest.find(
+                  "declare_debug_fields=collective_id,expected_fan_in declare_debug_affects_rx_cca=false"),
+              std::string::npos);
+    EXPECT_NE(manifest.find(
+                  "grant=margin*C/n_hat n_hat=sum-active-declare-nflow"),
+              std::string::npos);
     EXPECT_NE(manifest.find(
                   "eta=source-route-injection-plus-packet-specific-no-load-transit"),
               std::string::npos);
     EXPECT_NE(manifest.find(
                   "eta_transit=pipe-switch-latency-plus-remaining-tm3-egress-serialization"),
+              std::string::npos);
+    EXPECT_NE(manifest.find(
+                  "prbs_algorithm=galois-lfsr64-block64 prbs_version=2"),
+              std::string::npos);
+    EXPECT_NE(manifest.find(
+                  "word_extraction=prestep-lsb-block64-lsb-first"),
+              std::string::npos);
+    EXPECT_NE(manifest.find("lfsr_steps_per_word=64"),
+              std::string::npos);
+    EXPECT_NE(manifest.find(
+                  "bounded_draw=nonzero-rejection-modulo-v1"),
               std::string::npos);
 }
 

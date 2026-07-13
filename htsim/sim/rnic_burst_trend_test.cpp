@@ -3,6 +3,7 @@
 #include "rnic_ring_cam.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <map>
 #include <numeric>
@@ -18,9 +19,9 @@ struct AggregateTrace {
     uint64_t packet_count = 0;
 };
 
-AggregateTrace makeIndependentPrbsTrace(uint64_t global_seed,
-                                        uint64_t sender_count,
-                                        uint64_t slot_count) {
+AggregateTrace makeNodeDistinctPrbsTrace(uint64_t global_seed,
+                                         uint64_t sender_count,
+                                         uint64_t slot_count) {
     std::vector<RnicPrbsPacer> pacers;
     pacers.reserve(sender_count);
     for (uint64_t sender = 0; sender < sender_count; ++sender) {
@@ -33,6 +34,32 @@ AggregateTrace makeIndependentPrbsTrace(uint64_t global_seed,
             const bool selected = pacers[sender]
                                       .selectEqualWireQuantum(
                                           {{sender + 1, 1}}, sender_count)
+                                      .has_value();
+            trace.packets_by_slot[slot] += selected ? 1 : 0;
+            trace.packet_count += selected ? 1 : 0;
+        }
+    }
+    return trace;
+}
+
+AggregateTrace makeGrantedPrbsTrace(uint64_t global_seed,
+                                    uint64_t sender_count,
+                                    uint64_t sender_wire_rate,
+                                    uint64_t wire_capacity,
+                                    uint64_t slot_count) {
+    std::vector<RnicPrbsPacer> pacers;
+    pacers.reserve(sender_count);
+    for (uint64_t sender = 0; sender < sender_count; ++sender) {
+        pacers.emplace_back(global_seed, sender);
+    }
+
+    AggregateTrace trace{std::vector<uint64_t>(slot_count, 0), 0};
+    for (uint64_t slot = 0; slot < slot_count; ++slot) {
+        for (uint64_t sender = 0; sender < sender_count; ++sender) {
+            const bool selected = pacers[sender]
+                                      .selectEqualWireQuantum(
+                                          {{sender + 1, sender_wire_rate}},
+                                          wire_capacity)
                                       .has_value();
             trace.packets_by_slot[slot] += selected ? 1 : 0;
             trace.packet_count += selected ? 1 : 0;
@@ -60,20 +87,69 @@ uint64_t peak(const std::vector<uint64_t>& values) {
     return *std::max_element(values.begin(), values.end());
 }
 
-TEST(RnicBurstTrendTest, IndependentNodePrbsSuppressesPhaseAlignedIncast) {
+double lagOneCorrelation(const std::vector<uint64_t>& values) {
+    const double average = mean(values);
+    const double value_variance = variance(values);
+    double covariance = 0.0;
+    for (size_t index = 1; index < values.size(); ++index) {
+        covariance +=
+            (static_cast<double>(values[index]) - average)
+            * (static_cast<double>(values[index - 1]) - average);
+    }
+    covariance /= static_cast<double>(values.size() - 1);
+    return covariance / value_variance;
+}
+
+uint64_t maximumUnitServiceBacklog(const std::vector<uint64_t>& arrivals) {
+    uint64_t backlog = 0;
+    uint64_t maximum_backlog = 0;
+    for (const uint64_t arrival_count : arrivals) {
+        backlog += arrival_count;
+        if (backlog != 0) {
+            --backlog;
+        }
+        maximum_backlog = std::max(maximum_backlog, backlog);
+    }
+    return maximum_backlog;
+}
+
+TEST(RnicBurstTrendTest, Block64WordsHaveRenewalLikeShortRangeStatistics) {
+    constexpr uint64_t kSenderCount = 8;
+    constexpr uint64_t kSenderWireRate = 45;
+    constexpr uint64_t kWireCapacity = 400;
+    constexpr uint64_t kSlotCount = 100000;
+    const AggregateTrace trace =
+        makeGrantedPrbsTrace(20260713,
+                             kSenderCount,
+                             kSenderWireRate,
+                             kWireCapacity,
+                             kSlotCount);
+
+    // This is a deterministic replay-quality guard, not a queueing bound.
+    // The retired v1 generator exposed register states separated by only one
+    // bit transition, so successive lottery draws were strongly linearly
+    // related. At this exact 8:1, 0.9C operating point it produces a large
+    // positive lag-one correlation and a materially larger ideal-server
+    // backlog than this block64 replay.
+    EXPECT_NEAR(mean(trace.packets_by_slot), 0.9, 0.01);
+    EXPECT_LT(std::abs(lagOneCorrelation(trace.packets_by_slot)), 0.02);
+    EXPECT_LT(maximumUnitServiceBacklog(trace.packets_by_slot), 45u);
+}
+
+TEST(RnicBurstTrendTest, NodeDistinctPrbsSuppressesPhaseAlignedIncast) {
     constexpr uint64_t kSenderCount = 64;
     constexpr uint64_t kSlotCount = 65536;
     const AggregateTrace prbs =
-        makeIndependentPrbsTrace(20260713, kSenderCount, kSlotCount);
+        makeNodeDistinctPrbsTrace(20260713, kSenderCount, kSlotCount);
 
     std::vector<uint64_t> phase_aligned(kSlotCount, 0);
     for (uint64_t slot = 0; slot < kSlotCount; slot += kSenderCount) {
         phase_aligned[slot] = kSenderCount;
     }
 
-    // Both schemes offer one aggregate packet per slot on average. Independent
-    // node streams remove the N-packet periodic impulse produced when every
-    // sender uses the same deterministic phase.
+    // Both schemes offer one aggregate packet per slot on average.
+    // Node-distinct pseudorandom phases remove the N-packet periodic impulse
+    // produced when every sender uses the same deterministic phase.
     EXPECT_NEAR(mean(prbs.packets_by_slot), 1.0, 0.04);
     EXPECT_DOUBLE_EQ(mean(phase_aligned), 1.0);
     EXPECT_LT(peak(prbs.packets_by_slot), peak(phase_aligned) / 4);
@@ -94,7 +170,7 @@ TEST(RnicBurstTrendTest, RingCamRestoresPacedEnvelopeAfterTransitCompression) {
     constexpr uint64_t kWireBytes = 1500;
 
     const AggregateTrace dispatch =
-        makeIndependentPrbsTrace(20260713, kSenderCount, kSlotCount);
+        makeNodeDistinctPrbsTrace(20260713, kSenderCount, kSlotCount);
     std::vector<TimedPacket> arrivals;
     arrivals.reserve(dispatch.packet_count);
 

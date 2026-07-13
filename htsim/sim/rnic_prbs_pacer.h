@@ -29,6 +29,9 @@ struct RnicPrbsManifest {
     uint32_t algorithm_version;
     std::string polynomial;
     uint64_t feedback_mask;
+    std::string word_extraction;
+    uint32_t lfsr_steps_per_word;
+    std::string bounded_draw;
     std::string seed_derivation;
     uint64_t global_seed;
     uint64_t node_id;
@@ -46,13 +49,23 @@ public:
     // x^64 + x^63 + x^61 + x^60 + 1 and has period 2^64 - 1. Its nonzero
     // state advances as s' = (s >> 1) ^ (-(s & 1) & kFeedbackMask).
     static constexpr uint64_t kFeedbackMask = UINT64_C(0xd800000000000000);
-    static constexpr uint32_t kAlgorithmVersion = 1;
+    static constexpr const char* kAlgorithmName =
+        "galois-lfsr64-block64";
+    static constexpr uint32_t kAlgorithmVersion = 2;
+    static constexpr uint32_t kLfsrStepsPerWord = 64;
+    static constexpr const char* kWordExtraction =
+        "prestep-lsb-block64-lsb-first";
+    static constexpr const char* kBoundedDraw =
+        "nonzero-rejection-modulo-v1";
 
     RnicPrbsPacer(uint64_t global_seed, uint64_t node_id);
 
-    // Returns the post-step nonzero LFSR state. This method is exposed so
-    // deterministic manifests and replay tests can identify the exact
-    // generator convention; zero is forbidden because it is absorbing.
+    // Consumes 64 consecutive, non-overlapping LFSR output bits and packs
+    // them least-significant bit first. Returning the whole register after
+    // only one bit step would expose states separated by one transition and
+    // make adjacent lottery draws strongly linearly related, violating the
+    // intended renewal-like approximation. The internal register state
+    // remains nonzero because zero is absorbing and is never seeded.
     uint64_t nextPrbsWord();
 
     // Candidates must represent equal serialized wire quanta. Selection

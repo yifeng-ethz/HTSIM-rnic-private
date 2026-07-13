@@ -203,7 +203,12 @@ std::string renderRnicAtlahsModelManifest(
         manifest << '\n';
         manifest
             << "[RNIC manifest] declaration_gate=physical-accept"
-            << " grant=margin*C/active-receiver-flows"
+            << " declare_cca_field=nflow"
+            << " startup_nflow=1"
+            << " declare_debug_fields=collective_id,expected_fan_in"
+            << " declare_debug_affects_rx_cca=false"
+            << " grant=margin*C/n_hat"
+            << " n_hat=sum-active-declare-nflow"
             << " margin_ppm=" << options.collective.margin_ppm
             << " control_deadline_ps="
             << options.collective.control_deadline_ps
@@ -212,10 +217,15 @@ std::string renderRnicAtlahsModelManifest(
             << " retirement=physical-retire-after-final-data"
             << '\n';
         manifest
-            << "[RNIC manifest] prbs_algorithm=galois-lfsr64"
+            << "[RNIC manifest] prbs_algorithm="
+            << RnicPrbsPacer::kAlgorithmName
             << " prbs_version=" << RnicPrbsPacer::kAlgorithmVersion
             << " polynomial=x^64+x^63+x^61+x^60+1"
             << " feedback_mask=0xd800000000000000"
+            << " word_extraction=" << RnicPrbsPacer::kWordExtraction
+            << " lfsr_steps_per_word="
+            << RnicPrbsPacer::kLfsrStepsPerWord
+            << " bounded_draw=" << RnicPrbsPacer::kBoundedDraw
             << " seed_derivation=splitmix64-pair-v1"
             << " global_seed=" << options.collective.global_prbs_seed
             << " mixed_extent_hazard=adaptive-fixed-point-q32"

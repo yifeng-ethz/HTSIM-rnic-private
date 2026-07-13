@@ -115,10 +115,13 @@ bool binaryFractionBelowRatio(uint64_t draw,
 }  // namespace
 
 RnicPrbsPacer::RnicPrbsPacer(uint64_t global_seed, uint64_t node_id)
-    : _manifest{"galois-lfsr64",
+    : _manifest{kAlgorithmName,
                 kAlgorithmVersion,
                 "x^64+x^63+x^61+x^60+1",
                 kFeedbackMask,
+                kWordExtraction,
+                kLfsrStepsPerWord,
+                kBoundedDraw,
                 "splitmix64-pair-v1",
                 global_seed,
                 node_id,
@@ -126,12 +129,17 @@ RnicPrbsPacer::RnicPrbsPacer(uint64_t global_seed, uint64_t node_id)
       _state(_manifest.derived_node_seed) {}
 
 uint64_t RnicPrbsPacer::nextPrbsWord() {
-    const uint64_t least_significant_bit = _state & UINT64_C(1);
-    _state >>= 1;
-    if (least_significant_bit != 0) {
-        _state ^= kFeedbackMask;
+    uint64_t word = 0;
+    for (uint32_t bit_index = 0; bit_index < kLfsrStepsPerWord;
+         ++bit_index) {
+        const uint64_t output_bit = _state & UINT64_C(1);
+        _state >>= 1;
+        if (output_bit != 0) {
+            _state ^= kFeedbackMask;
+        }
+        word |= output_bit << bit_index;
     }
-    return _state;
+    return word;
 }
 
 std::optional<RnicPrbsPacer::FlowId> RnicPrbsPacer::selectEqualWireQuantum(
@@ -288,8 +296,10 @@ uint64_t RnicPrbsPacer::deriveNodeSeed(uint64_t global_seed, uint64_t node_id) n
 }
 
 uint64_t RnicPrbsPacer::nextBounded(uint64_t exclusive_upper_bound) {
-    // The maximal LFSR visits every value in [1, UINT64_MAX]. Rejection over
-    // that exact population makes (word - 1) modulo the bound unbiased.
+    // Every nonzero order-64 output block occurs once per maximal sequence.
+    // Striding by 64 visits all phases because gcd(64, 2^64 - 1) is one.
+    // Rejection over that exact nonzero population makes (word - 1) modulo
+    // the bound unbiased.
     const uint64_t population = std::numeric_limits<uint64_t>::max();
     const uint64_t accepted_population =
         population - (population % exclusive_upper_bound);

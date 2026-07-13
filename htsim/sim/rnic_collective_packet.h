@@ -44,6 +44,19 @@ struct RnicCollectiveDataMetadata {
     }
 };
 
+// DECLARE has one CCA input: nflow.  Collective identity and expected fan-in
+// are optional trace annotations only; the receiver CCA must never use them
+// to derive membership or a rate.
+struct RnicCollectiveDeclareDebugMetadata {
+    std::optional<std::uint64_t> collective_id;
+    std::optional<std::uint32_t> expected_fan_in;
+};
+
+struct RnicCollectiveDeclareMetadata {
+    std::uint32_t nflow;
+    RnicCollectiveDeclareDebugMetadata debug;
+};
+
 // CREATED plus exactly one terminal observation gives the integration a
 // complete outstanding-packet ledger.  A direct Packet::free() is always a
 // fabric drop; successful delivery requires consumeAtEndpoint().
@@ -98,6 +111,7 @@ public:
         std::uint32_t source,
         std::uint32_t destination,
         std::uint64_t wire_bytes,
+        const RnicCollectiveDeclareMetadata& metadata,
         std::shared_ptr<RnicCollectivePacketLifecycleObserver> observer);
 
     static RnicCollectivePacket* newAccept(
@@ -142,6 +156,7 @@ public:
     std::uint64_t lifecycleId() const noexcept { return _lifecycle_id; }
 
     const RnicCollectiveDataMetadata& data() const;
+    const RnicCollectiveDeclareMetadata& declaration() const;
     const RnicCollectiveGrant& grant() const;
     const RnicCollectiveFinalLedger& finalLedger() const;
     bool isFinalDataPacket() const;
@@ -177,6 +192,7 @@ private:
         std::uint32_t destination,
         std::uint16_t wire_bytes,
         std::optional<RnicCollectiveDataMetadata> data,
+        std::optional<RnicCollectiveDeclareMetadata> declaration,
         std::optional<RnicCollectiveGrant> grant,
         std::optional<RnicCollectiveFinalLedger> retire_ledger,
         std::shared_ptr<RnicCollectivePacketLifecycleObserver> observer);
@@ -186,6 +202,8 @@ private:
     static void validateFinalLedger(
         const RnicCollectiveFinalLedger& final_ledger);
     static void validateData(const RnicCollectiveDataMetadata& metadata);
+    static void validateDeclaration(
+        const RnicCollectiveDeclareMetadata& metadata);
     static void validateGrant(
         const RnicCollectiveGrant& grant,
         RnicCollectivePacketKind packet_kind);
@@ -201,6 +219,7 @@ private:
         std::uint32_t destination,
         std::uint16_t wire_bytes,
         std::optional<RnicCollectiveDataMetadata> data,
+        std::optional<RnicCollectiveDeclareMetadata> declaration,
         std::optional<RnicCollectiveGrant> grant,
         std::optional<RnicCollectiveFinalLedger> retire_ledger,
         std::shared_ptr<RnicCollectivePacketLifecycleObserver> observer,
@@ -224,6 +243,7 @@ private:
     std::uint16_t _wire_bytes{0};
     std::uint64_t _lifecycle_id{0};
     std::optional<RnicCollectiveDataMetadata> _data;
+    std::optional<RnicCollectiveDeclareMetadata> _declaration;
     std::optional<RnicCollectiveGrant> _grant;
     std::optional<RnicCollectiveFinalLedger> _retire_ledger;
     std::shared_ptr<RnicCollectivePacketLifecycleObserver> _observer;
