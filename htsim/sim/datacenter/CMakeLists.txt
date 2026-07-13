@@ -8,6 +8,7 @@ set(LIB_SOURCES
     oversubscribed_fat_tree_topology.cpp
     shortflows.cpp
     multihomed_fat_tree_topology.cpp
+    rnic_collective_route.cpp
     star_topology.cpp
     fat_tree_switch.cpp
     fat_tree_switch_factory.cpp
@@ -92,6 +93,14 @@ if ( ENABLE_TESTS )
     add_executable(tomahawk3_switch_test tomahawk3_switch_test.cpp)
     target_link_libraries(tomahawk3_switch_test PRIVATE htsim_dc htsim gtest_main)
     gtest_discover_tests(tomahawk3_switch_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
+    add_executable(rnic_collective_route_test rnic_collective_route_test.cpp)
+    target_link_libraries(
+        rnic_collective_route_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(rnic_collective_route_test
         PROPERTIES LABELS "unit"
         PROPERTIES TIMEOUT 60
     )
