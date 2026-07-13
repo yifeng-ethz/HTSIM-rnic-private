@@ -8,6 +8,8 @@ set(LIB_SOURCES
     oversubscribed_fat_tree_topology.cpp
     shortflows.cpp
     multihomed_fat_tree_topology.cpp
+    rnic_atlahs_cli.cpp
+    rnic_atlahs_runtime_factory.cpp
     rnic_collective_network_runtime.cpp
     rnic_collective_route.cpp
     star_topology.cpp
@@ -113,6 +115,25 @@ if ( ENABLE_TESTS )
         rnic_collective_network_runtime_test
         PRIVATE htsim_dc htsim gtest_main)
     gtest_discover_tests(rnic_collective_network_runtime_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
+    add_executable(rnic_atlahs_cli_test rnic_atlahs_cli_test.cpp)
+    target_link_libraries(
+        rnic_atlahs_cli_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(rnic_atlahs_cli_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
+    add_executable(
+        rnic_atlahs_runtime_factory_test
+        rnic_atlahs_runtime_factory_test.cpp)
+    target_link_libraries(
+        rnic_atlahs_runtime_factory_test
+        PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(rnic_atlahs_runtime_factory_test
         PROPERTIES LABELS "unit"
         PROPERTIES TIMEOUT 60
     )
