@@ -176,6 +176,7 @@ public:
     uint32_t radix_down(int tier) const {return _radix_down[tier];}
     uint32_t queue_up(int tier) const {return _queue_up[tier];}
     uint32_t queue_down(int tier) const {return _queue_down[tier];}
+    linkspeed_bps downlink_speed(int tier) const;
 
     int get_oversubscription_ratio(){int ratio = _oversub[TOR_TIER]; if (_tiers>2) ratio *= _oversub[AGG_TIER]; return ratio;}
     simtime_picosec get_diameter_latency() const {return _diameter_latency;}

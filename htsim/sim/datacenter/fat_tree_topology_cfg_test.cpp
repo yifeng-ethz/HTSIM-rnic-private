@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 
 #include <sstream>
+#include <stdexcept>
 
 #include "fat_tree_topology.h"
 
@@ -69,6 +70,23 @@ TEST(FatTreeTopologyCfgTest, FileConstructorPreservesPerTierQueueSizes) {
     EXPECT_EQ(cfg.queue_down(TOR_TIER), 1001);
     EXPECT_EQ(cfg.queue_up(TOR_TIER), 1002);
     EXPECT_EQ(cfg.queue_down(AGG_TIER), 2001);
+}
+
+TEST(FatTreeTopologyCfgTest, ExposesConfiguredHostDownlinkSpeed) {
+    std::istringstream input(kTopologyWithoutQueueOverrides);
+    FatTreeTopologyCfg cfg(input, 32768, COMPOSITE, FAIR_PRIO);
+
+    EXPECT_EQ(cfg.downlink_speed(TOR_TIER), speedFromGbps(100));
+}
+
+TEST(FatTreeTopologyCfgTest, RejectsInvalidDownlinkTier) {
+    std::istringstream input(kTopologyWithoutQueueOverrides);
+    FatTreeTopologyCfg cfg(input, 32768, COMPOSITE, FAIR_PRIO);
+
+    EXPECT_THROW(cfg.downlink_speed(-1), std::out_of_range);
+    EXPECT_THROW(
+        cfg.downlink_speed(static_cast<int>(cfg.get_tiers())),
+        std::out_of_range);
 }
 
 }  // namespace
