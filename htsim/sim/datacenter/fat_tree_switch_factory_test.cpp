@@ -6,6 +6,7 @@
 
 #include "fat_tree_switch_factory.h"
 #include "fat_tree_topology.h"
+#include "tomahawk3_switch.h"
 
 namespace {
 
@@ -67,14 +68,16 @@ TEST(FatTreeSwitchFactoryTest, DefaultPreservesCurrentImplementation) {
     EXPECT_EQ(switch_instance->getID(), 7);
 }
 
-TEST(FatTreeSwitchFactoryTest, RejectsTomahawk3UntilImplemented) {
+TEST(FatTreeSwitchFactoryTest, ConstructsTomahawk3) {
     EventList& eventlist = EventList::getTheEventList();
 
-    EXPECT_THROW(
-        FatTreeSwitchFactory::create(
-            FatTreeSwitchModel::Tomahawk3, eventlist, "tomahawk3-switch",
-            FatTreeSwitch::TOR, 0, 0, nullptr),
-        std::invalid_argument);
+    auto switch_instance = FatTreeSwitchFactory::create(
+        FatTreeSwitchModel::Tomahawk3, eventlist, "tomahawk3-switch",
+        FatTreeSwitch::TOR, 0, 0, nullptr, 32768);
+
+    auto* tomahawk3 = dynamic_cast<Tomahawk3Switch*>(switch_instance.get());
+    ASSERT_NE(tomahawk3, nullptr);
+    EXPECT_EQ(tomahawk3->shared_buffer_capacity(), 32768);
 }
 
 }  // namespace

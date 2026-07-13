@@ -17,7 +17,8 @@ public:
         FatTreeSwitch::switch_type type,
         uint32_t id,
         simtime_picosec switch_delay,
-        FatTreeTopology* topology);
+        FatTreeTopology* topology,
+        mem_b shared_buffer_capacity = 0);
 };
 
 #endif
