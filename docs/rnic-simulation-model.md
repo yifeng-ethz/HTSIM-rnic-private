@@ -46,6 +46,39 @@ The implementation keeps the following dimensions independent internally:
 The profile resolver is the only place that combines them. Initially it rejects
 unvalidated combinations rather than exposing a matrix of accidental modes.
 
+## Standalone ATLAHS driver
+
+The `htsim_rnic` executable is the single GOAL/ATLAHS entry point for all three
+profiles. Build and invoke it directly with:
+
+```sh
+cmake -S htsim/sim -B build
+cmake --build build --target htsim_rnic
+build/datacenter/htsim_rnic \
+  -goal workload.bin \
+  -linkspeed_bps 400000000000 \
+  -rnic_profile rnic-cn
+```
+
+`-goal` names the binary GOAL schedule consumed by LogGOPSim. The ATLAHS
+launcher owns conversion from text `.goal` input. The driver reads the GOAL
+header before constructing the RNIC session, derives rank/CPU/NIC/physical-node
+layout once, and freezes that layout for the run. `-goal_rank_mapping` may be
+`auto`, `gpu-rank`, or `unique-nic`; `auto` is the default. `-nodes` is an
+optional assertion against the derived physical-node count, not a second source
+of topology truth.
+
+With no `-topo` file, `rnic-cn` generates a two-tier Clos only when the resolved
+node count has the form `K^2/2` for an even `K`. A supplied topology file must
+have exactly the derived physical-node count. The NN profiles construct no
+physical fabric. Every successful run prints a line-oriented model manifest and
+finishes only after application completion and any required physical RETIRE
+tail have drained; the last line records `physical_quiescence=verified`.
+
+Use `htsim_rnic --help` for profile-specific parameters. Cross-profile flags
+are rejected so a command cannot silently describe a different model from the
+one it executes.
+
 ## Physical endpoint model
 
 An endpoint is one `RnicNode`, not a collection of isolated per-flow NICs:
@@ -352,10 +385,12 @@ pacing: it changes the mean rate and is prohibited.
 
 ## Ring-CAM resequencer
 
-The sender stamps packet eligibility `eta` at physical dispatch using calibrated
-constant transit. At a receiver, a packet is admitted only while its timestamp
-is in the active window and is released independently when the lower window
-edge reaches it. Conceptually:
+The sender stamps packet eligibility `eta` at the physical route-injection
+boundary: source serializer completion plus calibrated constant transit. The
+physical HTSIM route starts at that boundary, so adding transit at source
+dispatch start would incorrectly omit source serialization. At a receiver, a
+packet is admitted only while its timestamp is in the active window and is
+released independently when the lower window edge reaches it. Conceptually:
 
 ```text
 q = t_arrival - eta
