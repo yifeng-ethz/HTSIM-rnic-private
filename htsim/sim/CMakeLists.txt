@@ -101,6 +101,7 @@ set(SOURCE_FILES
     queue_lossless_output.cpp
     randomqueue.cpp
     rnic_collective_control.cpp
+    rnic_collective_packet.cpp
     rnic_fluid_manifold.cpp
     rnic_fluid_manifold_runtime.cpp
     rnic_max_min_allocator.cpp
@@ -158,6 +159,7 @@ if ( ENABLE_TESTS )
         pipe_test
         rnic_burst_trend_test
         rnic_collective_control_test
+        rnic_collective_packet_test
         rnic_fluid_manifold_test
         rnic_fluid_manifold_runtime_test
         rnic_max_min_allocator_test
