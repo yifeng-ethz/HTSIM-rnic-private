@@ -218,7 +218,8 @@ TEST(RnicTxPortTest, SameCeilControlOverhangShiftsFractionalDataBoundary) {
     EXPECT_EQ(port.dispatchControl(data.end_ps, 5).end_ps, 9u);
 }
 
-TEST(RnicTxPortTest, OneNodePortNeverOverlapsWireOpportunitiesAndStampsAtDispatch) {
+TEST(RnicTxPortTest,
+     OneNodePortNeverOverlapsWireOpportunitiesAndStampsAtRouteInjection) {
     RnicTxPort port(1, 100000000000ULL, 1000, 7);
     port.addFlow(10, 2000, 500);
     port.setWireRateGrant(10, 100000000000ULL);
@@ -226,7 +227,7 @@ TEST(RnicTxPortTest, OneNodePortNeverOverlapsWireOpportunitiesAndStampsAtDispatc
 
     const RnicTxOpportunity first = port.dispatchOpportunity(0);
     ASSERT_TRUE(first.packet.has_value());
-    EXPECT_EQ(first.packet->eta_ps, first.start_ps + 500);
+    EXPECT_EQ(first.packet->eta_ps, first.end_ps + 500);
     EXPECT_EQ(first.end_ps - first.start_ps, 80000u);
 
     EXPECT_THROW(port.dispatchOpportunity(first.end_ps - 1), std::invalid_argument);
@@ -235,6 +236,21 @@ TEST(RnicTxPortTest, OneNodePortNeverOverlapsWireOpportunitiesAndStampsAtDispatc
     EXPECT_EQ(second.start_ps, first.end_ps);
     EXPECT_EQ(second.packet->payload_byte_offset, 1000u);
     EXPECT_TRUE(port.sourcePayloadDispatched(10));
+}
+
+TEST(RnicTxPortTest, RouteInjectionEtaOverflowIsTransactional) {
+    RnicTxPort port(1, 8000000000000ULL, 1, 7);
+    port.addFlow(10, 1, std::numeric_limits<uint64_t>::max());
+    port.setWireRateGrant(10, 8000000000000ULL);
+    port.setDataEligible(10, true);
+
+    EXPECT_THROW(port.dispatchOpportunity(0), std::overflow_error);
+    EXPECT_EQ(port.flowPayloadBytesDispatched(10), 0u);
+    EXPECT_EQ(port.nextDataOpportunityPs(), 0u);
+    EXPECT_EQ(port.physicalSerializerAvailablePs(), 0u);
+
+    // The failed DATA transaction did not reserve the shared physical wire.
+    EXPECT_EQ(port.dispatchControl(0, 1).end_ps, 1u);
 }
 
 TEST(RnicTxPortTest, LocalMaxMinCapsOversubscribedReceiverGrants) {

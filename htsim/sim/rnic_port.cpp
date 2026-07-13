@@ -149,7 +149,6 @@ RnicTxOpportunity RnicTxPort::dispatchOpportunity(uint64_t requested_start_ps) {
     uint64_t event_wire_bytes = _packetization.maxWirePacketBytes();
     FlowState* selected_state = nullptr;
     std::optional<RnicPacketExtent> selected_extent;
-    std::optional<uint64_t> selected_eta_ps;
     if (selected.has_value()) {
         FlowState& state = requireFlow(*selected);
         if (state.packet_index == std::numeric_limits<uint64_t>::max()) {
@@ -158,10 +157,6 @@ RnicTxOpportunity RnicTxPort::dispatchOpportunity(uint64_t requested_start_ps) {
         selected_state = &state;
         selected_extent = headExtent(state);
         event_wire_bytes = selected_extent->wireBytes();
-        selected_eta_ps = checkedAdd(
-            requested_start_ps,
-            state.calibrated_transit_ps,
-            "RNIC TX eligibility timestamp overflow");
     }
 
     RnicWireSerializationClock next_wire_serializer = _wire_serializer;
@@ -181,6 +176,19 @@ RnicTxOpportunity RnicTxPort::dispatchOpportunity(uint64_t requested_start_ps) {
         next_wire_serializer.rebaseIdle(requested_start_ps);
         interval = next_data_opportunity_serializer.serialize(
             requested_start_ps, event_wire_bytes);
+    }
+
+    // The explicit physical route begins at the host-to-ToR pipe because this
+    // port has already modeled the source link serializer.  Stamp ETA at that
+    // route-injection boundary, then add only calibrated no-queue transit.
+    // Compute it before committing either serializer so overflow remains
+    // transactional.
+    std::optional<uint64_t> selected_eta_ps;
+    if (selected_state != nullptr) {
+        selected_eta_ps = checkedAdd(
+            interval.end_ps,
+            selected_state->calibrated_transit_ps,
+            "RNIC TX eligibility timestamp overflow");
     }
 
     _pacer = next_pacer;
