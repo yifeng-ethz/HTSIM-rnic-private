@@ -40,3 +40,81 @@ pointwise mean CDF and the shaded band is mean plus or minus one population
 standard deviation, clipped to `[0, 1]`.  Report seed count and the independent
 unit explicitly; flows within one seed share queues and are not independent
 replicates.
+
+## Completion analysis
+
+Arrange simulator outputs as `ROOT/PROFILE/SEED/flowsInfo.csv`, with every
+profile containing the same paired seed names.  Then run:
+
+```sh
+python3 experiments/rnic_multibaseline/analyze_fct.py cdf \
+  --input-root /path/to/results \
+  --output-dir /path/to/analysis
+```
+
+The analyzer accepts both the RNIC completion schema
+`start_time_ps,completion_time_ps,fct_ps` and HTSIM's legacy nanosecond
+`flowsInfo.csv` headers.  Picoseconds are the output unit.  Nanosecond inputs
+are multiplied by exactly 1000; sub-nanosecond RNIC values are never rounded.
+Explicit
+`--flow-id-column`, `--payload-column`, `--start-column`, `--end-column`, and
+`--fct-column` overrides are available for another exporter.  Use
+`--input-time-unit ps` or `ns` when overridden column names do not carry their
+unit.  It fails before writing an analysis if profiles have different seed
+sets, a run has a missing or duplicate flow, payload bytes differ, timestamps
+are inconsistent, or an explicit FCT disagrees with `end-start`.
+
+The output schemas are:
+
+- `fct_cdf_summary.csv`: `profile`, common `grid_fct_ps`, pointwise
+  `cdf_mean`, population `cdf_sigma`, clipped `cdf_low`/`cdf_high`,
+  `seed_count`, and `flow_count_per_seed`.  This is the flagship line-and-band
+  plot input.
+- `fct_cdf_by_seed.csv`: every individual seed ECDF on the same grid, retained
+  for audit and optional thin-line overlays.
+- `fct_run_summary.csv`: one row per profile/seed with flow and payload counts,
+  nearest-rank p50/p95/p99/p99.9 FCT, and `jct_ps`.  JCT is the maximum absolute
+  completion timestamp in that run.
+- `fct_profile_summary.csv`: seed-level mean, population sigma, and mean ± sigma
+  for each reported percentile and JCT.  FCT/JCT lower bounds are clipped at
+  zero.
+- `fct_analysis_manifest.json`: formula definitions plus the path and SHA-256
+  digest of every input CSV.
+
+The common CDF grid is zero plus the exact sorted union of every observed FCT;
+the tool does not interpolate or manufacture samples.
+
+## Slingshot-like parameter scan tables
+
+Record each scan run in a CSV manifest with these required columns:
+
+```text
+profile,seed,completion_csv,q_hi_bytes,q_lo_bytes,telemetry_delay_ns,credit_quantum_packets,buffer_bytes
+```
+
+`completion_csv` may be absolute or relative to the manifest.  Every parameter
+combination must contain the same paired seeds, and all completion files must
+have the same flow/payload contract.  Generate plotting inputs with:
+
+```sh
+python3 experiments/rnic_multibaseline/analyze_fct.py scan \
+  --manifest /path/to/scan.csv \
+  --output-dir /path/to/scan-analysis
+```
+
+`parameter_scan_runs.csv` retains per-seed statistics.
+`parameter_scan_summary.csv` has one row per full parameter tuple with
+seed-level mean and population sigma.  `parameter_scan_plot.csv` is tidy
+long-form data with one row per parameter tuple and metric, suitable for
+faceting or filtering hidden debug slides; its metric values use picoseconds.
+All three include the derived
+hysteresis gap and the high/low thresholds as fractions of the configured
+buffer.  The analyzer requires `Q_hi > Q_lo`, a positive packet-credit quantum
+and buffer, and `Q_hi <= buffer`; it never inserts unstated scan defaults.
+
+Run the synthetic analysis tests with:
+
+```sh
+cd experiments/rnic_multibaseline
+python3 -m unittest -v test_analyze_fct.py
+```
