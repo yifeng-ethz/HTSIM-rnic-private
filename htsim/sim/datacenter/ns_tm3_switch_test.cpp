@@ -66,6 +66,18 @@ private:
     string _name{"RecordingSink"};
 };
 
+class RecordingQueueObserver final : public NsTm3QueueObserver {
+public:
+    RecordingQueueObserver() { observations.reserve(32); }
+
+    void observe(
+            const NsTm3QueueObservation& observation) noexcept override {
+        observations.push_back(observation);
+    }
+
+    std::vector<NsTm3QueueObservation> observations;
+};
+
 class NsTm3Harness {
 public:
     explicit NsTm3Harness(mem_b shared_buffer_capacity =
@@ -152,8 +164,33 @@ TEST(NsTm3SwitchTest, SeparatesHeadOfLineBlockingByEgressVoq) {
     EXPECT_EQ(sink.arrival_time(2), start_time + timeFromNs(400));
 }
 
-TEST(NsTm3SwitchTest, RoundRobinsIngressVoqsForTheSameEgress) {
+TEST(NsTm3SwitchTest, DefaultsToOldestHeadAcrossIngressVoqs) {
     NsTm3Harness harness;
+    NsTm3EgressSerializer& egress = harness.add_egress();
+    NsTm3IngressPort& ingress_0 = harness.add_ingress("ingress-0");
+    NsTm3IngressPort& ingress_1 = harness.add_ingress("ingress-1");
+    RecordingSink sink;
+    Route route = route_via(egress, sink);
+    PacketFlow flow(nullptr);
+    TestPacket first_0(flow, route, 1, Packet::PRIO_LO);
+    TestPacket second_0(flow, route, 2, Packet::PRIO_LO);
+    TestPacket first_1(flow, route, 3, Packet::PRIO_LO);
+    TestPacket second_1(flow, route, 4, Packet::PRIO_LO);
+
+    ingress_0.receivePacket(first_0);
+    ingress_0.receivePacket(second_0);
+    ingress_1.receivePacket(first_1);
+    ingress_1.receivePacket(second_1);
+    NsTm3Harness::drain_all_events();
+
+    EXPECT_EQ(arrival_order(sink),
+              (std::vector<packetid_t>{1, 2, 3, 4}));
+}
+
+TEST(NsTm3SwitchTest, RetainsIngressRoundRobinAsAnExplicitSensitivity) {
+    NsTm3Harness harness;
+    harness.traffic_manager->set_voq_arbitration(
+        NsTm3VoqArbitration::IngressRoundRobin);
     NsTm3EgressSerializer& egress = harness.add_egress();
     NsTm3IngressPort& ingress_0 = harness.add_ingress("ingress-0");
     NsTm3IngressPort& ingress_1 = harness.add_ingress("ingress-1");
@@ -274,6 +311,56 @@ TEST(NsTm3SwitchTest, ConservesOneSharedBufferAccountingDomain) {
     EXPECT_EQ(drained.admitted_bytes, drained.dequeued_bytes);
     EXPECT_EQ(harness.traffic_manager->shared_buffer_occupancy(), 0);
     EXPECT_EQ(harness.traffic_manager->egress_backlog_bytes(0), 0);
+}
+
+TEST(NsTm3SwitchTest, TracesExactEgressBacklogAndMaximumQueueWait) {
+    NsTm3Harness harness(400);
+    NsTm3EgressSerializer& egress = harness.add_egress();
+    NsTm3IngressPort& ingress = harness.add_ingress("ingress-0");
+    RecordingSink sink;
+    Route route = route_via(egress, sink);
+    PacketFlow flow(nullptr);
+    flow.set_flowid(77);
+    TestPacket first(flow, route, 1, Packet::PRIO_LO);
+    TestPacket second(flow, route, 2, Packet::PRIO_LO);
+    TestPacket third(flow, route, 3, Packet::PRIO_LO);
+    auto observer = std::make_shared<RecordingQueueObserver>();
+    harness.traffic_manager->set_queue_observer(observer);
+
+    ingress.receivePacket(first);
+    ingress.receivePacket(second);
+    ingress.receivePacket(third);
+    NsTm3Harness::drain_all_events();
+
+    ASSERT_EQ(observer->observations.size(), 9U);
+    EXPECT_EQ(observer->observations[0].transition,
+              NsTm3QueueTransition::Enqueued);
+    EXPECT_EQ(observer->observations[1].transition,
+              NsTm3QueueTransition::Dequeued);
+    const auto peak = std::max_element(
+        observer->observations.begin(), observer->observations.end(),
+        [](const NsTm3QueueObservation& left,
+           const NsTm3QueueObservation& right) {
+            return left.egress_backlog_bytes < right.egress_backlog_bytes;
+        });
+    ASSERT_NE(peak, observer->observations.end());
+    EXPECT_EQ(peak->egress_backlog_bytes, 300);
+    EXPECT_EQ(peak->egress_buffered_bytes, 200);
+    EXPECT_EQ(peak->egress_in_service_bytes, 100);
+    EXPECT_EQ(peak->flow_id, 77U);
+    EXPECT_EQ(peak->egress_id, 0U);
+
+    const NsTm3EgressStatistics& statistics =
+        harness.traffic_manager->egress_statistics(0);
+    EXPECT_EQ(statistics.buffered_high_watermark, 200);
+    EXPECT_EQ(statistics.backlog_high_watermark, 300);
+    EXPECT_EQ(statistics.max_queue_wait_ps, timeFromNs(200));
+    EXPECT_EQ(statistics.max_queue_wait_ingress_id, 0U);
+    EXPECT_EQ(statistics.max_queue_wait_flow_id, 77U);
+    EXPECT_EQ(statistics.max_queue_wait_packet_id, 3U);
+    EXPECT_EQ(observer->observations.back().transition,
+              NsTm3QueueTransition::SerializationCompleted);
+    EXPECT_EQ(observer->observations.back().egress_backlog_bytes, 0);
 }
 
 TEST(NsTm3SwitchTest, DropsOnlyWhenSharedBufferCapacityIsExceeded) {

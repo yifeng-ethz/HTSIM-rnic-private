@@ -7,6 +7,7 @@
 #include <limits>
 #include <set>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -36,7 +37,7 @@ TEST(RnicSsWireMetadataTest, ValidatesEveryPhysicalPacketKind) {
                    11,
                    3,
                    RnicSsAckSackMetadata{
-                       kPair, 1, 0b100,
+                       kPair, 1, {0b100, 0},
                        RnicSsDelayedLoadSample{2, 100, 1000, 9}}),
         wirePacket(RnicSsPacketKind::TELEMETRY,
                    4,
@@ -93,13 +94,15 @@ TEST(RnicSsSackScoreboardTest, AdvancesAcrossAReorderedHole) {
     EXPECT_EQ(scoreboard.observe(1).disposition,
               RnicSsReceiveDisposition::NEW_OUT_OF_ORDER);
     EXPECT_EQ(scoreboard.nextExpectedSequence(), 0U);
-    EXPECT_EQ(scoreboard.bitmap(), 0b110U);
+    EXPECT_EQ(scoreboard.bitmap(),
+              (std::array<std::uint64_t, 2>{0b110U, 0}));
 
     const RnicSsReceiveResult result = scoreboard.observe(0);
     EXPECT_EQ(result.disposition, RnicSsReceiveDisposition::NEW_IN_ORDER);
     EXPECT_EQ(result.cumulative_advance, 3U);
     EXPECT_EQ(scoreboard.nextExpectedSequence(), 3U);
-    EXPECT_EQ(scoreboard.bitmap(), 0U);
+    EXPECT_EQ(scoreboard.bitmap(),
+              (std::array<std::uint64_t, 2>{0, 0}));
     EXPECT_EQ(scoreboard.observe(1).disposition,
               RnicSsReceiveDisposition::DUPLICATE);
 }
@@ -109,11 +112,45 @@ TEST(RnicSsSackScoreboardTest, BoundsReorderingToThePhysicalBitmap) {
     EXPECT_EQ(scoreboard.observe(163).disposition,
               RnicSsReceiveDisposition::NEW_OUT_OF_ORDER);
     EXPECT_EQ(scoreboard.observe(164).disposition,
+              RnicSsReceiveDisposition::NEW_OUT_OF_ORDER);
+    EXPECT_EQ(scoreboard.observe(227).disposition,
+              RnicSsReceiveDisposition::NEW_OUT_OF_ORDER);
+    EXPECT_EQ(scoreboard.observe(228).disposition,
               RnicSsReceiveDisposition::OUTSIDE_SACK_WINDOW);
     const auto ack = scoreboard.snapshot(kPair);
     EXPECT_EQ(ack.next_expected_sequence, 100U);
-    EXPECT_EQ(ack.sack_bitmap, 1ULL << 63);
-    EXPECT_EQ(ack.sack_bitmap & 1ULL, 0U);
+    EXPECT_EQ(ack.sack_bitmap,
+              (std::array<std::uint64_t, 2>{
+                  UINT64_C(1) << 63,
+                  UINT64_C(1) | (UINT64_C(1) << 63)}));
+    EXPECT_EQ(ack.sack_bitmap[0] & 1ULL, 0U);
+}
+
+TEST(RnicSsSackScoreboardTest, AdvancesAcrossWord63And64Boundary) {
+    RnicSsSackScoreboard scoreboard;
+    EXPECT_EQ(scoreboard.observe(63).disposition,
+              RnicSsReceiveDisposition::NEW_OUT_OF_ORDER);
+    EXPECT_EQ(scoreboard.observe(64).disposition,
+              RnicSsReceiveDisposition::NEW_OUT_OF_ORDER);
+    EXPECT_EQ(scoreboard.observe(127).disposition,
+              RnicSsReceiveDisposition::NEW_OUT_OF_ORDER);
+    for (RnicSsSequence sequence = 1; sequence < 63; ++sequence) {
+        EXPECT_EQ(scoreboard.observe(sequence).disposition,
+                  RnicSsReceiveDisposition::NEW_OUT_OF_ORDER);
+    }
+    const RnicSsReceiveResult first = scoreboard.observe(0);
+    EXPECT_EQ(first.cumulative_advance, 65U);
+    EXPECT_EQ(scoreboard.nextExpectedSequence(), 65U);
+    EXPECT_EQ(scoreboard.bitmap(),
+              (std::array<std::uint64_t, 2>{
+                  UINT64_C(1) << 62, 0}));
+
+    for (RnicSsSequence sequence = 65; sequence < 127; ++sequence) {
+        scoreboard.observe(sequence);
+    }
+    EXPECT_EQ(scoreboard.nextExpectedSequence(), 128U);
+    EXPECT_EQ(scoreboard.bitmap(),
+              (std::array<std::uint64_t, 2>{0, 0}));
 }
 
 TEST(RnicSsSackScoreboardTest, UsesMaximumSequenceAsCumulativeSentinel) {
@@ -125,7 +162,8 @@ TEST(RnicSsSackScoreboardTest, UsesMaximumSequenceAsCumulativeSentinel) {
               RnicSsReceiveDisposition::NEW_IN_ORDER);
     EXPECT_EQ(scoreboard.nextExpectedSequence(),
               std::numeric_limits<RnicSsSequence>::max());
-    EXPECT_EQ(scoreboard.bitmap(), 0U);
+    EXPECT_EQ(scoreboard.bitmap(),
+              (std::array<std::uint64_t, 2>{0, 0}));
     EXPECT_THROW(
         scoreboard.observe(std::numeric_limits<RnicSsSequence>::max()),
         std::invalid_argument);
@@ -141,7 +179,8 @@ TEST(RnicSsSelectiveRepeatLedgerTest, SackLeavesOnlyTheMissingPackets) {
 
     // Cumulatively ACK 0 and selectively ACK 2 and 4.  Sequences 1 and 3
     // remain independently eligible for retransmission.
-    const auto result = ledger.applyAck({kPair, 1, (1ULL << 1) | (1ULL << 3)});
+    const auto result = ledger.applyAck(
+        {kPair, 1, {(1ULL << 1) | (1ULL << 3), 0}});
     ASSERT_EQ(result.newly_acked.size(), 3U);
     EXPECT_EQ(result.newly_acked[0].sequence, 0U);
     EXPECT_EQ(result.newly_acked[1].sequence, 2U);
@@ -167,13 +206,38 @@ TEST(RnicSsSelectiveRepeatLedgerTest, SackLeavesOnlyTheMissingPackets) {
     EXPECT_EQ(post_sack_rto[0].sequence, 1U);
 }
 
+TEST(RnicSsSelectiveRepeatLedgerTest,
+     ExpiredPacketAfterFinalRetryIsATerminalFailure) {
+    RnicSsSelectiveRepeatLedger ledger(
+        kPair, RnicSsSelectiveRepeatConfig{1, 10, 1});
+    EXPECT_EQ(ledger.recordNewTransmission(1000, 0), 0U);
+    ASSERT_EQ(ledger.retransmissionCandidates(10).size(), 1U);
+    ASSERT_TRUE(ledger.retransmissionCandidate(0, 10).has_value());
+    EXPECT_FALSE(ledger.retransmissionCandidate(1, 10).has_value());
+    ledger.recordRetransmission(0, 10);
+
+    try {
+        (void)ledger.retransmissionCandidates(20);
+        FAIL() << "retry exhaustion must terminate the transport";
+    } catch (const std::runtime_error& error) {
+        const std::string message = error.what();
+        EXPECT_NE(message.find("retry budget exhausted"), std::string::npos);
+        EXPECT_NE(message.find("source=3"), std::string::npos);
+        EXPECT_NE(message.find("destination=11"), std::string::npos);
+        EXPECT_NE(message.find("sequence=0"), std::string::npos);
+        EXPECT_NE(message.find("retransmissions=1"), std::string::npos);
+    }
+    EXPECT_THROW((void)ledger.retransmissionCandidate(0, 20),
+                 std::runtime_error);
+}
+
 TEST(RnicSsSelectiveRepeatLedgerTest, RejectsAckOfUnsentData) {
     RnicSsSelectiveRepeatLedger ledger(kPair);
     ledger.recordNewTransmission(64, 0);
-    EXPECT_THROW(ledger.applyAck({kPair, 1, 1ULL << 2}),
+    EXPECT_THROW(ledger.applyAck({kPair, 1, {1ULL << 2, 0}}),
                  std::invalid_argument);
     EXPECT_EQ(ledger.outstandingPacketCount(), 1U);
-    EXPECT_THROW(ledger.applyAck({kPair, 2, 0}),
+    EXPECT_THROW(ledger.applyAck({kPair, 2, {0, 0}}),
                  std::invalid_argument);
     EXPECT_EQ(ledger.outstandingPacketCount(), 1U);
 }
@@ -182,8 +246,33 @@ TEST(RnicSsSelectiveRepeatLedgerTest, RejectsAckBeforeConfiguredSequenceSpace) {
     RnicSsSelectiveRepeatLedger ledger(kPair, {}, 100);
     EXPECT_EQ(ledger.recordNewTransmission(64, 0), 100U);
 
-    EXPECT_THROW(ledger.applyAck({kPair, 99, 0}), std::invalid_argument);
+    EXPECT_THROW(ledger.applyAck({kPair, 99, {0, 0}}),
+                 std::invalid_argument);
     EXPECT_EQ(ledger.outstandingPacketCount(), 1U);
+}
+
+TEST(RnicSsSelectiveRepeatLedgerTest,
+     SelectiveLossDetectionCrossesBits63_64And127) {
+    RnicSsSelectiveRepeatLedger ledger(
+        kPair, RnicSsSelectiveRepeatConfig{128, 100, 2});
+    for (std::uint32_t sequence = 0; sequence < 128; ++sequence) {
+        EXPECT_EQ(ledger.recordNewTransmission(1000, 10), sequence);
+    }
+    EXPECT_FALSE(ledger.canSendNewPacket());
+
+    const auto result = ledger.applyAck(
+        {kPair,
+         0,
+         {UINT64_C(1) << 63,
+          UINT64_C(1) | (UINT64_C(1) << 63)}});
+    ASSERT_EQ(result.newly_acked.size(), 3U);
+    EXPECT_EQ(result.newly_acked[0].sequence, 63U);
+    EXPECT_EQ(result.newly_acked[1].sequence, 64U);
+    EXPECT_EQ(result.newly_acked[2].sequence, 127U);
+    EXPECT_EQ(ledger.outstandingPacketCount(), 125U);
+    ASSERT_EQ(result.reported_holes.size(), 125U);
+    EXPECT_EQ(result.reported_holes.front().sequence, 0U);
+    EXPECT_EQ(result.reported_holes.back().sequence, 126U);
 }
 
 TEST(RnicSsPairCreditStateTest, AppliesPhysicalEpochsAndCumulativeCredits) {
@@ -305,7 +394,7 @@ TEST(RnicSsConfigTest, RejectsNonFourOfEightAndUnboundedControlMistakes) {
     paths.path_count = 4;
     EXPECT_THROW(paths.validate(), std::invalid_argument);
     EXPECT_THROW(RnicSsCreditConfig{0}.validate(), std::invalid_argument);
-    EXPECT_THROW((RnicSsSelectiveRepeatConfig{65, 1, 1}.validate()),
+    EXPECT_THROW((RnicSsSelectiveRepeatConfig{129, 1, 1}.validate()),
                  std::invalid_argument);
 }
 

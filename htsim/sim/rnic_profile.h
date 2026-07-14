@@ -6,12 +6,14 @@
 
 enum class RnicProfile {
     CollectiveNetwork,
+    SlingshotLike,
     PacketizedManifold,
     FluidManifold,
 };
 
 enum class RnicFabricModel {
     NsTm3Clos,
+    NsRosettaClos,
     TopologyFreeManifold,
 };
 
@@ -22,11 +24,13 @@ enum class RnicTrafficModel {
 
 enum class RnicControlModel {
     InBandCollective,
+    PairSelectiveBackpressure,
     CentralOracle,
 };
 
 enum class RnicPacerModel {
     Prbs,
+    OutstandingWindowCredits,
     CentralPacketSlots,
     None,
 };

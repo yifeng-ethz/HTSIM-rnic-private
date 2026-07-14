@@ -14,6 +14,18 @@
 #include "rnic_ring_cam.h"
 #include "rnic_wire_serialization.h"
 
+enum class RnicTxPacketKind {
+    FreshData,
+    SelectiveRepair,
+};
+
+struct RnicTxRepairCandidate {
+    uint64_t flow_id;
+    uint64_t packet_index;
+    uint64_t payload_byte_offset;
+    RnicPacketExtent extent;
+};
+
 struct RnicTxPacket {
     uint64_t flow_id;
     uint64_t packet_index;
@@ -22,6 +34,7 @@ struct RnicTxPacket {
     uint64_t dispatch_start_ps;
     uint64_t dispatch_end_ps;
     uint64_t eta_ps;
+    RnicTxPacketKind kind{RnicTxPacketKind::FreshData};
 };
 
 struct RnicTxOpportunity {
@@ -62,6 +75,12 @@ public:
     void setWireRateGrant(uint64_t flow_id, uint64_t wire_rate_grant_bps);
     void setDataEligible(uint64_t flow_id, bool eligible);
 
+    // Makes one per-flow selective-repair head participate in the same PRBS
+    // lottery and source-edge progressive filling as fresh DATA. The runtime
+    // owns the repair metadata and supplies the exact head to
+    // dispatchOpportunity(); this bit only records whether that head exists.
+    void setSelectiveRepairPending(uint64_t flow_id, bool pending);
+
     // Runtime-only terminal cleanup after receiver retirement has committed.
     // The source payload must already be fully dispatched, and the runtime
     // must first close DATA eligibility and clear the receiver grant.
@@ -71,6 +90,7 @@ public:
     bool sourcePayloadDispatched(uint64_t flow_id) const;
     uint64_t flowPayloadBytesDispatched(uint64_t flow_id) const;
     uint64_t effectiveWireRateBps(uint64_t flow_id) const;
+    bool hasSelectiveRepairPending(uint64_t flow_id) const;
     bool hasDispatchableData() const;
     size_t flowCount() const { return _flows.size(); }
     uint64_t nextDataOpportunityPs() const {
@@ -96,6 +116,9 @@ public:
     // extent; the size-aware lottery preserves wire-byte rather than packet
     // shares.
     RnicTxOpportunity dispatchOpportunity(uint64_t requested_start_ps);
+    RnicTxOpportunity dispatchOpportunity(
+        uint64_t requested_start_ps,
+        const std::vector<RnicTxRepairCandidate>& repair_heads);
 
     // Serialize one nonempty control frame on the same physical node wire as
     // DATA.  The CN runtime owns the strict-priority queue and calls this at a
@@ -108,6 +131,11 @@ public:
     // at a published completion boundary.
     void rebasePhysicalIdle(uint64_t now_ps);
 
+    // Publish a newly eligible DATA-class head at an integral event boundary.
+    // This never dispatches the head; it only prevents a same-ceil fractional
+    // opportunity from beginning before the eligibility event.
+    void rebaseDataClassIdle(uint64_t now_ps);
+
 private:
     struct FlowState {
         uint64_t flow_id;
@@ -118,6 +146,7 @@ private:
         uint64_t payload_bytes_dispatched = 0;
         uint64_t packet_index = 0;
         bool data_eligible = false;
+        bool selective_repair_pending = false;
     };
 
     RnicPacketExtent headExtent(const FlowState& state) const;

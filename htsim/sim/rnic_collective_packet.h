@@ -11,7 +11,7 @@
 #include "rnic_collective_control.h"
 #include "rnic_packet_extent.h"
 
-// The five in-band wire objects used by the collective-network profile.
+// The six in-band wire objects used by the collective-network profile.
 // Packet::type() intentionally remains the neutral HTSIM IP value: existing
 // packet_type values cannot represent these kinds without changing network.h,
 // and collective endpoints must dispatch on this explicit kind instead.
@@ -20,6 +20,7 @@ enum class RnicCollectivePacketKind {
     DECLARE,
     ACCEPT,
     GRANT_UPDATE,
+    GAP_NACK,
     RETIRE,
 };
 
@@ -38,10 +39,26 @@ struct RnicCollectiveDataMetadata {
     RnicPacketExtent extent;
     std::uint64_t eta_ps;
     RnicCollectiveFinalLedger final_ledger;
+    // Zero is the original transmission.  Every selective repair increments
+    // the attempt and names the exact late lifecycle it replaces.
+    std::uint32_t transmission_attempt{0};
+    std::optional<std::uint64_t> repairs_lifecycle_id;
 
     bool isFinalPacket() const noexcept {
         return packet_index + 1 == final_ledger.total_data_packets;
     }
+};
+
+// Exact single-packet range requested by the bounded late-window recovery
+// path.  The logical coordinates identify what must be repaired; the rejected
+// physical coordinates make stale/duplicate NACKs idempotently recognizable.
+struct RnicCollectiveGapNackMetadata {
+    std::uint64_t packet_index;
+    std::uint64_t payload_byte_offset;
+    RnicPacketExtent extent;
+    std::uint64_t rejected_eta_ps;
+    std::uint64_t rejected_lifecycle_id;
+    std::uint32_t requested_transmission_attempt;
 };
 
 // DECLARE has one CCA input: nflow.  Collective identity and expected fan-in
@@ -134,6 +151,17 @@ public:
         const RnicCollectiveGrant& grant,
         std::shared_ptr<RnicCollectivePacketLifecycleObserver> observer);
 
+    static RnicCollectivePacket* newGapNack(
+        PacketFlow& flow,
+        const Route& route,
+        packetid_t htsim_packet_id,
+        AtlahsFlowId flow_id,
+        std::uint32_t source,
+        std::uint32_t destination,
+        std::uint64_t wire_bytes,
+        const RnicCollectiveGapNackMetadata& gap_nack,
+        std::shared_ptr<RnicCollectivePacketLifecycleObserver> observer);
+
     static RnicCollectivePacket* newRetire(
         PacketFlow& flow,
         const Route& route,
@@ -158,6 +186,7 @@ public:
     const RnicCollectiveDataMetadata& data() const;
     const RnicCollectiveDeclareMetadata& declaration() const;
     const RnicCollectiveGrant& grant() const;
+    const RnicCollectiveGapNackMetadata& gapNack() const;
     const RnicCollectiveFinalLedger& finalLedger() const;
     bool isFinalDataPacket() const;
 
@@ -194,6 +223,7 @@ private:
         std::optional<RnicCollectiveDataMetadata> data,
         std::optional<RnicCollectiveDeclareMetadata> declaration,
         std::optional<RnicCollectiveGrant> grant,
+        std::optional<RnicCollectiveGapNackMetadata> gap_nack,
         std::optional<RnicCollectiveFinalLedger> retire_ledger,
         std::shared_ptr<RnicCollectivePacketLifecycleObserver> observer);
 
@@ -207,6 +237,8 @@ private:
     static void validateGrant(
         const RnicCollectiveGrant& grant,
         RnicCollectivePacketKind packet_kind);
+    static void validateGapNack(
+        const RnicCollectiveGapNackMetadata& gap_nack);
     static std::uint64_t takeLifecycleId();
 
     void initialize(
@@ -221,6 +253,7 @@ private:
         std::optional<RnicCollectiveDataMetadata> data,
         std::optional<RnicCollectiveDeclareMetadata> declaration,
         std::optional<RnicCollectiveGrant> grant,
+        std::optional<RnicCollectiveGapNackMetadata> gap_nack,
         std::optional<RnicCollectiveFinalLedger> retire_ledger,
         std::shared_ptr<RnicCollectivePacketLifecycleObserver> observer,
         std::uint64_t lifecycle_id);
@@ -245,6 +278,7 @@ private:
     std::optional<RnicCollectiveDataMetadata> _data;
     std::optional<RnicCollectiveDeclareMetadata> _declaration;
     std::optional<RnicCollectiveGrant> _grant;
+    std::optional<RnicCollectiveGapNackMetadata> _gap_nack;
     std::optional<RnicCollectiveFinalLedger> _retire_ledger;
     std::shared_ptr<RnicCollectivePacketLifecycleObserver> _observer;
     PoolState _pool_state{PoolState::RECYCLED};

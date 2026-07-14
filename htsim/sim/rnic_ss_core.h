@@ -35,9 +35,10 @@ struct RnicSsEndpointPair {
 };
 
 // ACK_SACK is one physical reverse-path packet: next_expected_sequence is the
-// cumulative ACK and sack_bitmap selectively acknowledges the following 64
-// sequence positions.  A normalized receiver snapshot always has bit zero
-// clear because receipt of that packet would advance the cumulative ACK.
+// cumulative ACK and sack_bitmap selectively acknowledges the following 128
+// sequence positions.  Word zero covers offsets [0,63] and word one covers
+// [64,127].  A normalized receiver snapshot always has offset zero clear
+// because receipt of that packet would advance the cumulative ACK.
 enum class RnicSsPacketKind {
     DATA,
     ACK_SACK,
@@ -67,7 +68,7 @@ struct RnicSsDelayedLoadSample {
 struct RnicSsAckSackMetadata {
     RnicSsEndpointPair forward_pair;
     RnicSsSequence next_expected_sequence;
-    std::uint64_t sack_bitmap;
+    std::array<std::uint64_t, 2> sack_bitmap{};
     // Load can be piggybacked on the physical ACK/SACK.  Standalone TELEMETRY
     // remains available when the delayed sample is produced independently.
     std::optional<RnicSsDelayedLoadSample> returned_load_sample{std::nullopt};
@@ -135,7 +136,7 @@ struct RnicSsReceiveResult {
     std::uint32_t cumulative_advance;
 };
 
-// A receiver scoreboard covering [next_expected, next_expected + 63].
+// A receiver scoreboard covering [next_expected, next_expected + 127].
 class RnicSsSackScoreboard {
 public:
     explicit RnicSsSackScoreboard(
@@ -145,16 +146,18 @@ public:
     RnicSsSequence nextExpectedSequence() const noexcept {
         return _next_expected_sequence;
     }
-    std::uint64_t bitmap() const noexcept { return _bitmap; }
+    const std::array<std::uint64_t, 2>& bitmap() const noexcept {
+        return _bitmap;
+    }
     RnicSsAckSackMetadata snapshot(RnicSsEndpointPair pair) const noexcept;
 
 private:
     RnicSsSequence _next_expected_sequence;
-    std::uint64_t _bitmap{0};
+    std::array<std::uint64_t, 2> _bitmap{};
 };
 
 struct RnicSsSelectiveRepeatConfig {
-    std::uint32_t window_packets{64};
+    std::uint32_t window_packets{128};
     // Conservative mlx5-style silent-final-loss fallback requested for the
     // simulator.  This configurable 50 ms default is not a claim about
     // Slingshot hardware; a normal lossless run should never invoke it.
@@ -199,7 +202,17 @@ public:
         std::uint32_t wire_bytes,
         RnicSsTimePs now_ps);
     RnicSsAckResult applyAck(const RnicSsAckSackMetadata& ack);
+    // Returns expired records while retry budget remains.  An expired record
+    // whose configured budget is already consumed is a terminal transport
+    // failure and raises std::runtime_error instead of remaining perpetually
+    // eligible at the current simulation timestamp.
     std::vector<RnicSsOutstandingPacket> retransmissionCandidates(
+        RnicSsTimePs now_ps) const;
+    // O(log window) form used by the runtime's stale-safe deadline heap.
+    // Missing or not-yet-expired sequences return std::nullopt; an expired
+    // sequence after its final retry raises the same terminal error above.
+    std::optional<RnicSsOutstandingPacket> retransmissionCandidate(
+        RnicSsSequence sequence,
         RnicSsTimePs now_ps) const;
     void recordRetransmission(
         RnicSsSequence sequence,

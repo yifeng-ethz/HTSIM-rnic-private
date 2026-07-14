@@ -164,6 +164,7 @@ if ( ENABLE_TESTS )
     # Unit tests.
     set(UNIT_TEST_FILES
         atlahs_flow_runtime_test
+        dcqcn_test
         eventlist_microphase_test
         goal_parser_test
         pipe_test

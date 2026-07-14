@@ -4,8 +4,31 @@
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
+#include <string>
 
 namespace {
+
+constexpr std::uint32_t kSackWordBits = 64;
+constexpr std::uint32_t kSackWindowBits = 128;
+
+bool sackBit(const std::array<std::uint64_t, 2>& bitmap,
+             std::uint32_t offset) noexcept {
+    return offset < kSackWindowBits
+        && (bitmap[offset / kSackWordBits]
+            & (UINT64_C(1) << (offset % kSackWordBits))) != 0;
+}
+
+void setSackBit(std::array<std::uint64_t, 2>& bitmap,
+                std::uint32_t offset) noexcept {
+    bitmap[offset / kSackWordBits]
+        |= UINT64_C(1) << (offset % kSackWordBits);
+}
+
+void shiftSackBitmapRightOne(
+        std::array<std::uint64_t, 2>& bitmap) noexcept {
+    bitmap[0] = (bitmap[0] >> 1) | (bitmap[1] << 63);
+    bitmap[1] >>= 1;
+}
 
 void validatePair(const RnicSsEndpointPair& pair) {
     if (pair.source == pair.destination) {
@@ -123,7 +146,7 @@ void validateRnicSsWirePacket(
             throw std::invalid_argument(
                 "Slingshot-like ACK_SACK must use the reverse physical path");
         }
-        if ((ack->sack_bitmap & 1ULL) != 0) {
+        if (sackBit(ack->sack_bitmap, 0)) {
             throw std::invalid_argument(
                 "Slingshot-like normalized SACK bitmap must have bit zero clear");
         }
@@ -225,19 +248,19 @@ RnicSsReceiveResult RnicSsSackScoreboard::observe(
         return {RnicSsReceiveDisposition::DUPLICATE, 0};
     }
     const std::uint64_t offset = sequence - _next_expected_sequence;
-    if (offset >= 64) {
+    if (offset >= kSackWindowBits) {
         return {RnicSsReceiveDisposition::OUTSIDE_SACK_WINDOW, 0};
     }
-    const std::uint64_t mask = 1ULL << offset;
-    if ((_bitmap & mask) != 0) {
+    const std::uint32_t bitmap_offset = static_cast<std::uint32_t>(offset);
+    if (sackBit(_bitmap, bitmap_offset)) {
         return {RnicSsReceiveDisposition::DUPLICATE, 0};
     }
 
     const bool in_order = offset == 0;
-    _bitmap |= mask;
+    setSackBit(_bitmap, bitmap_offset);
     std::uint32_t advance = 0;
-    while ((_bitmap & 1ULL) != 0) {
-        _bitmap >>= 1;
+    while (sackBit(_bitmap, 0)) {
+        shiftSackBitmapRightOne(_bitmap);
         ++_next_expected_sequence;
         ++advance;
     }
@@ -252,9 +275,9 @@ RnicSsAckSackMetadata RnicSsSackScoreboard::snapshot(
 }
 
 void RnicSsSelectiveRepeatConfig::validate() const {
-    if (window_packets == 0 || window_packets > 64) {
+    if (window_packets == 0 || window_packets > kSackWindowBits) {
         throw std::invalid_argument(
-            "Slingshot-like selective-repeat window must be in [1,64]");
+            "Slingshot-like selective-repeat window must be in [1,128]");
     }
     if (retransmission_timeout_ps == 0) {
         throw std::invalid_argument(
@@ -316,7 +339,7 @@ RnicSsAckResult RnicSsSelectiveRepeatLedger::applyAck(
         throw std::invalid_argument(
             "Slingshot-like ACK/SACK belongs to another endpoint pair");
     }
-    if ((ack.sack_bitmap & 1ULL) != 0) {
+    if (sackBit(ack.sack_bitmap, 0)) {
         throw std::invalid_argument(
             "Slingshot-like ACK/SACK bitmap is not normalized");
     }
@@ -331,8 +354,8 @@ RnicSsAckResult RnicSsSelectiveRepeatLedger::applyAck(
 
     // Set bits beyond the sender's allocated sequence space indicate corrupt
     // or misrouted control metadata; accepting them could hide integration bugs.
-    for (std::uint32_t bit = 0; bit < 64; ++bit) {
-        if ((ack.sack_bitmap & (1ULL << bit)) == 0) {
+    for (std::uint32_t bit = 0; bit < kSackWindowBits; ++bit) {
+        if (!sackBit(ack.sack_bitmap, bit)) {
             continue;
         }
         if (ack.next_expected_sequence
@@ -348,9 +371,9 @@ RnicSsAckResult RnicSsSelectiveRepeatLedger::applyAck(
 
     RnicSsAckResult result;
     std::optional<std::uint32_t> highest_selective_ack;
-    for (std::uint32_t bit = 64; bit > 0; --bit) {
+    for (std::uint32_t bit = kSackWindowBits; bit > 0; --bit) {
         const std::uint32_t candidate = bit - 1;
-        if ((ack.sack_bitmap & (1ULL << candidate)) != 0) {
+        if (sackBit(ack.sack_bitmap, candidate)) {
             highest_selective_ack = candidate;
             break;
         }
@@ -363,8 +386,9 @@ RnicSsAckResult RnicSsSelectiveRepeatLedger::applyAck(
             const std::uint64_t offset =
                 it->first - ack.next_expected_sequence;
             selective_offset = offset;
-            acknowledged = offset < 64
-                && (ack.sack_bitmap & (1ULL << offset)) != 0;
+            acknowledged = offset < kSackWindowBits
+                && sackBit(ack.sack_bitmap,
+                           static_cast<std::uint32_t>(offset));
         }
         if (acknowledged) {
             result.newly_acked.push_back(it->second);
@@ -386,19 +410,43 @@ RnicSsSelectiveRepeatLedger::retransmissionCandidates(
         RnicSsTimePs now_ps) const {
     std::vector<RnicSsOutstandingPacket> result;
     for (const auto& [sequence, record] : _outstanding) {
-        (void)sequence;
-        if (now_ps < record.last_sent_at_ps) {
-            throw std::invalid_argument(
-                "Slingshot-like retransmission time precedes DATA send");
-        }
-        if (now_ps - record.last_sent_at_ps
-                >= _config.retransmission_timeout_ps
-            && record.transmission_count - 1
-                < _config.maximum_retransmissions) {
-            result.push_back(record);
+        (void)record;
+        const std::optional<RnicSsOutstandingPacket> candidate =
+            retransmissionCandidate(sequence, now_ps);
+        if (candidate.has_value()) {
+            result.push_back(*candidate);
         }
     }
     return result;
+}
+
+std::optional<RnicSsOutstandingPacket>
+RnicSsSelectiveRepeatLedger::retransmissionCandidate(
+        RnicSsSequence sequence,
+        RnicSsTimePs now_ps) const {
+    const auto it = _outstanding.find(sequence);
+    if (it == _outstanding.end()) {
+        return std::nullopt;
+    }
+    const RnicSsOutstandingPacket& record = it->second;
+    if (now_ps < record.last_sent_at_ps) {
+        throw std::invalid_argument(
+            "Slingshot-like retransmission time precedes DATA send");
+    }
+    if (now_ps - record.last_sent_at_ps
+        < _config.retransmission_timeout_ps) {
+        return std::nullopt;
+    }
+    const std::uint32_t retransmissions = record.transmission_count - 1;
+    if (retransmissions >= _config.maximum_retransmissions) {
+        throw std::runtime_error(
+            "Slingshot-like selective-repeat retry budget exhausted: "
+            "source=" + std::to_string(_pair.source)
+            + " destination=" + std::to_string(_pair.destination)
+            + " sequence=" + std::to_string(sequence)
+            + " retransmissions=" + std::to_string(retransmissions));
+    }
+    return record;
 }
 
 void RnicSsSelectiveRepeatLedger::recordRetransmission(

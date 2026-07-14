@@ -22,10 +22,16 @@ public:
         p->_path_len = 0;
         p->_direction = NONE;
         p->set_dst(destination);
+        ++_live_packets;
         return p;
     }
 
-    void free() {_packetdb.freePacket(this);}
+    void free() {
+        assert(_live_packets > 0);
+        --_live_packets;
+        _packetdb.freePacket(this);
+    }
+    static std::uint64_t live_packet_count() { return _live_packets; }
     inline seq_t ackno() const {return _ackno;}
     virtual PktPriority priority() const {return Packet::PRIO_HI;}
   
@@ -34,6 +40,7 @@ public:
 protected:
     seq_t _ackno;
     static PacketDB<CNPPacket> _packetdb;
+    static std::uint64_t _live_packets;
 };
 
 #endif

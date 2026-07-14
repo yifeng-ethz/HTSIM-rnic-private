@@ -70,6 +70,52 @@ std::unique_ptr<FatTreeTopologyCfg> makeCollectiveTopologyConfig(
     return topology_config;
 }
 
+std::unique_ptr<FatTreeTopologyCfg> makeSlingshotTopologyConfig(
+        const RnicAtlahsCliOptions& options,
+        std::uint32_t physical_node_count) {
+    const auto buffer_bytes = static_cast<mem_b>(
+        options.slingshot.ns_rosetta_shared_buffer_bytes);
+    std::unique_ptr<FatTreeTopologyCfg> topology_config;
+    if (options.collective.topology_file.has_value()) {
+        std::ifstream topology_probe(*options.collective.topology_file);
+        if (!topology_probe.is_open()) {
+            throw std::invalid_argument(
+                "cannot open rnic-ss topology file '"
+                + *options.collective.topology_file + "'");
+        }
+        topology_config = FatTreeTopologyCfg::load(
+            *options.collective.topology_file,
+            buffer_bytes,
+            COMPOSITE,
+            FAIR_PRIO);
+        if (topology_config == nullptr) {
+            throw std::runtime_error(
+                "rnic-ss topology loader returned no configuration");
+        }
+        if (topology_config->no_of_nodes() != physical_node_count) {
+            throw std::invalid_argument(
+                "rnic-ss topology node count does not match GOAL layout");
+        }
+    } else {
+        if (!isRnicGeneratedTwoTierClosNodeCount(physical_node_count)) {
+            throw std::invalid_argument(
+                "generated rnic-ss topology requires GOAL nodes = K^2/2 "
+                "for even K");
+        }
+        topology_config = std::make_unique<FatTreeTopologyCfg>(
+            2,
+            physical_node_count,
+            options.link_capacity_bps,
+            buffer_bytes,
+            options.collective.hop_latency_ps,
+            options.collective.switch_latency_ps,
+            COMPOSITE,
+            FAIR_PRIO);
+    }
+    topology_config->set_ns_rosetta_shared_buffer_capacity(buffer_bytes);
+    return topology_config;
+}
+
 RnicAtlahsRuntimeConfig collectiveRuntimeConfig(
         const RnicAtlahsCliOptions& options) {
     return RnicCollectiveNetworkConfig{
@@ -86,6 +132,39 @@ RnicAtlahsRuntimeConfig collectiveRuntimeConfig(
         options.collective.margin_ppm,
         options.collective.control_wire_bytes,
         {},
+        options.collective.queue_trace_csv,
+        options.collective.state_trace_csv,
+        options.collective.maximum_repair_retries,
+    };
+}
+
+RnicAtlahsRuntimeConfig slingshotRuntimeConfig(
+        const RnicAtlahsCliOptions& options) {
+    return RnicSsRuntimeConfig{
+        options.link_capacity_bps,
+        RnicDataPacketizationConfig(
+            options.packet.max_wire_packet_bytes,
+            options.packet.data_header_bytes),
+        options.slingshot.control_wire_bytes,
+        RnicSsSelectiveRepeatConfig{
+            options.slingshot.outstanding_window_packets,
+            options.slingshot.rto_ps,
+            options.slingshot.maximum_retransmissions},
+        RnicSsPathSelectionConfig{
+            8,
+            4,
+            options.slingshot.path_hysteresis_ps,
+            options.slingshot.maximum_sample_age_ps,
+            0},
+        RnicSsCreditConfig{
+            options.slingshot.maximum_credit_ahead_bytes},
+        options.slingshot.q_hi_bytes,
+        options.slingshot.q_lo_bytes,
+        options.slingshot.credit_quantum_packets,
+        options.slingshot.telemetry_delay_ps,
+        options.slingshot.routing_seed,
+        options.slingshot.unordered_packet_routing,
+        options.slingshot.allow_loss_stress,
     };
 }
 
@@ -108,6 +187,13 @@ std::unique_ptr<RnicAtlahsRuntimeAssembly> assembleRnicAtlahsProfile(
             options.profile,
             collectiveRuntimeConfig(options),
             makeCollectiveTopologyConfig(options, physical_node_count),
+            logger_factory);
+    case RnicProfile::SlingshotLike:
+        return makeRnicAtlahsRuntime(
+            event_list,
+            options.profile,
+            slingshotRuntimeConfig(options),
+            makeSlingshotTopologyConfig(options, physical_node_count),
             logger_factory);
     case RnicProfile::PacketizedManifold:
         return makeRnicAtlahsRuntime(
@@ -150,13 +236,18 @@ std::string renderRnicAtlahsModelManifest(
         << " pacer=" << rnicPacerModelName(spec.pacer)
         << " rb="
         << (spec.profile == RnicProfile::CollectiveNetwork
-                ? "ring-cam" : "none")
+                ? "ring-cam"
+                : (spec.profile == RnicProfile::SlingshotLike
+                       ? "voq-request-grant" : "none"))
         << '\n';
     manifest
         << "[RNIC manifest] goal=" << options.goal_file
         << " completion_csv="
         << (options.completion_csv.has_value()
                 ? *options.completion_csv : "off")
+        << " state_trace_csv="
+        << (options.collective.state_trace_csv.has_value()
+                ? *options.collective.state_trace_csv : "off")
         << " requested_rank_mapping="
         << rnicAtlahsGoalRankMappingName(options.goal_rank_mapping)
         << " resolved_rank_mapping="
@@ -188,7 +279,7 @@ std::string renderRnicAtlahsModelManifest(
             << " link_failures=0"
             << " eta_calibration_config=construction-snapshot"
             << " voq_key=physical-ingress-x-physical-egress"
-            << " arbitration=deterministic-round-robin"
+            << " arbitration=strict-priority-oldest-hol"
             << " routing=per-packet-path-round-robin"
             << " control_priority=strict-nonpreemptive"
             << " pfc=off ecn=off"
@@ -245,6 +336,104 @@ std::string renderRnicAtlahsModelManifest(
             << " eta=source-route-injection-plus-packet-specific-no-load-transit"
             << " eta_transit=pipe-switch-latency-plus-remaining-ns-tm3-egress-serialization"
             << " same_time_order=release-before-admission"
+            << '\n';
+        manifest
+            << "[RNIC manifest] recovery=selective-gap-nack"
+            << " late_admission=repair"
+            << " early_admission=hard-error"
+            << " overflow_admission=hard-error"
+            << " gap_decision=next-strict-ring-tick"
+            << " gap_decision_epsilon_ps=0"
+            << " gap_nack_priority=high"
+            << " gap_nack_wire_bytes="
+            << options.collective.control_wire_bytes
+            << " repair_priority=low"
+            << " repair_arbitration=per-flow-head-in-node-prbs-lottery"
+            << " repair_prbs_draw=true"
+            << " repair_rate_accounting=substitutes-fresh-granted-service"
+            << " repair_eta=fresh-packet-specific-calibration"
+            << " repair_scope=exact-logical-packet"
+            << " maximum_repair_retries="
+            << options.collective.maximum_repair_retries
+            << " retirement_gate=exact-rx-ledger-and-no-gap"
+            << '\n';
+    } else if (spec.profile == RnicProfile::SlingshotLike) {
+        manifest
+            << "[RNIC manifest] topology="
+            << (options.collective.topology_file.has_value()
+                    ? *options.collective.topology_file
+                    : "generated-two-tier")
+            << " clos_tiers=2 switch=ns-rosetta"
+            << " link_failures=0 pfc=off ecn=off"
+            << " switch_queue=input-voq-request-grant"
+            << " source_serializer=physical-host-queue"
+            << " shared_buffer_bytes="
+            << options.slingshot.ns_rosetta_shared_buffer_bytes;
+        if (!options.collective.topology_file.has_value()) {
+            manifest
+                << " hop_latency_ps="
+                << options.collective.hop_latency_ps
+                << " switch_latency_ps="
+                << options.collective.switch_latency_ps;
+        } else {
+            manifest << " latency_source=topology-file";
+        }
+        manifest << '\n';
+        manifest
+            << "[RNIC manifest] model=open-slingshot-like-comparator"
+            << " proprietary_threshold_claim=false"
+            << " routing="
+            << (options.slingshot.unordered_packet_routing
+                    ? "unordered-packet" : "ordered-endpoint-pair")
+            << " path_candidates=deterministic-four-of-eight"
+            << " sender_information=local-request-depth-plus-physical-ack-telemetry"
+            << " global_sender_state=false"
+            << " telemetry_delay_ps="
+            << options.slingshot.telemetry_delay_ps
+            << " sample_age_ps="
+            << options.slingshot.maximum_sample_age_ps
+            << " path_hysteresis_ps="
+            << options.slingshot.path_hysteresis_ps
+            << " routing_seed=" << options.slingshot.routing_seed
+            << '\n';
+        manifest
+            << "[RNIC manifest] pair_tracking=endpoint-pair-outstanding"
+            << " ack=per-data-packet-sack128"
+            << " recovery=selective-repeat"
+            << " sack_hole_retry=immediate"
+            << " silent_loss_rto_ps=" << options.slingshot.rto_ps
+            << " normal_lossless_rto_expected=0"
+            << " loss_stress="
+            << (options.slingshot.allow_loss_stress ? "on" : "off")
+            << " window_packets="
+            << options.slingshot.outstanding_window_packets
+            << " maximum_retransmissions="
+            << options.slingshot.maximum_retransmissions
+            << '\n';
+        manifest
+            << "[RNIC manifest] backpressure=pair-selective-physical"
+            << " credit=service-driven-cumulative"
+            << " control_priority=strict-nonpreemptive"
+            << " q_hi_bytes=" << options.slingshot.q_hi_bytes
+            << " q_lo_bytes=" << options.slingshot.q_lo_bytes
+            << " credit_quantum_packets="
+            << options.slingshot.credit_quantum_packets
+            << " max_credit_ahead_bytes="
+            << options.slingshot.maximum_credit_ahead_bytes
+            << " control_wire_bytes="
+            << options.slingshot.control_wire_bytes
+            << '\n';
+        manifest
+            << "[RNIC manifest] queue_bound="
+               "controlled-clos-analytical-envelope"
+            << " bound_forward_data_serialization=included"
+            << " bound_bp_enable_fan_in="
+            << (goal_layout.physical_node_count == 0
+                    ? 0 : goal_layout.physical_node_count - 1)
+            << " bound_bp_enable_serialization="
+               "destination-source-serializer"
+            << " bound_reverse_blocking="
+               "one-max-data-per-nonpreemptive-serializer"
             << '\n';
     } else {
         manifest

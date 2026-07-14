@@ -33,6 +33,8 @@ struct RnicAtlahsManifoldCliOptions {
 // the assembly layer.
 struct RnicAtlahsCollectiveCliOptions {
     std::optional<std::string> topology_file;
+    std::optional<std::string> queue_trace_csv;
+    std::optional<std::string> state_trace_csv;
     std::uint64_t hop_latency_ps = 1000000;
     std::uint64_t switch_latency_ps = 0;
     std::uint64_t global_prbs_seed = UINT64_C(0x123456789abcdef0);
@@ -43,6 +45,28 @@ struct RnicAtlahsCollectiveCliOptions {
     std::uint64_t ring_release_tick_ps = 16000;
     std::uint64_t ring_wire_capacity_bytes = UINT64_C(1) << 20;
     std::uint64_t ns_tm3_shared_buffer_bytes = UINT64_C(1) << 20;
+    std::uint32_t maximum_repair_retries = 8;
+};
+
+// Public-mechanism parameters for the open rnic-ss comparator.  None of these
+// defaults is presented as proprietary hardware arithmetic; every threshold
+// remains explicit for the required sensitivity sweeps.
+struct RnicAtlahsSlingshotCliOptions {
+    std::uint64_t control_wire_bytes = 64;
+    std::uint64_t ns_rosetta_shared_buffer_bytes = UINT64_C(64) << 20;
+    std::uint64_t q_hi_bytes = UINT64_C(4) << 20;
+    std::uint64_t q_lo_bytes = UINT64_C(2) << 20;
+    std::uint64_t telemetry_delay_ps = 0;
+    std::uint64_t path_hysteresis_ps = 0;
+    std::uint64_t maximum_sample_age_ps = 10000000;
+    std::uint32_t credit_quantum_packets = 4;
+    std::uint32_t outstanding_window_packets = 128;
+    std::uint64_t rto_ps = UINT64_C(50000000000);
+    std::uint32_t maximum_retransmissions = 8;
+    std::uint64_t maximum_credit_ahead_bytes = UINT64_C(64) << 20;
+    std::uint64_t routing_seed = UINT64_C(0x5a17b1c3d00df00d);
+    bool unordered_packet_routing = false;
+    bool allow_loss_stress = false;
 };
 
 // Defaults remain visible in the resolved options, while this side table lets
@@ -65,6 +89,25 @@ struct RnicAtlahsExplicitCliOptions {
     bool ring_release_tick_ps = false;
     bool ring_wire_capacity_bytes = false;
     bool ns_tm3_shared_buffer_bytes = false;
+    bool cn_queue_trace_csv = false;
+    bool cn_state_trace_csv = false;
+    bool cn_maximum_repair_retries = false;
+
+    bool ss_control_wire_bytes = false;
+    bool ns_rosetta_shared_buffer_bytes = false;
+    bool ss_q_hi_bytes = false;
+    bool ss_q_lo_bytes = false;
+    bool ss_telemetry_delay_ps = false;
+    bool ss_path_hysteresis_ps = false;
+    bool ss_maximum_sample_age_ps = false;
+    bool ss_credit_quantum_packets = false;
+    bool ss_outstanding_window_packets = false;
+    bool ss_rto_ps = false;
+    bool ss_maximum_retransmissions = false;
+    bool ss_maximum_credit_ahead_bytes = false;
+    bool ss_routing_seed = false;
+    bool ss_routing = false;
+    bool ss_loss_stress = false;
 };
 
 struct RnicAtlahsCliOptions {
@@ -80,6 +123,7 @@ struct RnicAtlahsCliOptions {
     RnicAtlahsPacketCliOptions packet;
     RnicAtlahsManifoldCliOptions manifold;
     RnicAtlahsCollectiveCliOptions collective;
+    RnicAtlahsSlingshotCliOptions slingshot;
     RnicAtlahsExplicitCliOptions explicitly_supplied;
 };
 

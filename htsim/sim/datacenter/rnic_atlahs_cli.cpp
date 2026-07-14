@@ -73,7 +73,13 @@ RnicAtlahsGoalRankMapping parseGoalRankMapping(
 
 bool isPacketProfile(RnicProfile profile) noexcept {
     return profile == RnicProfile::CollectiveNetwork
+           || profile == RnicProfile::SlingshotLike
            || profile == RnicProfile::PacketizedManifold;
+}
+
+bool isPhysicalClosProfile(RnicProfile profile) noexcept {
+    return profile == RnicProfile::CollectiveNetwork
+           || profile == RnicProfile::SlingshotLike;
 }
 
 bool isManifoldProfile(RnicProfile profile) noexcept {
@@ -162,6 +168,10 @@ void validateCollectiveOptions(const RnicAtlahsCliOptions& options) {
                     "-rnic_cn_ring_capacity_bytes");
     requirePositive(options.collective.ns_tm3_shared_buffer_bytes,
                     "-rnic_cn_ns_tm3_buffer_bytes");
+    if (options.collective.maximum_repair_retries == 0) {
+        throw std::invalid_argument(
+            "-rnic_cn_max_repair_retries: value must be positive");
+    }
     if (options.collective.ns_tm3_shared_buffer_bytes
         > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
         throw std::invalid_argument(
@@ -186,6 +196,83 @@ void validateCollectiveOptions(const RnicAtlahsCliOptions& options) {
     }
 }
 
+void validateSlingshotOptions(const RnicAtlahsCliOptions& options) {
+    constexpr std::uint64_t htsim_one_byte_per_ps_bps =
+        UINT64_C(8000000000000);
+    if (options.link_capacity_bps > htsim_one_byte_per_ps_bps) {
+        throw std::invalid_argument(
+            "rnic-ss link capacity exceeds HTSIM's physical queue clock");
+    }
+    if (options.node_count != 0
+        && !options.collective.topology_file.has_value()
+        && !isRnicGeneratedTwoTierClosNodeCount(options.node_count)) {
+        throw std::invalid_argument(
+            "generated rnic-ss topology requires nodes = K^2/2 for even K");
+    }
+    if (options.collective.topology_file.has_value()
+        && (options.explicitly_supplied.hop_latency_ps
+            || options.explicitly_supplied.switch_latency_ps)) {
+        throw std::invalid_argument(
+            "-topo cannot be combined with explicit RNIC hop/switch latency");
+    }
+    const Wide diameter =
+        static_cast<Wide>(options.collective.hop_latency_ps) * 4
+        + static_cast<Wide>(options.collective.switch_latency_ps) * 3;
+    if (diameter > std::numeric_limits<std::uint64_t>::max()) {
+        throw std::invalid_argument(
+            "rnic-ss two-tier Clos diameter latency overflows uint64_t");
+    }
+    if (options.packet.max_wire_packet_bytes
+            > std::numeric_limits<std::uint16_t>::max()
+        || options.slingshot.control_wire_bytes == 0
+        || options.slingshot.control_wire_bytes
+               > std::numeric_limits<std::uint16_t>::max()) {
+        throw std::invalid_argument(
+            "rnic-ss DATA/control wire extents must fit uint16_t");
+    }
+    requirePositive(options.slingshot.ns_rosetta_shared_buffer_bytes,
+                    "-rnic_ss_ns_rosetta_buffer_bytes");
+    requirePositive(options.slingshot.q_hi_bytes, "-rnic_ss_q_hi_bytes");
+    if (options.slingshot.q_lo_bytes >= options.slingshot.q_hi_bytes) {
+        throw std::invalid_argument(
+            "rnic-ss requires Q_lo strictly below Q_hi");
+    }
+    if (options.slingshot.q_hi_bytes
+        > options.slingshot.ns_rosetta_shared_buffer_bytes) {
+        throw std::invalid_argument(
+            "rnic-ss Q_hi cannot exceed the ns-rosetta shared buffer");
+    }
+    requirePositive(options.slingshot.maximum_sample_age_ps,
+                    "-rnic_ss_sample_age_ps");
+    if (options.slingshot.credit_quantum_packets == 0
+        || options.slingshot.outstanding_window_packets == 0
+        || options.slingshot.outstanding_window_packets > 128
+        || options.slingshot.maximum_retransmissions == 0) {
+        throw std::invalid_argument(
+            "rnic-ss credit/window/retry counts are outside their domains");
+    }
+    requirePositive(options.slingshot.rto_ps, "-rnic_ss_rto_ps");
+    requirePositive(options.slingshot.maximum_credit_ahead_bytes,
+                    "-rnic_ss_max_credit_ahead_bytes");
+    const Wide initial_credit =
+        static_cast<Wide>(options.slingshot.credit_quantum_packets)
+        * options.packet.max_wire_packet_bytes;
+    if (initial_credit > options.slingshot.maximum_credit_ahead_bytes) {
+        throw std::invalid_argument(
+            "rnic-ss credit quantum exceeds the credit-ahead bound");
+    }
+    for (const std::uint64_t value : {
+             options.slingshot.ns_rosetta_shared_buffer_bytes,
+             options.slingshot.q_hi_bytes,
+             options.slingshot.q_lo_bytes}) {
+        if (value > static_cast<std::uint64_t>(
+                std::numeric_limits<std::int64_t>::max())) {
+            throw std::invalid_argument(
+                "rnic-ss byte threshold exceeds HTSIM mem_b");
+        }
+    }
+}
+
 void rejectCrossProfileOptions(const RnicAtlahsCliOptions& options) {
     const RnicAtlahsExplicitCliOptions& supplied =
         options.explicitly_supplied;
@@ -200,22 +287,52 @@ void rejectCrossProfileOptions(const RnicAtlahsCliOptions& options) {
             "-rnic_nn_propagation_ps is valid only for NN profiles");
     }
 
-    const bool supplied_collective =
+    const bool supplied_physical =
         supplied.topology_file
         || supplied.hop_latency_ps
-        || supplied.switch_latency_ps
-        || supplied.global_prbs_seed
+        || supplied.switch_latency_ps;
+    if (!isPhysicalClosProfile(options.profile) && supplied_physical) {
+        throw std::invalid_argument(
+            "physical Clos options are valid only for rnic-cn or rnic-ss");
+    }
+
+    const bool supplied_collective =
+        supplied.global_prbs_seed
         || supplied.control_deadline_ps
         || supplied.margin_ppm
         || supplied.control_wire_bytes
         || supplied.ring_delay_window_ps
         || supplied.ring_release_tick_ps
         || supplied.ring_wire_capacity_bytes
-        || supplied.ns_tm3_shared_buffer_bytes;
+        || supplied.ns_tm3_shared_buffer_bytes
+        || supplied.cn_queue_trace_csv
+        || supplied.cn_state_trace_csv
+        || supplied.cn_maximum_repair_retries;
     if (options.profile != RnicProfile::CollectiveNetwork
         && supplied_collective) {
         throw std::invalid_argument(
             "physical Clos/control options are valid only for rnic-cn");
+    }
+
+    const bool supplied_ss =
+        supplied.ss_control_wire_bytes
+        || supplied.ns_rosetta_shared_buffer_bytes
+        || supplied.ss_q_hi_bytes
+        || supplied.ss_q_lo_bytes
+        || supplied.ss_telemetry_delay_ps
+        || supplied.ss_path_hysteresis_ps
+        || supplied.ss_maximum_sample_age_ps
+        || supplied.ss_credit_quantum_packets
+        || supplied.ss_outstanding_window_packets
+        || supplied.ss_rto_ps
+        || supplied.ss_maximum_retransmissions
+        || supplied.ss_maximum_credit_ahead_bytes
+        || supplied.ss_routing_seed
+        || supplied.ss_routing
+        || supplied.ss_loss_stress;
+    if (options.profile != RnicProfile::SlingshotLike && supplied_ss) {
+        throw std::invalid_argument(
+            "rnic-ss options are valid only for the rnic-ss profile");
     }
 }
 
@@ -231,6 +348,8 @@ void validateResolvedOptions(const RnicAtlahsCliOptions& options) {
     }
     if (options.profile == RnicProfile::CollectiveNetwork) {
         validateCollectiveOptions(options);
+    } else if (options.profile == RnicProfile::SlingshotLike) {
+        validateSlingshotOptions(options);
     }
 }
 
@@ -344,6 +463,85 @@ RnicAtlahsCliOptions parseRnicAtlahsCli(
             options.collective.ns_tm3_shared_buffer_bytes =
                 parseUnsigned(option, value);
             options.explicitly_supplied.ns_tm3_shared_buffer_bytes = true;
+        } else if (option == "-rnic_cn_queue_trace_csv") {
+            if (value.empty()) {
+                throw optionError(option, "path must be nonempty");
+            }
+            options.collective.queue_trace_csv = value;
+            options.explicitly_supplied.cn_queue_trace_csv = true;
+        } else if (option == "-rnic_cn_state_trace_csv") {
+            if (value.empty()) {
+                throw optionError(option, "path must be nonempty");
+            }
+            options.collective.state_trace_csv = value;
+            options.explicitly_supplied.cn_state_trace_csv = true;
+        } else if (option == "-rnic_cn_max_repair_retries") {
+            options.collective.maximum_repair_retries =
+                parseUnsigned32(option, value);
+            options.explicitly_supplied.cn_maximum_repair_retries = true;
+        } else if (option == "-rnic_ss_control_wire_bytes") {
+            options.slingshot.control_wire_bytes = parseUnsigned(option, value);
+            options.explicitly_supplied.ss_control_wire_bytes = true;
+        } else if (option == "-rnic_ss_ns_rosetta_buffer_bytes") {
+            options.slingshot.ns_rosetta_shared_buffer_bytes =
+                parseUnsigned(option, value);
+            options.explicitly_supplied.ns_rosetta_shared_buffer_bytes = true;
+        } else if (option == "-rnic_ss_q_hi_bytes") {
+            options.slingshot.q_hi_bytes = parseUnsigned(option, value);
+            options.explicitly_supplied.ss_q_hi_bytes = true;
+        } else if (option == "-rnic_ss_q_lo_bytes") {
+            options.slingshot.q_lo_bytes = parseUnsigned(option, value);
+            options.explicitly_supplied.ss_q_lo_bytes = true;
+        } else if (option == "-rnic_ss_telemetry_delay_ps") {
+            options.slingshot.telemetry_delay_ps = parseUnsigned(option, value);
+            options.explicitly_supplied.ss_telemetry_delay_ps = true;
+        } else if (option == "-rnic_ss_path_hysteresis_ps") {
+            options.slingshot.path_hysteresis_ps = parseUnsigned(option, value);
+            options.explicitly_supplied.ss_path_hysteresis_ps = true;
+        } else if (option == "-rnic_ss_sample_age_ps") {
+            options.slingshot.maximum_sample_age_ps =
+                parseUnsigned(option, value);
+            options.explicitly_supplied.ss_maximum_sample_age_ps = true;
+        } else if (option == "-rnic_ss_credit_quantum_packets") {
+            options.slingshot.credit_quantum_packets =
+                parseUnsigned32(option, value);
+            options.explicitly_supplied.ss_credit_quantum_packets = true;
+        } else if (option == "-rnic_ss_window_packets") {
+            options.slingshot.outstanding_window_packets =
+                parseUnsigned32(option, value);
+            options.explicitly_supplied.ss_outstanding_window_packets = true;
+        } else if (option == "-rnic_ss_rto_ps") {
+            options.slingshot.rto_ps = parseUnsigned(option, value);
+            options.explicitly_supplied.ss_rto_ps = true;
+        } else if (option == "-rnic_ss_max_retransmissions") {
+            options.slingshot.maximum_retransmissions =
+                parseUnsigned32(option, value);
+            options.explicitly_supplied.ss_maximum_retransmissions = true;
+        } else if (option == "-rnic_ss_max_credit_ahead_bytes") {
+            options.slingshot.maximum_credit_ahead_bytes =
+                parseUnsigned(option, value);
+            options.explicitly_supplied.ss_maximum_credit_ahead_bytes = true;
+        } else if (option == "-rnic_ss_routing_seed") {
+            options.slingshot.routing_seed = parseUnsigned(option, value);
+            options.explicitly_supplied.ss_routing_seed = true;
+        } else if (option == "-rnic_ss_routing") {
+            if (value == "unordered") {
+                options.slingshot.unordered_packet_routing = true;
+            } else if (value == "ordered") {
+                options.slingshot.unordered_packet_routing = false;
+            } else {
+                throw optionError(option, "expected unordered or ordered");
+            }
+            options.explicitly_supplied.ss_routing = true;
+        } else if (option == "-rnic_ss_loss_stress") {
+            if (value == "off") {
+                options.slingshot.allow_loss_stress = false;
+            } else if (value == "on") {
+                options.slingshot.allow_loss_stress = true;
+            } else {
+                throw optionError(option, "expected off or on");
+            }
+            options.explicitly_supplied.ss_loss_stress = true;
         } else {
             throw optionError(option, "unknown option");
         }
@@ -401,7 +599,7 @@ std::string rnicAtlahsCliUsage(const std::string& program_name) {
            " [-completion_csv FILE]"
            " [-goal_rank_mapping auto|gpu-rank|unique-nic]"
            " [-nodes N] -linkspeed_bps BPS"
-           " -rnic_profile rnic-cn|rnic-nn|rnic-nn-fluid\n"
+           " -rnic_profile rnic-cn|rnic-ss|rnic-nn|rnic-nn-fluid\n"
         << "Packet profiles:"
            " [-rnic_max_wire_bytes BYTES]"
            " [-rnic_data_header_bytes BYTES]\n"
@@ -416,6 +614,27 @@ std::string rnicAtlahsCliUsage(const std::string& program_name) {
            " [-rnic_cn_ring_window_ps PS]"
            " [-rnic_cn_ring_tick_ps PS]"
            " [-rnic_cn_ring_capacity_bytes BYTES]"
-           " [-rnic_cn_ns_tm3_buffer_bytes BYTES]";
+           " [-rnic_cn_ns_tm3_buffer_bytes BYTES]"
+           " [-rnic_cn_max_repair_retries N]"
+           " [-rnic_cn_queue_trace_csv FILE]"
+           " [-rnic_cn_state_trace_csv FILE]\n"
+        << "rnic-ss: [-topo FILE]"
+           " [-rnic_hop_latency_ps PS]"
+           " [-rnic_switch_latency_ps PS]"
+           " [-rnic_ss_control_wire_bytes BYTES]"
+           " [-rnic_ss_ns_rosetta_buffer_bytes BYTES]"
+           " [-rnic_ss_q_hi_bytes BYTES]"
+           " [-rnic_ss_q_lo_bytes BYTES]"
+           " [-rnic_ss_telemetry_delay_ps PS]"
+           " [-rnic_ss_path_hysteresis_ps PS]"
+           " [-rnic_ss_sample_age_ps PS]"
+           " [-rnic_ss_credit_quantum_packets N]"
+           " [-rnic_ss_window_packets N]"
+           " [-rnic_ss_rto_ps PS]"
+           " [-rnic_ss_max_retransmissions N]"
+           " [-rnic_ss_max_credit_ahead_bytes BYTES]"
+           " [-rnic_ss_routing_seed UINT64]"
+           " [-rnic_ss_routing unordered|ordered]"
+           " [-rnic_ss_loss_stress off|on]";
     return usage.str();
 }

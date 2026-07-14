@@ -29,7 +29,7 @@ std::uint64_t rnicCollectiveNoQueueTransitPs(
 // Owns the explicit source-serialized routes used by the collective-network
 // profile.  FatTreeTopology's legacy host-to-host paths begin with a source
 // queue.  RnicTxPort already models that physical serialization, so these
-// routes omit exactly that queue and begin with the existing host-to-ToR Pipe.
+// routes omit exactly that queue and begin with the existing RNIC-to-leaf Pipe.
 //
 // A route is cached per ordered endpoint pair.  All pairs targeting one node
 // are bound to the same supplied, stable, node-scoped destination sink. Cached

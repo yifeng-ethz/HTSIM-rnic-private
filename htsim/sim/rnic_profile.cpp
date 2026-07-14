@@ -7,6 +7,9 @@ RnicProfile parseRnicProfile(const std::string& name) {
     if (name == "rnic-cn") {
         return RnicProfile::CollectiveNetwork;
     }
+    if (name == "rnic-ss") {
+        return RnicProfile::SlingshotLike;
+    }
     if (name == "rnic-nn") {
         return RnicProfile::PacketizedManifold;
     }
@@ -15,13 +18,15 @@ RnicProfile parseRnicProfile(const std::string& name) {
     }
     throw std::invalid_argument(
         "unknown RNIC profile '" + name +
-        "' (expected rnic-cn, rnic-nn, or rnic-nn-fluid)");
+        "' (expected rnic-cn, rnic-ss, rnic-nn, or rnic-nn-fluid)");
 }
 
 const char* rnicProfileName(RnicProfile profile) {
     switch (profile) {
     case RnicProfile::CollectiveNetwork:
         return "rnic-cn";
+    case RnicProfile::SlingshotLike:
+        return "rnic-ss";
     case RnicProfile::PacketizedManifold:
         return "rnic-nn";
     case RnicProfile::FluidManifold:
@@ -38,6 +43,12 @@ RnicProfileSpec resolveRnicProfile(RnicProfile profile) {
                 RnicTrafficModel::Packetized,
                 RnicControlModel::InBandCollective,
                 RnicPacerModel::Prbs};
+    case RnicProfile::SlingshotLike:
+        return {profile,
+                RnicFabricModel::NsRosettaClos,
+                RnicTrafficModel::Packetized,
+                RnicControlModel::PairSelectiveBackpressure,
+                RnicPacerModel::OutstandingWindowCredits};
     case RnicProfile::PacketizedManifold:
         return {profile,
                 RnicFabricModel::TopologyFreeManifold,
@@ -58,6 +69,8 @@ const char* rnicFabricModelName(RnicFabricModel model) {
     switch (model) {
     case RnicFabricModel::NsTm3Clos:
         return "ns-tm3-clos";
+    case RnicFabricModel::NsRosettaClos:
+        return "ns-rosetta-clos";
     case RnicFabricModel::TopologyFreeManifold:
         return "manifold-nn";
     }
@@ -78,6 +91,8 @@ const char* rnicControlModelName(RnicControlModel model) {
     switch (model) {
     case RnicControlModel::InBandCollective:
         return "in-band-collective";
+    case RnicControlModel::PairSelectiveBackpressure:
+        return "pair-selective-backpressure";
     case RnicControlModel::CentralOracle:
         return "central-oracle";
     }
@@ -88,6 +103,8 @@ const char* rnicPacerModelName(RnicPacerModel model) {
     switch (model) {
     case RnicPacerModel::Prbs:
         return "prbs";
+    case RnicPacerModel::OutstandingWindowCredits:
+        return "outstanding-window-credits";
     case RnicPacerModel::CentralPacketSlots:
         return "central-packet-slots";
     case RnicPacerModel::None:

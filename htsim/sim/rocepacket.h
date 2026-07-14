@@ -34,6 +34,7 @@ class RocePacket : public Packet {
                 p->_path_len = 0;
                 p->_direction = NONE;
                 p->set_dst(destination);
+                ++_live_packets;
                 return p;
     }
   
@@ -52,10 +53,16 @@ class RocePacket : public Packet {
                 p->_last_packet = last_packet;
                 p->_path_len = route.size();
                 p->set_dst(destination);
+                ++_live_packets;
                 return p;
     }
-  
-    void free() {_packetdb.freePacket(this);}
+
+    void free() {
+        assert(_live_packets > 0);
+        --_live_packets;
+        _packetdb.freePacket(this);
+    }
+    static std::uint64_t live_packet_count() { return _live_packets; }
     virtual ~RocePacket(){}
     
         inline seq_t seqno() const {return _seqno;}
@@ -72,6 +79,7 @@ class RocePacket : public Packet {
     bool _retransmitted;
     bool _last_packet;  // set to true in the last packet in a flow.
     static PacketDB<RocePacket> _packetdb;
+    static std::uint64_t _live_packets;
 };
 
 class RoceAck : public Packet {
@@ -89,10 +97,16 @@ class RoceAck : public Packet {
                 p->_path_len = 0;
                 p->_direction = NONE;
                 p->set_dst(destination);
+                ++_live_packets;
                 return p;
     }
   
-    void free() {_packetdb.freePacket(this);}
+    void free() {
+        assert(_live_packets > 0);
+        --_live_packets;
+        _packetdb.freePacket(this);
+    }
+    static std::uint64_t live_packet_count() { return _live_packets; }
     inline seq_t ackno() const {return _ackno;}
     inline simtime_picosec ts() const {return _ts;}
     inline void set_ts(simtime_picosec ts) {_ts = ts;}
@@ -104,6 +118,7 @@ class RoceAck : public Packet {
     seq_t _ackno;
     simtime_picosec _ts;
     static PacketDB<RoceAck> _packetdb;
+    static std::uint64_t _live_packets;
 };
 
 
@@ -121,10 +136,16 @@ class RoceNack : public Packet {
                 p->_ackno = ackno;
                 p->_direction = NONE;
                 p->set_dst(destination);
+                ++_live_packets;
                 return p;
     }
   
-    void free() {_packetdb.freePacket(this);}
+    void free() {
+        assert(_live_packets > 0);
+        --_live_packets;
+        _packetdb.freePacket(this);
+    }
+    static std::uint64_t live_packet_count() { return _live_packets; }
     inline seq_t ackno() const {return _ackno;}
     inline simtime_picosec ts() const {return _ts;}
     inline void set_ts(simtime_picosec ts) {_ts = ts;}
@@ -136,6 +157,7 @@ class RoceNack : public Packet {
     seq_t _ackno;
     simtime_picosec _ts;
     static PacketDB<RoceNack> _packetdb;
+    static std::uint64_t _live_packets;
 };
 
 

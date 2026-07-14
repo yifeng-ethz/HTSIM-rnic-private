@@ -1,10 +1,13 @@
 # List of common source files shared among executables.
 set(LIB_SOURCES
+    atlahs_state_trace.cpp
     firstfit.cpp
     vl2_topology.cpp
     fat_tree_topology.cpp
     bcube_topology.cpp
     connection_matrix.cpp
+    dcqcn_atlahs_cli.cpp
+    dcqcn_atlahs_runtime.cpp
     oversubscribed_fat_tree_topology.cpp
     shortflows.cpp
     multihomed_fat_tree_topology.cpp
@@ -13,10 +16,14 @@ set(LIB_SOURCES
     rnic_atlahs_runtime_factory.cpp
     rnic_collective_network_runtime.cpp
     rnic_collective_route.cpp
+    rnic_ss_packet.cpp
+    rnic_ss_route.cpp
+    rnic_ss_runtime.cpp
     star_topology.cpp
     fat_tree_switch.cpp
     fat_tree_switch_factory.cpp
     fat_tree_switch_model.cpp
+    ns_tm3_dcqcn_policy.cpp
     ns_tm3_switch.cpp
     ns_rosetta_switch.cpp
     dragon_fly_topology.cpp
@@ -58,6 +65,7 @@ add_executable(htsim_uec main_uec.cpp)
 add_executable(htsim_uec_sf main_uec_sf.cpp)
 add_executable(htsim_uec_df main_uec_df.cpp)
 add_executable(htsim_rnic main_rnic.cpp)
+add_executable(htsim_dcqcn_atlahs main_dcqcn_atlahs.cpp)
 
 # -------------------------------
 # Linking Executables with Libraries
@@ -73,6 +81,7 @@ set (ALL_EXECUTABLES
     htsim_uec_sf
     htsim_uec_df
     htsim_rnic
+    htsim_dcqcn_atlahs
 )
 foreach(EXECUTABLE ${ALL_EXECUTABLES})
     # Link each executable with the 'htsim' library defined in the parent directory.
@@ -104,6 +113,34 @@ if ( ENABLE_TESTS )
         PROPERTIES TIMEOUT 60
     )
 
+    add_executable(
+        ns_tm3_dcqcn_policy_test
+        ns_tm3_dcqcn_policy_test.cpp)
+    target_link_libraries(
+        ns_tm3_dcqcn_policy_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(ns_tm3_dcqcn_policy_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
+    add_executable(dcqcn_atlahs_cli_test dcqcn_atlahs_cli_test.cpp)
+    target_link_libraries(
+        dcqcn_atlahs_cli_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(dcqcn_atlahs_cli_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
+    add_executable(
+        dcqcn_atlahs_runtime_test
+        dcqcn_atlahs_runtime_test.cpp)
+    target_link_libraries(
+        dcqcn_atlahs_runtime_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(dcqcn_atlahs_runtime_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
     add_executable(ns_rosetta_switch_test ns_rosetta_switch_test.cpp)
     target_link_libraries(
         ns_rosetta_switch_test PRIVATE htsim_dc htsim gtest_main)
@@ -127,6 +164,14 @@ if ( ENABLE_TESTS )
         rnic_collective_network_runtime_test
         PRIVATE htsim_dc htsim gtest_main)
     gtest_discover_tests(rnic_collective_network_runtime_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
+    add_executable(rnic_ss_runtime_test rnic_ss_runtime_test.cpp)
+    target_link_libraries(
+        rnic_ss_runtime_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(rnic_ss_runtime_test
         PROPERTIES LABELS "unit"
         PROPERTIES TIMEOUT 60
     )

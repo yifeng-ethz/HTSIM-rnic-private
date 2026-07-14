@@ -74,6 +74,107 @@ void writeCompletionCsv(
     }
 }
 
+void validateRuntimeQuiescence(AtlahsHtsimApi& api) {
+    auto* assembly = dynamic_cast<RnicAtlahsRuntimeAssembly*>(
+        api.getFlowRuntime());
+    if (assembly == nullptr) {
+        throw std::logic_error(
+            "RNIC ATLAHS runtime is not an assembled profile");
+    }
+
+    if (auto* runtime = dynamic_cast<RnicSsRuntime*>(
+            &assembly->implementation())) {
+        runtime->validateQuiescent();
+        const RnicSsRuntimeStatistics& statistics = runtime->statistics();
+        std::cout
+            << "[RNIC manifest] rnic_ss_bound_kind="
+               "controlled-clos-analytical-envelope"
+            << " rnic_ss_forward_data_observation_ps="
+            << statistics.physical_forward_data_observation_ps
+            << " rnic_ss_last_bp_enable_feedback_ps="
+            << statistics.physical_last_bp_enable_feedback_ps
+            << " rnic_ss_bound_control_loop_ps="
+            << statistics.physical_bound_control_loop_ps
+            << " rnic_ss_maximum_bp_enable_fan_in="
+            << statistics.maximum_bp_enable_fan_in
+            << " rnic_ss_control_loop_window_packets="
+            << statistics.control_loop_window_packets
+            << " rnic_ss_configured_window_below_control_loop="
+            << (statistics.configured_window_below_control_loop
+                    ? "true" : "false")
+            << " rnic_ss_analytical_queue_bound_bytes="
+            << statistics.analytical_queue_bound_bytes
+            << '\n';
+        std::cout
+            << "[RNIC manifest] rnic_ss_new_data_packets="
+            << statistics.new_data_packets
+            << " rnic_ss_sack_retransmissions="
+            << statistics.sack_retransmissions
+            << " rnic_ss_rto_retransmissions="
+            << statistics.rto_retransmissions
+            << " rnic_ss_rto_deadline_pushes="
+            << statistics.rto_deadline_pushes
+            << " rnic_ss_rto_deadline_stale_pops="
+            << statistics.rto_deadline_stale_pops
+            << " rnic_ss_rto_deadline_due_pops="
+            << statistics.rto_deadline_due_pops
+            << " rnic_ss_rto_deadline_heap_high_watermark="
+            << statistics.rto_deadline_heap_high_watermark
+            << " rnic_ss_fabric_drops="
+            << statistics.fabric_drops
+            << " rnic_ss_source_priority_violations="
+            << statistics.source_priority_violations
+            << '\n';
+        return;
+    }
+
+    if (auto* runtime = dynamic_cast<RnicCollectiveNetworkRuntime*>(
+            &assembly->implementation())) {
+        runtime->validateQuiescent();
+        const RnicCollectiveRecoveryStatistics& recovery =
+            runtime->recoveryStatistics();
+        std::cout
+            << "[RNIC manifest] rnic_cn_late_data_packets="
+            << recovery.late_data_packets
+            << " rnic_cn_gap_nacks_dispatched="
+            << recovery.gap_nacks_dispatched
+            << " rnic_cn_gap_nacks_received="
+            << recovery.gap_nacks_received
+            << " rnic_cn_selective_retransmissions="
+            << recovery.selective_retransmissions
+            << " rnic_cn_selective_retransmission_wire_bytes="
+            << recovery.selective_retransmission_wire_bytes
+            << " rnic_cn_duplicate_gap_nacks_ignored="
+            << recovery.duplicate_gap_nacks_ignored
+            << " rnic_cn_duplicate_data_packets_ignored="
+            << recovery.duplicate_data_packets_ignored
+            << " rnic_cn_maximum_retry_attempt_observed="
+            << recovery.maximum_retry_attempt_observed
+            << '\n';
+    }
+}
+
+void writeRequestedStateTrace(
+        AtlahsHtsimApi& api,
+        const RnicAtlahsCliOptions& options) {
+    if (!options.collective.state_trace_csv.has_value()) {
+        return;
+    }
+    auto* assembly = dynamic_cast<RnicAtlahsRuntimeAssembly*>(
+        api.getFlowRuntime());
+    if (assembly == nullptr) {
+        throw std::logic_error(
+            "RNIC state trace runtime is not an assembled profile");
+    }
+    auto* runtime = dynamic_cast<RnicCollectiveNetworkRuntime*>(
+        &assembly->implementation());
+    if (runtime == nullptr) {
+        throw std::logic_error(
+            "RNIC state trace is only available for rnic-cn");
+    }
+    runtime->writeStateTraceCsv();
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -138,6 +239,8 @@ int main(int argc, char* argv[]) {
             throw std::logic_error(
                 "ATLAHS returned before RNIC physical quiescence");
         }
+        validateRuntimeQuiescence(api);
+        writeRequestedStateTrace(api, options);
         if (options.completion_csv.has_value()) {
             writeCompletionCsv(
                 *options.completion_csv,

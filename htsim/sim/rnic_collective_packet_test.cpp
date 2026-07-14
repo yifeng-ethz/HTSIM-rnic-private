@@ -112,6 +112,8 @@ TEST(RnicCollectivePacketTest,
     EXPECT_EQ(packet->data().payload_byte_offset, 0U);
     EXPECT_EQ(packet->data().extent.payloadBytes(), 1000U);
     EXPECT_EQ(packet->data().eta_ps, 987654321U);
+    EXPECT_EQ(packet->data().transmission_attempt, 0U);
+    EXPECT_FALSE(packet->data().repairs_lifecycle_id.has_value());
     EXPECT_FALSE(packet->isFinalDataPacket());
     EXPECT_EQ(packet->finalLedger().total_wire_bytes, 1628U);
     ASSERT_EQ(observer->observations.size(), 1U);
@@ -344,6 +346,41 @@ TEST(RnicCollectivePacketTest,
     EXPECT_EQ(packet->finalLedger().total_payload_bytes, 1500U);
     EXPECT_EQ(packet->finalLedger().total_wire_bytes, 1628U);
     EXPECT_EQ(packet->finalLedger().total_data_packets, 2U);
+    EXPECT_THROW(packet->data(), std::logic_error);
+    packet->sendOn();
+    EXPECT_EQ(observer->observations.back().lifecycle,
+              RnicCollectivePacketLifecycle::ENDPOINT_CONSUMED);
+}
+
+TEST(RnicCollectivePacketTest,
+     GapNackCarriesExactRejectedLifecycleAtHighPriority) {
+    PacketFlow flow(nullptr);
+    ConsumingEndpoint endpoint;
+    Route route = routeTo(endpoint);
+    auto observer = std::make_shared<RecordingObserver>();
+    const RnicCollectiveGapNackMetadata gap{
+        7, 7000, RnicPacketExtent(936, 1000), 123456, 91, 2};
+
+    RnicCollectivePacket* packet = RnicCollectivePacket::newGapNack(
+        flow,
+        route,
+        94,
+        0x200000004ULL,
+        9,
+        4,
+        64,
+        gap,
+        observer);
+
+    EXPECT_EQ(packet->kind(), RnicCollectivePacketKind::GAP_NACK);
+    EXPECT_EQ(packet->priority(), Packet::PRIO_HI);
+    EXPECT_EQ(packet->gapNack().packet_index, 7U);
+    EXPECT_EQ(packet->gapNack().payload_byte_offset, 7000U);
+    EXPECT_EQ(packet->gapNack().extent.payloadBytes(), 936U);
+    EXPECT_EQ(packet->gapNack().extent.wireBytes(), 1000U);
+    EXPECT_EQ(packet->gapNack().rejected_eta_ps, 123456U);
+    EXPECT_EQ(packet->gapNack().rejected_lifecycle_id, 91U);
+    EXPECT_EQ(packet->gapNack().requested_transmission_attempt, 2U);
     EXPECT_THROW(packet->data(), std::logic_error);
     packet->sendOn();
     EXPECT_EQ(observer->observations.back().lifecycle,

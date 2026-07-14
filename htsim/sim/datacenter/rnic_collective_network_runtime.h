@@ -7,8 +7,10 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
 
 #include "atlahs_flow_runtime.h"
+#include "atlahs_state_trace.h"
 #include "eventlist.h"
 #include "rnic_collective_control.h"
 #include "rnic_collective_packet.h"
@@ -17,6 +19,7 @@
 
 class FatTreeTopology;
 class RnicNode;
+class RnicCollectiveNetworkRuntimeTestPeer;
 
 struct RnicCollectiveNetworkConfig {
     using TransitCalibration =
@@ -33,6 +36,26 @@ struct RnicCollectiveNetworkConfig {
     std::uint32_t margin_ppm;
     std::uint64_t control_wire_bytes;
     TransitCalibration calibrated_transit_ps;
+    // Optional exact event-boundary ns-tm3 queue trace.  Empty keeps the
+    // observer detached and does not alter the switch hot path.
+    std::optional<std::string> queue_trace_csv;
+    // Optional sparse sender/control state trace. It is buffered in memory
+    // and atomically installed only after validateQuiescent().
+    std::optional<std::string> state_trace_csv;
+    // Maximum number of selective DATA transmissions after the original.
+    // A retry that is still late at this attempt fails the run explicitly.
+    std::uint32_t maximum_repair_retries{8};
+};
+
+struct RnicCollectiveRecoveryStatistics {
+    std::uint64_t late_data_packets{0};
+    std::uint64_t gap_nacks_dispatched{0};
+    std::uint64_t gap_nacks_received{0};
+    std::uint64_t selective_retransmissions{0};
+    std::uint64_t selective_retransmission_wire_bytes{0};
+    std::uint64_t duplicate_gap_nacks_ignored{0};
+    std::uint64_t duplicate_data_packets_ignored{0};
+    std::uint32_t maximum_retry_attempt_observed{0};
 };
 
 struct RnicCollectiveFlowSnapshot {
@@ -46,6 +69,16 @@ struct RnicCollectiveFlowSnapshot {
     std::uint64_t delivered_payload_bytes;
     std::uint64_t delivered_wire_bytes;
     std::uint64_t delivered_data_packets;
+    std::uint64_t late_data_packets;
+    std::uint64_t gap_nacks_dispatched;
+    std::uint64_t gap_nacks_received;
+    std::uint64_t selective_retransmissions;
+    std::uint64_t selective_retransmission_wire_bytes;
+    std::uint64_t duplicate_gap_nacks_ignored;
+    std::uint64_t duplicate_data_packets_ignored;
+    std::uint32_t maximum_retry_attempt_observed;
+    std::size_t missing_data_packets;
+    std::size_t ready_out_of_order_packets;
     bool declaration_dispatched;
     bool retire_dispatched;
     bool retire_received;
@@ -86,6 +119,7 @@ public:
     std::size_t receiverActiveFlowCount(std::uint32_t node_id) const;
     std::size_t pendingFabricPacketCount() const noexcept;
     std::size_t pendingDestinationDataCount() const noexcept;
+    const RnicCollectiveRecoveryStatistics& recoveryStatistics() const noexcept;
     bool hasPendingPhysicalWork() const noexcept override;
     const RnicNode& node(std::uint32_t node_id) const;
 
@@ -93,12 +127,21 @@ public:
     // drivers. Completed flow history may remain, but no physical/control
     // work, receiver membership, or routed packet may remain live.
     void validateQuiescent() const;
+    std::size_t stateTraceRowCount() const noexcept;
+    void writeStateTraceCsv() const;
 
 private:
     struct Impl;
 
     void doNextEvent() override;
     bool isTraffic() override { return true; }
+
+    // Narrow, private fault-injection seam used to prove replay
+    // idempotence with real routed packets.  It is deliberately inaccessible
+    // to drivers and profiles, so production simulations cannot enable it.
+    void duplicateCurrentGapNackForTesting(AtlahsFlowId flow_id);
+    void duplicateCurrentRepairForTesting(AtlahsFlowId flow_id);
+    friend class RnicCollectiveNetworkRuntimeTestPeer;
 
     std::unique_ptr<Impl> _impl;
 };

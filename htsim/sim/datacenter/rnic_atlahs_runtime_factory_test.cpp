@@ -139,7 +139,7 @@ TEST(RnicAtlahsRuntimeFactoryTest,
 
     std::size_t completions = 0;
     runtime->setup(32, [&completions](AtlahsFlowId) { ++completions; });
-    // Full-wire and short-tail DATA on same- and cross-ToR paths exercise all
+    // Full-wire and short-tail DATA on same- and cross-leaf paths exercise all
     // packet-extent-aware physical no-queue calibrations.
     runtime->send({0x100000001ULL,
                    0,

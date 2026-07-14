@@ -73,6 +73,16 @@ void RnicCollectivePacket::validateData(
         throw std::invalid_argument(
             "rnic-cn DATA packet must advance the payload ledger");
     }
+    if ((metadata.transmission_attempt == 0)
+        != !metadata.repairs_lifecycle_id.has_value()) {
+        throw std::invalid_argument(
+            "rnic-cn DATA repair attempt and replaced lifecycle must agree");
+    }
+    if (metadata.repairs_lifecycle_id.has_value()
+        && *metadata.repairs_lifecycle_id == 0) {
+        throw std::invalid_argument(
+            "rnic-cn DATA cannot repair lifecycle zero");
+    }
     checkedWireBytes(metadata.extent.wireBytes());
     if (metadata.packet_index >= ledger.total_data_packets) {
         throw std::out_of_range(
@@ -153,6 +163,21 @@ void RnicCollectivePacket::validateGrant(
     }
 }
 
+void RnicCollectivePacket::validateGapNack(
+        const RnicCollectiveGapNackMetadata& gap_nack) {
+    if (gap_nack.extent.payloadBytes() == 0
+        || gap_nack.extent.wireBytes() == 0) {
+        throw std::invalid_argument(
+            "rnic-cn GAP_NACK requires a nonempty logical packet");
+    }
+    checkedWireBytes(gap_nack.extent.wireBytes());
+    if (gap_nack.rejected_lifecycle_id == 0
+        || gap_nack.requested_transmission_attempt == 0) {
+        throw std::invalid_argument(
+            "rnic-cn GAP_NACK requires a rejected lifecycle and retry");
+    }
+}
+
 std::uint64_t RnicCollectivePacket::takeLifecycleId() {
     if (_next_lifecycle_id == 0) {
         throw std::overflow_error("rnic-cn packet lifecycle id exhausted");
@@ -183,6 +208,7 @@ RnicCollectivePacket* RnicCollectivePacket::newData(
         std::nullopt,
         std::nullopt,
         std::nullopt,
+        std::nullopt,
         std::move(observer));
 }
 
@@ -208,6 +234,7 @@ RnicCollectivePacket* RnicCollectivePacket::newDeclare(
         checkedWireBytes(wire_bytes),
         std::nullopt,
         metadata,
+        std::nullopt,
         std::nullopt,
         std::nullopt,
         std::move(observer));
@@ -236,6 +263,7 @@ RnicCollectivePacket* RnicCollectivePacket::newAccept(
         std::nullopt,
         grant,
         std::nullopt,
+        std::nullopt,
         std::move(observer));
 }
 
@@ -261,6 +289,35 @@ RnicCollectivePacket* RnicCollectivePacket::newGrantUpdate(
         std::nullopt,
         std::nullopt,
         grant,
+        std::nullopt,
+        std::nullopt,
+        std::move(observer));
+}
+
+RnicCollectivePacket* RnicCollectivePacket::newGapNack(
+        PacketFlow& flow,
+        const Route& route,
+        packetid_t htsim_packet_id,
+        AtlahsFlowId flow_id,
+        std::uint32_t source,
+        std::uint32_t destination,
+        std::uint64_t wire_bytes,
+        const RnicCollectiveGapNackMetadata& gap_nack,
+        std::shared_ptr<RnicCollectivePacketLifecycleObserver> observer) {
+    validateGapNack(gap_nack);
+    return newPacket(
+        flow,
+        route,
+        htsim_packet_id,
+        RnicCollectivePacketKind::GAP_NACK,
+        flow_id,
+        source,
+        destination,
+        checkedWireBytes(wire_bytes),
+        std::nullopt,
+        std::nullopt,
+        std::nullopt,
+        gap_nack,
         std::nullopt,
         std::move(observer));
 }
@@ -288,6 +345,7 @@ RnicCollectivePacket* RnicCollectivePacket::newRetire(
         std::nullopt,
         std::nullopt,
         std::nullopt,
+        std::nullopt,
         final_ledger,
         std::move(observer));
 }
@@ -304,6 +362,7 @@ RnicCollectivePacket* RnicCollectivePacket::newPacket(
         std::optional<RnicCollectiveDataMetadata> data,
         std::optional<RnicCollectiveDeclareMetadata> declaration,
         std::optional<RnicCollectiveGrant> grant,
+        std::optional<RnicCollectiveGapNackMetadata> gap_nack,
         std::optional<RnicCollectiveFinalLedger> retire_ledger,
         std::shared_ptr<RnicCollectivePacketLifecycleObserver> observer) {
     validateRoute(route);
@@ -315,16 +374,17 @@ RnicCollectivePacket* RnicCollectivePacket::newPacket(
     const bool has_data = data.has_value();
     const bool has_declaration = declaration.has_value();
     const bool has_grant = grant.has_value();
+    const bool has_gap_nack = gap_nack.has_value();
     const bool has_retire_ledger = retire_ledger.has_value();
     switch (kind) {
     case RnicCollectivePacketKind::DATA:
-        if (!has_data || has_declaration || has_grant
+        if (!has_data || has_declaration || has_grant || has_gap_nack
             || has_retire_ledger) {
             throw std::logic_error("rnic-cn DATA metadata shape is invalid");
         }
         break;
     case RnicCollectivePacketKind::DECLARE:
-        if (has_data || !has_declaration || has_grant
+        if (has_data || !has_declaration || has_grant || has_gap_nack
             || has_retire_ledger) {
             throw std::logic_error(
                 "rnic-cn DECLARE metadata shape is invalid");
@@ -332,13 +392,20 @@ RnicCollectivePacket* RnicCollectivePacket::newPacket(
         break;
     case RnicCollectivePacketKind::ACCEPT:
     case RnicCollectivePacketKind::GRANT_UPDATE:
-        if (has_data || has_declaration || !has_grant
+        if (has_data || has_declaration || !has_grant || has_gap_nack
             || has_retire_ledger) {
             throw std::logic_error("rnic-cn grant metadata shape is invalid");
         }
         break;
+    case RnicCollectivePacketKind::GAP_NACK:
+        if (has_data || has_declaration || has_grant || !has_gap_nack
+            || has_retire_ledger) {
+            throw std::logic_error(
+                "rnic-cn GAP_NACK metadata shape is invalid");
+        }
+        break;
     case RnicCollectivePacketKind::RETIRE:
-        if (has_data || has_declaration || has_grant
+        if (has_data || has_declaration || has_grant || has_gap_nack
             || !has_retire_ledger) {
             throw std::logic_error("rnic-cn RETIRE metadata shape is invalid");
         }
@@ -359,6 +426,7 @@ RnicCollectivePacket* RnicCollectivePacket::newPacket(
         std::move(data),
         std::move(declaration),
         std::move(grant),
+        std::move(gap_nack),
         std::move(retire_ledger),
         std::move(observer),
         lifecycle_id);
@@ -377,6 +445,7 @@ void RnicCollectivePacket::initialize(
         std::optional<RnicCollectiveDataMetadata> data,
         std::optional<RnicCollectiveDeclareMetadata> declaration,
         std::optional<RnicCollectiveGrant> grant,
+        std::optional<RnicCollectiveGapNackMetadata> gap_nack,
         std::optional<RnicCollectiveFinalLedger> retire_ledger,
         std::shared_ptr<RnicCollectivePacketLifecycleObserver> observer,
         std::uint64_t lifecycle_id) {
@@ -409,6 +478,7 @@ void RnicCollectivePacket::initialize(
     _data = std::move(data);
     _declaration = std::move(declaration);
     _grant = std::move(grant);
+    _gap_nack = std::move(gap_nack);
     _retire_ledger = std::move(retire_ledger);
     _observer = std::move(observer);
     _pool_state = PoolState::IN_FLIGHT;
@@ -437,6 +507,15 @@ const RnicCollectiveGrant& RnicCollectivePacket::grant() const {
         throw std::logic_error("rnic-cn packet does not carry grant metadata");
     }
     return *_grant;
+}
+
+const RnicCollectiveGapNackMetadata&
+RnicCollectivePacket::gapNack() const {
+    if (!_gap_nack.has_value()) {
+        throw std::logic_error(
+            "rnic-cn packet does not carry GAP_NACK metadata");
+    }
+    return *_gap_nack;
 }
 
 const RnicCollectiveFinalLedger&
@@ -524,6 +603,7 @@ void RnicCollectivePacket::terminate(
     _data.reset();
     _declaration.reset();
     _grant.reset();
+    _gap_nack.reset();
     _retire_ledger.reset();
     _pool_state = PoolState::RECYCLED;
 

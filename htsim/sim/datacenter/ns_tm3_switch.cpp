@@ -2,9 +2,12 @@
 #include "ns_tm3_switch.h"
 
 #include "fat_tree_topology.h"
+#include "ns_tm3_dcqcn_policy.h"
+#include "eth_pause_packet.h"
 
 #include <algorithm>
 #include <cassert>
+#include <iterator>
 #include <stdexcept>
 #include <utility>
 
@@ -38,6 +41,19 @@ void NsTm3EgressSerializer::bind(NsTm3Switch& owner,
 void NsTm3EgressSerializer::receivePacket(Packet& pkt) {
     if (_owner == nullptr) {
         throw std::logic_error("unbound ns-tm3 egress serializer");
+    }
+    if (pkt.type() == ETH_PAUSE) {
+        const NsTm3DcqcnPolicy* policy = _owner->dcqcn_policy();
+        if (policy == nullptr || !policy->config().pfc_enabled) {
+            throw std::invalid_argument(
+                "ns-tm3 egress accepts PFC only with the opt-in DCQCN "
+                "policy");
+        }
+        const auto& pause = static_cast<const EthPausePacket&>(pkt);
+        _data_paused = pause.sleepTime() > 0;
+        pkt.free();
+        _owner->egress_pause_state_changed(_egress_id);
+        return;
     }
     if (_authorized_dispatch != &pkt) {
         throw std::logic_error(
@@ -136,6 +152,34 @@ NsTm3Switch::NsTm3Switch(EventList& eventlist, const string& name,
     }
 }
 
+NsTm3Switch::~NsTm3Switch() = default;
+
+void NsTm3Switch::configure_dcqcn_policy(
+        const NsTm3DcqcnPolicyConfig& config) {
+    if (_dcqcn_policy != nullptr) {
+        throw std::logic_error("ns-tm3 DCQCN policy already configured");
+    }
+    const std::uint64_t ecn_domain_id =
+        (static_cast<std::uint64_t>(getType()) << 32) | getID();
+    _dcqcn_policy = std::make_unique<NsTm3DcqcnPolicy>(
+        eventlist(), config, ecn_domain_id);
+}
+
+void NsTm3Switch::set_voq_arbitration(
+        NsTm3VoqArbitration arbitration) {
+    if (_shared_buffer_occupancy != 0) {
+        throw std::logic_error(
+            "ns-tm3 cannot change VoQ arbitration with buffered packets");
+    }
+    for (const EgressState& egress : _egresses) {
+        if (egress.serializer->is_busy()) {
+            throw std::logic_error(
+                "ns-tm3 cannot change VoQ arbitration while serializing");
+        }
+    }
+    _voq_arbitration = arbitration;
+}
+
 int NsTm3Switch::addPort(BaseQueue* queue) {
     auto* serializer = dynamic_cast<NsTm3EgressSerializer*>(queue);
     if (serializer == nullptr) {
@@ -175,6 +219,9 @@ void NsTm3Switch::receive_from_physical_ingress(Packet& pkt,
     if (!_pipeline_ingress.emplace(&pkt, ingress_id).second) {
         throw std::logic_error(
             "packet entered the ns-tm3 switch pipeline twice");
+    }
+    if (_dcqcn_policy != nullptr) {
+        _dcqcn_policy->observe_physical_ingress(pkt, ingress_id);
     }
 
     schedule_through_switch_pipeline(pkt);
@@ -240,12 +287,20 @@ NsTm3EgressSerializer& NsTm3Switch::resolve_selected_egress(Packet& pkt) {
 void NsTm3Switch::enqueue(Packet& pkt, uint32_t ingress_id,
                               NsTm3EgressSerializer& egress) {
     const mem_b packet_bytes = pkt.size();
+    const PacketSummary packet{
+        ingress_id,
+        egress.egress_id(),
+        pkt.priority(),
+        pkt.flow_id(),
+        pkt.id(),
+        packet_bytes};
     if (packet_bytes > _shared_buffer_capacity ||
         _shared_buffer_occupancy >
             _shared_buffer_capacity - packet_bytes) {
         _buffer_counters.dropped_packets++;
         _buffer_counters.dropped_bytes += packet_bytes;
         egress.note_shared_buffer_drop(pkt);
+        emit_queue_observation(NsTm3QueueTransition::Dropped, packet);
         pkt.free();
         return;
     }
@@ -256,28 +311,74 @@ void NsTm3Switch::enqueue(Packet& pkt, uint32_t ingress_id,
         .push_back(&pkt);
     state.buffered_bytes += packet_bytes;
     _shared_buffer_occupancy += packet_bytes;
+    if (!state.enqueue_time_ps.emplace(&pkt, EventList::now()).second) {
+        throw std::logic_error(
+            "packet entered the same ns-tm3 egress VoQ twice");
+    }
+    state.statistics.buffered_high_watermark = std::max(
+        state.statistics.buffered_high_watermark, state.buffered_bytes);
+    state.statistics.backlog_high_watermark = std::max(
+        state.statistics.backlog_high_watermark,
+        state.buffered_bytes + state.serializer->in_service_bytes());
     _shared_buffer_high_watermark =
         std::max(_shared_buffer_high_watermark, _shared_buffer_occupancy);
     _buffer_counters.admitted_packets++;
     _buffer_counters.admitted_bytes += packet_bytes;
+    if (_dcqcn_policy != nullptr) {
+        _dcqcn_policy->packet_enqueued(pkt, ingress_id);
+    }
     egress.note_packet_enqueued(pkt);
+    emit_queue_observation(NsTm3QueueTransition::Enqueued, packet);
 
     schedule_egress(egress.egress_id());
 }
 
-Packet* NsTm3Switch::select_next_packet(EgressState& egress) {
-    for (TrafficClassVoqs& traffic_class : egress.traffic_classes) {
+std::optional<NsTm3Switch::SelectedPacket>
+NsTm3Switch::select_next_packet(EgressState& egress) {
+    for (std::size_t class_index = 0;
+         class_index < egress.traffic_classes.size();
+         ++class_index) {
+        if (class_index == traffic_class(Packet::PRIO_LO)
+            && egress.serializer->data_is_paused()) {
+            continue;
+        }
+        TrafficClassVoqs& traffic_class =
+            egress.traffic_classes[class_index];
         auto& voqs = traffic_class.packets_by_ingress;
         if (voqs.empty()) {
             continue;
         }
 
-        auto selected = traffic_class.has_last_served_ingress
-                            ? voqs.upper_bound(
-                                  traffic_class.last_served_ingress)
-                            : voqs.begin();
-        if (selected == voqs.end()) {
-            selected = voqs.begin();
+        auto selected = voqs.begin();
+        if (_voq_arbitration
+                == NsTm3VoqArbitration::IngressRoundRobin) {
+            selected = traffic_class.has_last_served_ingress
+                           ? voqs.upper_bound(
+                                 traffic_class.last_served_ingress)
+                           : voqs.begin();
+            if (selected == voqs.end()) {
+                selected = voqs.begin();
+            }
+        } else {
+            auto selected_time =
+                egress.enqueue_time_ps.find(selected->second.front());
+            if (selected_time == egress.enqueue_time_ps.end()) {
+                throw std::logic_error(
+                    "ns-tm3 oldest-HOL arbitration lost an enqueue time");
+            }
+            for (auto candidate = std::next(selected);
+                 candidate != voqs.end(); ++candidate) {
+                auto candidate_time = egress.enqueue_time_ps.find(
+                    candidate->second.front());
+                if (candidate_time == egress.enqueue_time_ps.end()) {
+                    throw std::logic_error(
+                        "ns-tm3 oldest-HOL arbitration lost an enqueue time");
+                }
+                if (candidate_time->second < selected_time->second) {
+                    selected = candidate;
+                    selected_time = candidate_time;
+                }
+            }
         }
 
         const uint32_t ingress_id = selected->first;
@@ -289,9 +390,32 @@ Packet* NsTm3Switch::select_next_packet(EgressState& egress) {
 
         traffic_class.has_last_served_ingress = true;
         traffic_class.last_served_ingress = ingress_id;
-        return packet;
+
+        auto queued = egress.enqueue_time_ps.find(packet);
+        if (queued == egress.enqueue_time_ps.end()
+            || queued->second > EventList::now()) {
+            throw std::logic_error(
+                "ns-tm3 egress lost its packet enqueue timestamp");
+        }
+        const simtime_picosec wait_ps = EventList::now() - queued->second;
+        egress.enqueue_time_ps.erase(queued);
+        if (wait_ps > egress.statistics.max_queue_wait_ps) {
+            egress.statistics.max_queue_wait_ps = wait_ps;
+            egress.statistics.max_queue_wait_observed_ps = EventList::now();
+            egress.statistics.max_queue_wait_ingress_id = ingress_id;
+            egress.statistics.max_queue_wait_flow_id = packet->flow_id();
+            egress.statistics.max_queue_wait_packet_id = packet->id();
+        }
+        if (_dcqcn_policy != nullptr) {
+            _dcqcn_policy->packet_selected(
+                *packet,
+                ingress_id,
+                egress.serializer->egress_id(),
+                egress.buffered_bytes);
+        }
+        return SelectedPacket{packet, ingress_id};
     }
-    return nullptr;
+    return std::nullopt;
 }
 
 void NsTm3Switch::schedule_egress(uint32_t egress_id) {
@@ -300,10 +424,12 @@ void NsTm3Switch::schedule_egress(uint32_t egress_id) {
         return;
     }
 
-    Packet* packet = select_next_packet(state);
-    if (packet == nullptr) {
+    const std::optional<SelectedPacket> selected =
+        select_next_packet(state);
+    if (!selected.has_value()) {
         return;
     }
+    Packet* packet = selected->packet;
 
     const mem_b packet_bytes = packet->size();
     if (state.buffered_bytes < packet_bytes ||
@@ -322,11 +448,63 @@ void NsTm3Switch::schedule_egress(uint32_t egress_id) {
     _buffer_counters.dequeued_packets++;
     _buffer_counters.dequeued_bytes += packet_bytes;
 
+    if (state.active_packet.has_value()) {
+        throw std::logic_error(
+            "ns-tm3 idle serializer retained an active packet summary");
+    }
+    state.active_packet = PacketSummary{
+        selected->ingress_id,
+        egress_id,
+        packet->priority(),
+        packet->flow_id(),
+        packet->id(),
+        packet_bytes};
     state.serializer->dispatch(*packet);
+    emit_queue_observation(
+        NsTm3QueueTransition::Dequeued, *state.active_packet);
 }
 
 void NsTm3Switch::egress_serialization_complete(uint32_t egress_id) {
+    EgressState& state = egress_state(egress_id);
+    if (!state.active_packet.has_value()) {
+        throw std::logic_error(
+            "ns-tm3 serializer completed without an active packet summary");
+    }
+    emit_queue_observation(
+        NsTm3QueueTransition::SerializationCompleted,
+        *state.active_packet);
+    state.active_packet.reset();
     schedule_egress(egress_id);
+}
+
+void NsTm3Switch::egress_pause_state_changed(uint32_t egress_id) {
+    schedule_egress(egress_id);
+}
+
+void NsTm3Switch::emit_queue_observation(
+        NsTm3QueueTransition transition,
+        const PacketSummary& packet) noexcept {
+    std::shared_ptr<NsTm3QueueObserver> observer = _queue_observer;
+    if (!observer) {
+        return;
+    }
+    const EgressState& state = _egresses[packet.egress_id];
+    const mem_b in_service = state.serializer->in_service_bytes();
+    observer->observe(NsTm3QueueObservation{
+        transition,
+        EventList::now(),
+        static_cast<FatTreeSwitch::switch_type>(getType()),
+        getID(),
+        packet.ingress_id,
+        packet.egress_id,
+        packet.priority,
+        packet.flow_id,
+        packet.packet_id,
+        packet.packet_bytes,
+        state.buffered_bytes,
+        in_service,
+        state.buffered_bytes + in_service,
+        _shared_buffer_occupancy});
 }
 
 mem_b NsTm3Switch::egress_buffered_bytes(uint32_t egress_id) const {
@@ -336,6 +514,11 @@ mem_b NsTm3Switch::egress_buffered_bytes(uint32_t egress_id) const {
 mem_b NsTm3Switch::egress_backlog_bytes(uint32_t egress_id) const {
     const EgressState& state = egress_state(egress_id);
     return state.buffered_bytes + state.serializer->in_service_bytes();
+}
+
+const NsTm3EgressStatistics& NsTm3Switch::egress_statistics(
+        uint32_t egress_id) const {
+    return egress_state(egress_id).statistics;
 }
 
 NsTm3Switch::EgressState& NsTm3Switch::egress_state(

@@ -7,12 +7,22 @@
 
 TEST(RnicProfileTest, ParsesOnlyPublicProfileNames) {
     EXPECT_EQ(parseRnicProfile("rnic-cn"), RnicProfile::CollectiveNetwork);
+    EXPECT_EQ(parseRnicProfile("rnic-ss"), RnicProfile::SlingshotLike);
     EXPECT_EQ(parseRnicProfile("rnic-nn"), RnicProfile::PacketizedManifold);
     EXPECT_EQ(parseRnicProfile("rnic-nn-fluid"), RnicProfile::FluidManifold);
 
     EXPECT_THROW(parseRnicProfile("rnic-cc"), std::invalid_argument);
     EXPECT_THROW(parseRnicProfile("tm3"), std::invalid_argument);
     EXPECT_THROW(parseRnicProfile("rnic-null"), std::invalid_argument);
+}
+
+TEST(RnicProfileTest, SlingshotLikeUsesNsRosettaAndPairSelectiveCredits) {
+    const RnicProfileSpec spec = resolveRnicProfile(RnicProfile::SlingshotLike);
+
+    EXPECT_EQ(spec.fabric, RnicFabricModel::NsRosettaClos);
+    EXPECT_EQ(spec.traffic, RnicTrafficModel::Packetized);
+    EXPECT_EQ(spec.control, RnicControlModel::PairSelectiveBackpressure);
+    EXPECT_EQ(spec.pacer, RnicPacerModel::OutstandingWindowCredits);
 }
 
 TEST(RnicProfileTest, CollectiveNetworkUsesNsTm3AndPrbs) {
@@ -44,12 +54,15 @@ TEST(RnicProfileTest, FluidManifoldHasNoPacketPacer) {
 
 TEST(RnicProfileTest, NamesAreStableManifestValues) {
     for (const RnicProfile profile : {RnicProfile::CollectiveNetwork,
+                                      RnicProfile::SlingshotLike,
                                       RnicProfile::PacketizedManifold,
                                       RnicProfile::FluidManifold}) {
         EXPECT_EQ(parseRnicProfile(rnicProfileName(profile)), profile);
     }
 
     EXPECT_STREQ(rnicFabricModelName(RnicFabricModel::NsTm3Clos), "ns-tm3-clos");
+    EXPECT_STREQ(rnicFabricModelName(RnicFabricModel::NsRosettaClos),
+                 "ns-rosetta-clos");
     EXPECT_STREQ(rnicFabricModelName(RnicFabricModel::TopologyFreeManifold),
                  "manifold-nn");
     EXPECT_STREQ(rnicTrafficModelName(RnicTrafficModel::Packetized), "packetized");

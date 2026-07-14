@@ -136,6 +136,138 @@ TEST(RnicTxPortTest, ControlAndDataShareOnePhysicalSerializer) {
     EXPECT_EQ(port.physicalSerializerAvailablePs(), data.end_ps);
 }
 
+TEST(RnicTxPortTest,
+     SelectiveRepairUsesTheFlowsPrbsOpportunityBehindControl) {
+    RnicTxPort port(1, 8000000000000ULL, 1000, 7);
+    port.addFlow(10, 1000, 0);
+
+    // An idle PRBS result reserves a virtual DATA opportunity without using
+    // the physical wire. High-priority control may use that hole. A repair is
+    // not a separate priority class: it becomes this flow's head at the next
+    // ordinary PRBS opportunity.
+    const RnicTxOpportunity idle = port.dispatchOpportunity(0);
+    ASSERT_FALSE(idle.packet.has_value());
+    ASSERT_EQ(idle.end_ps, 1000U);
+    const RnicWireSerializationInterval control =
+        port.dispatchControl(100, 64);
+    EXPECT_EQ(control.start_ps, 100U);
+    EXPECT_EQ(control.end_ps, 164U);
+
+    port.setWireRateGrant(10, 8000000000000ULL);
+    port.setDataEligible(10, true);
+    port.setSelectiveRepairPending(10, true);
+    const RnicTxOpportunity repair = port.dispatchOpportunity(
+        idle.end_ps, {{10, 4, 400, {200, 200}}});
+    ASSERT_TRUE(repair.packet.has_value());
+    EXPECT_EQ(repair.packet->kind, RnicTxPacketKind::SelectiveRepair);
+    EXPECT_EQ(repair.packet->packet_index, 4U);
+    EXPECT_EQ(repair.packet->payload_byte_offset, 400U);
+    EXPECT_EQ(repair.start_ps, idle.end_ps);
+    EXPECT_EQ(repair.end_ps, 1200U);
+    EXPECT_EQ(port.nextDataOpportunityPs(), repair.end_ps);
+    EXPECT_EQ(port.physicalSerializerAvailablePs(), repair.end_ps);
+    EXPECT_EQ(port.flowPayloadBytesDispatched(10), 0U);
+
+    port.setSelectiveRepairPending(10, false);
+    const RnicTxOpportunity fresh =
+        port.dispatchOpportunity(repair.end_ps);
+    ASSERT_TRUE(fresh.packet.has_value());
+    EXPECT_EQ(fresh.packet->kind, RnicTxPacketKind::FreshData);
+    EXPECT_EQ(fresh.start_ps, repair.end_ps);
+    EXPECT_EQ(fresh.packet->packet_index, 0U);
+    EXPECT_EQ(fresh.packet->payload_byte_offset, 0U);
+    EXPECT_EQ(fresh.end_ps, 2200U);
+}
+
+TEST(RnicTxPortTest,
+     SelectiveRepairConsumesExactlyTheFreshCandidatesGoldenPrbsHits) {
+    RnicTxPort fresh(9, 100000000000ULL, 1000, 20260713);
+    RnicTxPort repair(9, 100000000000ULL, 1000, 20260713);
+    fresh.addFlow(10, 1000000000, 0);
+    repair.addFlow(10, 0, 0);
+    fresh.setDataEligible(10, true);
+    repair.setDataEligible(10, true);
+    fresh.setWireRateGrant(10, 30000000000ULL);
+    repair.setWireRateGrant(10, 30000000000ULL);
+    repair.setSelectiveRepairPending(10, true);
+
+    uint64_t fresh_time = 0;
+    uint64_t repair_time = 0;
+    const std::vector<RnicTxRepairCandidate> head{
+        {10, 17, 17000, {1000, 1000}}};
+    for (uint64_t i = 0; i < 512; ++i) {
+        const RnicTxOpportunity fresh_opportunity =
+            fresh.dispatchOpportunity(fresh_time);
+        const RnicTxOpportunity repair_opportunity =
+            repair.dispatchOpportunity(repair_time, head);
+        ASSERT_EQ(fresh_opportunity.packet.has_value(),
+                  repair_opportunity.packet.has_value());
+        EXPECT_EQ(fresh_opportunity.end_ps, repair_opportunity.end_ps);
+        if (repair_opportunity.packet.has_value()) {
+            EXPECT_EQ(repair_opportunity.packet->kind,
+                      RnicTxPacketKind::SelectiveRepair);
+            EXPECT_EQ(repair.flowPayloadBytesDispatched(10), 0U);
+        }
+        fresh_time = fresh_opportunity.end_ps;
+        repair_time = repair_opportunity.end_ps;
+    }
+}
+
+TEST(RnicTxPortTest,
+     PendingRepairDoesNotBlockAnotherFlowsFreshPrbsHead) {
+    RnicTxPort port(9, 100000000000ULL, 1000, 20260713);
+    port.addFlow(10, 1000000000, 0);
+    port.addFlow(11, 1000000000, 0);
+    port.setDataEligible(10, true);
+    port.setDataEligible(11, true);
+    port.setWireRateGrant(10, 50000000000ULL);
+    port.setWireRateGrant(11, 50000000000ULL);
+    port.setSelectiveRepairPending(10, true);
+
+    uint64_t time_ps = 0;
+    uint64_t repairs = 0;
+    uint64_t other_fresh = 0;
+    const std::vector<RnicTxRepairCandidate> head{
+        {10, 17, 17000, {1000, 1000}}};
+    for (uint64_t i = 0; i < 512; ++i) {
+        const RnicTxOpportunity opportunity =
+            port.dispatchOpportunity(time_ps, head);
+        ASSERT_TRUE(opportunity.packet.has_value());
+        repairs += opportunity.packet->kind
+                   == RnicTxPacketKind::SelectiveRepair;
+        other_fresh += opportunity.packet->flow_id == 11;
+        time_ps = opportunity.end_ps;
+    }
+    EXPECT_GT(repairs, 0U);
+    EXPECT_GT(other_fresh, 0U);
+}
+
+TEST(RnicTxPortTest,
+     SourceCompleteRepairReactivatesOnlyUnderItsLiveGrant) {
+    RnicTxPort port(1, 100000000000ULL, 1000, 7);
+    port.addFlow(10, 1000, 0);
+    port.setWireRateGrant(10, 100000000000ULL);
+    port.setDataEligible(10, true);
+
+    const RnicTxOpportunity original = port.dispatchOpportunity(0);
+    ASSERT_TRUE(original.packet.has_value());
+    ASSERT_TRUE(port.sourcePayloadDispatched(10));
+    ASSERT_FALSE(port.hasDispatchableData());
+
+    port.setSelectiveRepairPending(10, true);
+    EXPECT_TRUE(port.hasDispatchableData());
+    EXPECT_EQ(port.effectiveWireRateBps(10), 100000000000ULL);
+    const RnicTxOpportunity repair = port.dispatchOpportunity(
+        original.end_ps, {{10, 0, 0, {1000, 1000}}});
+    ASSERT_TRUE(repair.packet.has_value());
+    EXPECT_EQ(repair.packet->kind, RnicTxPacketKind::SelectiveRepair);
+    EXPECT_EQ(port.flowPayloadBytesDispatched(10), 1000U);
+
+    port.setWireRateGrant(10, 0);
+    EXPECT_FALSE(port.hasDispatchableData());
+    EXPECT_EQ(port.effectiveWireRateBps(10), 0U);
+}
+
 TEST(RnicTxPortTest, ControlCanUseAReservedPrbsIdleInterval) {
     RnicTxPort port(1, 8000000000000ULL, 1000, 7);
     port.addFlow(10, 1000, 0);
