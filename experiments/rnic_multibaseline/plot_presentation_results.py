@@ -19,11 +19,11 @@ COLORS = {
     "rnic-nn-fluid": "#E68A00",
 }
 LABELS = {
-    "rnic-cn": "RNIC-CN / ns-tm3",
+    "rnic-cn": "rnic-cn / ns-tm3",
     "dcqcn": "DCQCN / ns-tm3",
-    "rnic-ss": "RNIC-SS / ns-rosetta",
-    "rnic-nn": "RNIC-NN / manifold",
-    "rnic-nn-fluid": "RNIC-NN-fluid / manifold",
+    "rnic-ss": "rnic-ss / ns-rosetta",
+    "rnic-nn": "rnic-nn / manifold",
+    "rnic-nn-fluid": "rnic-nn-fluid / manifold",
 }
 
 
