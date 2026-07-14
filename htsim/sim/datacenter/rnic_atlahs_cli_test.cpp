@@ -67,7 +67,7 @@ TEST(RnicAtlahsCliTest, ResolvesCollectiveDefaultsInConstructorUnits) {
     EXPECT_EQ(options.collective.ring_delay_window_ps, 4096000U);
     EXPECT_EQ(options.collective.ring_release_tick_ps, 16000U);
     EXPECT_EQ(options.collective.ring_wire_capacity_bytes, UINT64_C(1) << 20);
-    EXPECT_EQ(options.collective.tomahawk3_shared_buffer_bytes,
+    EXPECT_EQ(options.collective.ns_tm3_shared_buffer_bytes,
               UINT64_C(1) << 20);
 
     const RnicAtlahsExplicitCliOptions& supplied =
@@ -84,7 +84,7 @@ TEST(RnicAtlahsCliTest, ResolvesCollectiveDefaultsInConstructorUnits) {
     EXPECT_FALSE(supplied.ring_delay_window_ps);
     EXPECT_FALSE(supplied.ring_release_tick_ps);
     EXPECT_FALSE(supplied.ring_wire_capacity_bytes);
-    EXPECT_FALSE(supplied.tomahawk3_shared_buffer_bytes);
+    EXPECT_FALSE(supplied.ns_tm3_shared_buffer_bytes);
 }
 
 TEST(RnicAtlahsCliTest, RecordsExplicitGeneratedCollectiveOverrides) {
@@ -100,7 +100,7 @@ TEST(RnicAtlahsCliTest, RecordsExplicitGeneratedCollectiveOverrides) {
     append(arguments, "-rnic_cn_ring_window_ps", "8192000");
     append(arguments, "-rnic_cn_ring_tick_ps", "32000");
     append(arguments, "-rnic_cn_ring_capacity_bytes", "2097152");
-    append(arguments, "-rnic_cn_tomahawk3_buffer_bytes", "4194304");
+    append(arguments, "-rnic_cn_ns_tm3_buffer_bytes", "4194304");
 
     const RnicAtlahsCliOptions options = parse(std::move(arguments));
     EXPECT_FALSE(options.collective.topology_file.has_value());
@@ -115,7 +115,7 @@ TEST(RnicAtlahsCliTest, RecordsExplicitGeneratedCollectiveOverrides) {
     EXPECT_EQ(options.collective.ring_delay_window_ps, 8192000U);
     EXPECT_EQ(options.collective.ring_release_tick_ps, 32000U);
     EXPECT_EQ(options.collective.ring_wire_capacity_bytes, 2097152U);
-    EXPECT_EQ(options.collective.tomahawk3_shared_buffer_bytes, 4194304U);
+    EXPECT_EQ(options.collective.ns_tm3_shared_buffer_bytes, 4194304U);
 
     const RnicAtlahsExplicitCliOptions& supplied =
         options.explicitly_supplied;
@@ -131,7 +131,7 @@ TEST(RnicAtlahsCliTest, RecordsExplicitGeneratedCollectiveOverrides) {
     EXPECT_TRUE(supplied.ring_delay_window_ps);
     EXPECT_TRUE(supplied.ring_release_tick_ps);
     EXPECT_TRUE(supplied.ring_wire_capacity_bytes);
-    EXPECT_TRUE(supplied.tomahawk3_shared_buffer_bytes);
+    EXPECT_TRUE(supplied.ns_tm3_shared_buffer_bytes);
 }
 
 TEST(RnicAtlahsCliTest, ResolvesPacketizedManifoldOverrides) {
@@ -202,6 +202,12 @@ TEST(RnicAtlahsCliTest, RejectsEveryNonPublicProfileName) {
         EXPECT_THROW(parse(baseArguments(alias)), std::invalid_argument)
             << alias;
     }
+}
+
+TEST(RnicAtlahsCliTest, RejectsRetiredTomahawk3BufferFlag) {
+    std::vector<std::string> arguments = baseArguments("rnic-cn");
+    append(arguments, "-rnic_cn_tomahawk3_buffer_bytes", "4194304");
+    EXPECT_THROW(parse(std::move(arguments)), std::invalid_argument);
 }
 
 TEST(RnicAtlahsCliTest, RejectsMissingRequiredOptionsAndValues) {
@@ -364,12 +370,12 @@ TEST(RnicAtlahsCliTest, ChecksCollectiveTopologyAndRuntimeBounds) {
     EXPECT_THROW(parse(std::move(zero_tick)), std::invalid_argument);
 
     std::vector<std::string> zero_buffer = baseArguments("rnic-cn");
-    append(zero_buffer, "-rnic_cn_tomahawk3_buffer_bytes", "0");
+    append(zero_buffer, "-rnic_cn_ns_tm3_buffer_bytes", "0");
     EXPECT_THROW(parse(std::move(zero_buffer)), std::invalid_argument);
 
     std::vector<std::string> huge_buffer = baseArguments("rnic-cn");
     append(huge_buffer,
-           "-rnic_cn_tomahawk3_buffer_bytes",
+           "-rnic_cn_ns_tm3_buffer_bytes",
            "9223372036854775808");
     EXPECT_THROW(parse(std::move(huge_buffer)), std::invalid_argument);
 
@@ -395,6 +401,10 @@ TEST(RnicAtlahsCliTest, UsageNamesOnlyCanonicalProfilesAndExactUnits) {
               std::string::npos);
     EXPECT_NE(usage.find("-rnic_hop_latency_ps"), std::string::npos);
     EXPECT_NE(usage.find("-topo FILE"), std::string::npos);
+    EXPECT_NE(usage.find("-rnic_cn_ns_tm3_buffer_bytes"),
+              std::string::npos);
+    EXPECT_EQ(usage.find("-rnic_cn_tomahawk3_buffer_bytes"),
+              std::string::npos);
     EXPECT_EQ(usage.find("rnic-cc"), std::string::npos);
     EXPECT_EQ(usage.find("rnic-null"), std::string::npos);
 }

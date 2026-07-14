@@ -18,7 +18,7 @@ class RnicPacketExtent;
 
 // Physical no-load age from the source RNIC serializer boundary to the
 // destination endpoint.  The calibration mirrors the exact two-tier route:
-// propagation and switch-pipeline latency plus every remaining Tomahawk 3
+// propagation and switch-pipeline latency plus every remaining ns-tm3
 // egress serialization at the packet's actual wire extent.
 std::uint64_t rnicCollectiveNoQueueTransitPs(
     const FatTreeTopologyCfg& topology_config,

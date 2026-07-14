@@ -130,9 +130,9 @@ RnicCollectiveRouteProvider::RnicCollectiveRouteProvider(
         throw std::invalid_argument(
             "rnic-cn route provider requires a two-tier Clos");
     }
-    if (config.switch_model() != FatTreeSwitchModel::Tomahawk3) {
+    if (config.switch_model() != FatTreeSwitchModel::NsTm3) {
         throw std::invalid_argument(
-            "rnic-cn route provider requires Tomahawk 3 switches");
+            "rnic-cn route provider requires ns-tm3 switches");
     }
     if (_node_count == 0) {
         throw std::invalid_argument(

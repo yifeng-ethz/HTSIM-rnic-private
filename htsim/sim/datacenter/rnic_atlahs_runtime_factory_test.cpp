@@ -13,7 +13,7 @@
 #include "rnic_atlahs_runtime_factory.h"
 #include "rnic_fluid_manifold_runtime.h"
 #include "rnic_packetized_manifold_runtime.h"
-#include "tomahawk3_switch.h"
+#include "ns_tm3_switch.h"
 
 namespace {
 
@@ -77,7 +77,7 @@ RnicCollectiveNetworkConfig collectiveConfig(
 }
 
 TEST(RnicAtlahsRuntimeFactoryTest,
-     CollectiveNetworkOwnsForcedTomahawk3ClosAndRuntime) {
+     CollectiveNetworkOwnsForcedNsTm3ClosAndRuntime) {
     EventList& event_list = testEventList();
     std::unique_ptr<FatTreeTopologyCfg> input_config = twoTierConfig();
     FatTreeTopologyCfg* const input_config_address = input_config.get();
@@ -93,13 +93,13 @@ TEST(RnicAtlahsRuntimeFactoryTest,
     EXPECT_EQ(assembly->profileSpec().profile,
               RnicProfile::CollectiveNetwork);
     EXPECT_EQ(assembly->profileSpec().fabric,
-              RnicFabricModel::Tomahawk3Clos);
+              RnicFabricModel::NsTm3Clos);
     ASSERT_NE(assembly->topologyConfig(), nullptr);
     ASSERT_NE(assembly->physicalTopology(), nullptr);
     EXPECT_EQ(assembly->topologyConfig(), input_config_address);
     EXPECT_EQ(&assembly->physicalTopology()->cfg(), input_config_address);
     EXPECT_EQ(assembly->topologyConfig()->switch_model(),
-              FatTreeSwitchModel::Tomahawk3);
+              FatTreeSwitchModel::NsTm3);
     EXPECT_NE(dynamic_cast<RnicCollectiveNetworkRuntime*>(
                   &assembly->implementation()),
               nullptr);
@@ -108,11 +108,11 @@ TEST(RnicAtlahsRuntimeFactoryTest,
     EXPECT_TRUE(assembly->physicalTopology()->switches_c.empty());
     for (Switch* const physical_switch :
          assembly->physicalTopology()->switches_lp) {
-        EXPECT_NE(dynamic_cast<Tomahawk3Switch*>(physical_switch), nullptr);
+        EXPECT_NE(dynamic_cast<NsTm3Switch*>(physical_switch), nullptr);
     }
     for (Switch* const physical_switch :
          assembly->physicalTopology()->switches_up) {
-        EXPECT_NE(dynamic_cast<Tomahawk3Switch*>(physical_switch), nullptr);
+        EXPECT_NE(dynamic_cast<NsTm3Switch*>(physical_switch), nullptr);
     }
 }
 

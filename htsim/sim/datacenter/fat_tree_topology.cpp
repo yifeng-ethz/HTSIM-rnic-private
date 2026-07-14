@@ -9,7 +9,7 @@
 #include "queue.h"
 #include "fat_tree_switch.h"
 #include "fat_tree_switch_factory.h"
-#include "tomahawk3_switch.h"
+#include "ns_tm3_switch.h"
 #include "compositequeue.h"
 #include "aeolusqueue.h"
 #include "prioqueue.h"
@@ -65,8 +65,8 @@ std::ostream &operator<<(std::ostream &os, FatTreeTopologyCfg const &m) {
         << " diameter_latency=" << m._diameter_latency
         << " diameter=" << m._diameter
         << " switch_model=" << fat_tree_switch_model_name(m._switch_model)
-        << " tomahawk3_shared_buffer_capacity="
-        << m._tomahawk3_shared_buffer_capacity;
+        << " ns_tm3_shared_buffer_capacity="
+        << m._ns_tm3_shared_buffer_capacity;
     
     for (uint32_t tier = 0; tier < m._tiers; tier++) {
         cout << " tier=" << tier
@@ -93,7 +93,7 @@ FatTreeTopologyCfg::FatTreeTopologyCfg(queue_type q, queue_type snd):
                         _qt(q),
                         _sender_qt(snd),
                         _switch_model(FatTreeSwitchModel::Default),
-                        _tomahawk3_shared_buffer_capacity(0),
+                        _ns_tm3_shared_buffer_capacity(0),
                         NCORE(0), 
                         NAGG(0), 
                         NTOR(0), 
@@ -127,21 +127,21 @@ FatTreeTopologyCfg::FatTreeTopologyCfg(queue_type q, queue_type snd):
 
 }
 
-void FatTreeTopologyCfg::set_tomahawk3_shared_buffer_capacity(
+void FatTreeTopologyCfg::set_ns_tm3_shared_buffer_capacity(
     mem_b capacity) {
     if (capacity <= 0) {
         throw std::invalid_argument(
-            "Tomahawk3 shared-buffer capacity must be positive");
+            "ns-tm3 shared-buffer capacity must be positive");
     }
-    _tomahawk3_shared_buffer_capacity = capacity;
+    _ns_tm3_shared_buffer_capacity = capacity;
 }
 
-mem_b FatTreeTopologyCfg::tomahawk3_shared_buffer_capacity(int tier) const {
+mem_b FatTreeTopologyCfg::ns_tm3_shared_buffer_capacity(int tier) const {
     if (tier < TOR_TIER || tier >= static_cast<int>(_tiers)) {
-        throw std::out_of_range("invalid Tomahawk3 switch tier");
+        throw std::out_of_range("invalid ns-tm3 switch tier");
     }
-    if (_tomahawk3_shared_buffer_capacity > 0) {
-        return _tomahawk3_shared_buffer_capacity;
+    if (_ns_tm3_shared_buffer_capacity > 0) {
+        return _ns_tm3_shared_buffer_capacity;
     }
 
     mem_b capacity = _queue_down[tier];
@@ -831,10 +831,10 @@ FatTreeTopology::FatTreeTopology(const FatTreeTopologyCfg* cfg,
                                 _ff(fit),
                                 _cfg(cfg)
                                 {
-    if (_cfg->_switch_model == FatTreeSwitchModel::Tomahawk3 &&
+    if (_cfg->_switch_model == FatTreeSwitchModel::NsTm3 &&
         _cfg->uses_pause_flow_control()) {
         throw std::invalid_argument(
-            "Tomahawk3 does not support PAUSE/PFC queue modes; choose a "
+            "ns-tm3 does not support PAUSE/PFC queue modes; choose a "
             "non-lossless queue_type");
     }
     // Only build topology after verifying that things are in order.
@@ -887,21 +887,21 @@ FatTreeTopology::FatTreeTopology(const FatTreeTopologyCfg* cfg,
         switches_lp[j] = FatTreeSwitchFactory::create(
             _cfg->_switch_model, *_eventlist, "Switch_LowerPod_" + ntoa(j),
             FatTreeSwitch::TOR, j, switch_latency, this,
-            _cfg->tomahawk3_shared_buffer_capacity(TOR_TIER)).release();
+            _cfg->ns_tm3_shared_buffer_capacity(TOR_TIER)).release();
     }
     for (uint32_t j=0;j<_cfg->NAGG;j++){
         simtime_picosec switch_latency = (_cfg->_switch_latencies[AGG_TIER] > 0) ? _cfg->_switch_latencies[AGG_TIER] : _cfg->_switch_latency;
         switches_up[j] = FatTreeSwitchFactory::create(
             _cfg->_switch_model, *_eventlist, "Switch_UpperPod_" + ntoa(j),
             FatTreeSwitch::AGG, j, switch_latency, this,
-            _cfg->tomahawk3_shared_buffer_capacity(AGG_TIER)).release();
+            _cfg->ns_tm3_shared_buffer_capacity(AGG_TIER)).release();
     }
     for (uint32_t j=0;j<_cfg->NCORE;j++){
         simtime_picosec switch_latency = (_cfg->_switch_latencies[CORE_TIER] > 0) ? _cfg->_switch_latencies[CORE_TIER] : _cfg->_switch_latency;
         switches_c[j] = FatTreeSwitchFactory::create(
             _cfg->_switch_model, *_eventlist, "Switch_Core_" + ntoa(j),
             FatTreeSwitch::CORE, j, switch_latency, this,
-            _cfg->tomahawk3_shared_buffer_capacity(CORE_TIER)).release();
+            _cfg->ns_tm3_shared_buffer_capacity(CORE_TIER)).release();
     }
       
     // links from lower layer pod switch to server
@@ -1265,8 +1265,8 @@ FatTreeTopology::alloc_queue(QueueLogger* queueLogger, linkspeed_bps speed, cons
         queuesize = queuesize * _cfg->_failed_link_ratio;
     }
 
-    if (_cfg->_switch_model == FatTreeSwitchModel::Tomahawk3) {
-        return new Tomahawk3EgressSerializer(speed, *_eventlist, queueLogger);
+    if (_cfg->_switch_model == FatTreeSwitchModel::NsTm3) {
+        return new NsTm3EgressSerializer(speed, *_eventlist, queueLogger);
     }
 
     switch (_cfg->_qt) {

@@ -66,7 +66,7 @@ TEST(RnicAtlahsDriverTest, RejectsMissingTopologyFileWithoutProcessExit) {
         std::invalid_argument);
 }
 
-TEST(RnicAtlahsDriverTest, AssemblesGeneratedTomahawk3CollectiveProfile) {
+TEST(RnicAtlahsDriverTest, AssemblesGeneratedNsTm3CollectiveProfile) {
     EventList& event_list = testEventList();
     const RnicAtlahsCliOptions options =
         optionsFor(RnicProfile::CollectiveNetwork);
@@ -79,11 +79,11 @@ TEST(RnicAtlahsDriverTest, AssemblesGeneratedTomahawk3CollectiveProfile) {
     EXPECT_EQ(session->topologyConfig()->get_tiers(), 2U);
     EXPECT_EQ(session->topologyConfig()->no_of_nodes(), 32U);
     EXPECT_EQ(session->topologyConfig()->switch_model(),
-              FatTreeSwitchModel::Tomahawk3);
+              FatTreeSwitchModel::NsTm3);
     EXPECT_EQ(session->topologyConfig()
-                  ->tomahawk3_shared_buffer_capacity(TOR_TIER),
+                  ->ns_tm3_shared_buffer_capacity(TOR_TIER),
               static_cast<mem_b>(
-                  options.collective.tomahawk3_shared_buffer_bytes));
+                  options.collective.ns_tm3_shared_buffer_bytes));
     EXPECT_NE(dynamic_cast<RnicCollectiveNetworkRuntime*>(
                   &session->implementation()),
               nullptr);
@@ -123,8 +123,8 @@ TEST(RnicAtlahsDriverTest, CollectiveManifestNamesPhysicalModelExactly) {
         renderRnicAtlahsModelManifest(options, goalLayout(), *session);
 
     EXPECT_NE(manifest.find("profile=rnic-cn"), std::string::npos);
-    EXPECT_NE(manifest.find("fabric=tomahawk3-clos"), std::string::npos);
-    EXPECT_NE(manifest.find("clos_tiers=2 switch=Tomahawk3"),
+    EXPECT_NE(manifest.find("fabric=ns-tm3-clos"), std::string::npos);
+    EXPECT_NE(manifest.find("clos_tiers=2 switch=ns-tm3"),
               std::string::npos);
     EXPECT_NE(manifest.find(
                   "link_failures=0 eta_calibration_config=construction-snapshot"),
@@ -147,7 +147,7 @@ TEST(RnicAtlahsDriverTest, CollectiveManifestNamesPhysicalModelExactly) {
                   "eta=source-route-injection-plus-packet-specific-no-load-transit"),
               std::string::npos);
     EXPECT_NE(manifest.find(
-                  "eta_transit=pipe-switch-latency-plus-remaining-tm3-egress-serialization"),
+                  "eta_transit=pipe-switch-latency-plus-remaining-ns-tm3-egress-serialization"),
               std::string::npos);
     EXPECT_NE(manifest.find(
                   "prbs_algorithm=galois-lfsr64-block64 prbs_version=2"),
@@ -175,7 +175,7 @@ TEST(RnicAtlahsDriverTest, ManifoldManifestsExcludePhysicalTopology) {
         EXPECT_NE(manifest.find("topology=none"), std::string::npos);
         EXPECT_NE(manifest.find("manifold_queue=none"),
                   std::string::npos);
-        EXPECT_EQ(manifest.find("switch=Tomahawk3"), std::string::npos);
+        EXPECT_EQ(manifest.find("switch=ns-tm3"), std::string::npos);
     }
 }
 

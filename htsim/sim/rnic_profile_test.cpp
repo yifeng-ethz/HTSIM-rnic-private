@@ -15,10 +15,10 @@ TEST(RnicProfileTest, ParsesOnlyPublicProfileNames) {
     EXPECT_THROW(parseRnicProfile("rnic-null"), std::invalid_argument);
 }
 
-TEST(RnicProfileTest, CollectiveNetworkUsesTomahawk3AndPrbs) {
+TEST(RnicProfileTest, CollectiveNetworkUsesNsTm3AndPrbs) {
     const RnicProfileSpec spec = resolveRnicProfile(RnicProfile::CollectiveNetwork);
 
-    EXPECT_EQ(spec.fabric, RnicFabricModel::Tomahawk3Clos);
+    EXPECT_EQ(spec.fabric, RnicFabricModel::NsTm3Clos);
     EXPECT_EQ(spec.traffic, RnicTrafficModel::Packetized);
     EXPECT_EQ(spec.control, RnicControlModel::InBandCollective);
     EXPECT_EQ(spec.pacer, RnicPacerModel::Prbs);
@@ -49,7 +49,7 @@ TEST(RnicProfileTest, NamesAreStableManifestValues) {
         EXPECT_EQ(parseRnicProfile(rnicProfileName(profile)), profile);
     }
 
-    EXPECT_STREQ(rnicFabricModelName(RnicFabricModel::Tomahawk3Clos), "tomahawk3-clos");
+    EXPECT_STREQ(rnicFabricModelName(RnicFabricModel::NsTm3Clos), "ns-tm3-clos");
     EXPECT_STREQ(rnicFabricModelName(RnicFabricModel::TopologyFreeManifold),
                  "manifold-nn");
     EXPECT_STREQ(rnicTrafficModelName(RnicTrafficModel::Packetized), "packetized");

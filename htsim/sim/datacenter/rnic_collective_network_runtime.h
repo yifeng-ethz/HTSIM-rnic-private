@@ -58,7 +58,7 @@ struct RnicCollectiveFlowSnapshot {
 
 // Physical packet runtime for the `rnic-cn` profile.  Every flow uses one
 // node-wide PRBS TX port, traverses explicit routes through a two-tier
-// Tomahawk3 Clos, and enters one shared Ring-CAM/RX serializer. Receiver
+// ns-tm3 Clos, and enters one shared Ring-CAM/RX serializer. Receiver
 // membership is changed only by in-band DECLARE/ACCEPT/UPDATE/RETIRE waves.
 class RnicCollectiveNetworkRuntime final : public AtlahsFlowRuntime,
                                            private EventSource {

@@ -160,12 +160,12 @@ void validateCollectiveOptions(const RnicAtlahsCliOptions& options) {
                     "-rnic_cn_ring_tick_ps");
     requirePositive(options.collective.ring_wire_capacity_bytes,
                     "-rnic_cn_ring_capacity_bytes");
-    requirePositive(options.collective.tomahawk3_shared_buffer_bytes,
-                    "-rnic_cn_tomahawk3_buffer_bytes");
-    if (options.collective.tomahawk3_shared_buffer_bytes
+    requirePositive(options.collective.ns_tm3_shared_buffer_bytes,
+                    "-rnic_cn_ns_tm3_buffer_bytes");
+    if (options.collective.ns_tm3_shared_buffer_bytes
         > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
         throw std::invalid_argument(
-            "-rnic_cn_tomahawk3_buffer_bytes: value exceeds HTSIM mem_b");
+            "-rnic_cn_ns_tm3_buffer_bytes: value exceeds HTSIM mem_b");
     }
 
     constexpr Wide wire_byte_denominator =
@@ -211,7 +211,7 @@ void rejectCrossProfileOptions(const RnicAtlahsCliOptions& options) {
         || supplied.ring_delay_window_ps
         || supplied.ring_release_tick_ps
         || supplied.ring_wire_capacity_bytes
-        || supplied.tomahawk3_shared_buffer_bytes;
+        || supplied.ns_tm3_shared_buffer_bytes;
     if (options.profile != RnicProfile::CollectiveNetwork
         && supplied_collective) {
         throw std::invalid_argument(
@@ -335,10 +335,10 @@ RnicAtlahsCliOptions parseRnicAtlahsCli(
             options.collective.ring_wire_capacity_bytes =
                 parseUnsigned(option, value);
             options.explicitly_supplied.ring_wire_capacity_bytes = true;
-        } else if (option == "-rnic_cn_tomahawk3_buffer_bytes") {
-            options.collective.tomahawk3_shared_buffer_bytes =
+        } else if (option == "-rnic_cn_ns_tm3_buffer_bytes") {
+            options.collective.ns_tm3_shared_buffer_bytes =
                 parseUnsigned(option, value);
-            options.explicitly_supplied.tomahawk3_shared_buffer_bytes = true;
+            options.explicitly_supplied.ns_tm3_shared_buffer_bytes = true;
         } else {
             throw optionError(option, "unknown option");
         }
@@ -410,6 +410,6 @@ std::string rnicAtlahsCliUsage(const std::string& program_name) {
            " [-rnic_cn_ring_window_ps PS]"
            " [-rnic_cn_ring_tick_ps PS]"
            " [-rnic_cn_ring_capacity_bytes BYTES]"
-           " [-rnic_cn_tomahawk3_buffer_bytes BYTES]";
+           " [-rnic_cn_ns_tm3_buffer_bytes BYTES]";
     return usage.str();
 }

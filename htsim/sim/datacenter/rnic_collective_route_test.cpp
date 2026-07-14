@@ -9,7 +9,7 @@
 #include "fat_tree_topology.h"
 #include "rnic_collective_route.h"
 #include "rnic_packet_extent.h"
-#include "tomahawk3_switch.h"
+#include "ns_tm3_switch.h"
 
 namespace {
 
@@ -66,9 +66,9 @@ private:
     std::vector<const Route*>* _routes;
 };
 
-class TwoTierTomahawk3Topology {
+class TwoTierNsTm3Topology {
 public:
-    TwoTierTomahawk3Topology()
+    TwoTierNsTm3Topology()
         : event_list(EventList::getTheEventList()),
           config(2,
                  32,
@@ -78,8 +78,8 @@ public:
                  0,
                  COMPOSITE,
                  FAIR_PRIO) {
-        config.set_switch_model(FatTreeSwitchModel::Tomahawk3);
-        config.set_tomahawk3_shared_buffer_capacity(65536);
+        config.set_switch_model(FatTreeSwitchModel::NsTm3);
+        config.set_ns_tm3_shared_buffer_capacity(65536);
         topology = std::make_unique<FatTreeTopology>(
             &config, nullptr, &event_list, nullptr);
     }
@@ -95,7 +95,7 @@ void drainAllEvents() {
 }
 
 void expectNoLoadTransit(
-        TwoTierTomahawk3Topology& fixture,
+        TwoTierNsTm3Topology& fixture,
         RnicCollectiveRouteProvider& provider,
         RecordingSink& endpoint,
         std::uint32_t source,
@@ -126,7 +126,7 @@ void expectNoLoadTransit(
 
 TEST(RnicCollectiveRouteProviderTest,
      OmitsOnlySourceQueueAndPreservesDeterministicPhysicalSuffixes) {
-    TwoTierTomahawk3Topology fixture;
+    TwoTierNsTm3Topology fixture;
     constexpr std::uint32_t source = 0;
     constexpr std::uint32_t destination = 31;
     ASSERT_NE(fixture.config.HOST_POD_SWITCH(source),
@@ -168,7 +168,7 @@ TEST(RnicCollectiveRouteProviderTest,
 
 TEST(RnicCollectiveRouteProviderTest,
      SourceSerializedRouteTraversesTheClosAndReachesSharedEndpoint) {
-    TwoTierTomahawk3Topology fixture;
+    TwoTierNsTm3Topology fixture;
     RecordingSink endpoint;
     RnicCollectiveRouteProvider provider(*fixture.topology);
     const auto& routes = provider.routes(0, 31, endpoint);
@@ -185,7 +185,7 @@ TEST(RnicCollectiveRouteProviderTest,
 
 TEST(RnicCollectiveRouteProviderTest,
      SameTorNoLoadArrivalAgeMatchesFullAndShortTailCalibration) {
-    TwoTierTomahawk3Topology fixture;
+    TwoTierNsTm3Topology fixture;
     RecordingSink endpoint;
     RnicCollectiveRouteProvider provider(*fixture.topology);
     ASSERT_EQ(fixture.config.HOST_POD_SWITCH(0),
@@ -205,7 +205,7 @@ TEST(RnicCollectiveRouteProviderTest,
 
 TEST(RnicCollectiveRouteProviderTest,
      CrossTorNoLoadArrivalAgeMatchesFullAndShortTailCalibration) {
-    TwoTierTomahawk3Topology fixture;
+    TwoTierNsTm3Topology fixture;
     RecordingSink endpoint;
     RnicCollectiveRouteProvider provider(*fixture.topology);
     ASSERT_NE(fixture.config.HOST_POD_SWITCH(0),
@@ -224,7 +224,7 @@ TEST(RnicCollectiveRouteProviderTest,
 }
 
 TEST(RnicCollectiveRouteProviderTest, RejectsInvalidPairsAndEndpointRebinding) {
-    TwoTierTomahawk3Topology fixture;
+    TwoTierNsTm3Topology fixture;
     RecordingSink first_endpoint;
     RecordingSink second_endpoint;
     RnicCollectiveRouteProvider provider(*fixture.topology);
@@ -255,8 +255,8 @@ TEST(RnicCollectiveRouteProviderTest, RejectsNonTomahawkAndNonTwoTierFabrics) {
     FatTreeTopologyCfg three_tier_config(
         3, 128, speedFromGbps(100), 32768, timeFromNs(1000), 0,
         COMPOSITE, FAIR_PRIO);
-    three_tier_config.set_switch_model(FatTreeSwitchModel::Tomahawk3);
-    three_tier_config.set_tomahawk3_shared_buffer_capacity(65536);
+    three_tier_config.set_switch_model(FatTreeSwitchModel::NsTm3);
+    three_tier_config.set_ns_tm3_shared_buffer_capacity(65536);
     FatTreeTopology three_tier_topology(
         &three_tier_config, nullptr, &event_list, nullptr);
     EXPECT_THROW(

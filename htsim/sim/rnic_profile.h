@@ -11,7 +11,7 @@ enum class RnicProfile {
 };
 
 enum class RnicFabricModel {
-    Tomahawk3Clos,
+    NsTm3Clos,
     TopologyFreeManifold,
 };
 

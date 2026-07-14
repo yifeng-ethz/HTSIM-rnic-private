@@ -27,18 +27,19 @@ model invalidates an old result.
 
 | Profile | Traffic | Fabric | Allocation and feedback | Sender scheduling |
 | --- | --- | --- | --- | --- |
-| `rnic-cn` | packets | Tomahawk 3 two-tier Clos with VoQ | receiver-observed, in-band collective-network grants | node-wide PRBS packet pacer |
+| `rnic-cn` | packets | `ns-tm3` two-tier Clos with VoQ | receiver-observed, in-band collective-network grants | node-wide PRBS packet pacer |
 | `rnic-nn` | packets | topology-free NN manifold with fixed propagation | instantaneous centralized packetized max-min | centrally feasible packet slots; PRBS may randomize ties |
 | `rnic-nn-fluid` | fluid bytes | topology-free NN manifold with fixed propagation | instantaneous centralized fluid max-min | continuous service; no packet pacer |
 
 CN always means **collective network**. Do not use `cc` as a profile or mode
-name because it is conventionally read as congestion control. Spell Tomahawk 3
-out in class, file, and manifest names; `TM3` is acceptable only as explanatory
-shorthand in prose.
+name because it is conventionally read as congestion control. The canonical
+simulator identifier for the modeled switch is `ns-tm3`; use it in CLI values,
+manifests, experiment labels, and prose about the simulator. Use Tomahawk 3
+only when discussing the real hardware family or source provenance.
 
 The implementation keeps the following dimensions independent internally:
 
-- `RnicFabricModel`: `Tomahawk3Clos` or `TopologyFreeManifold`;
+- `RnicFabricModel`: `NsTm3Clos` or `TopologyFreeManifold`;
 - `RnicTrafficModel`: `Packetized` or `Fluid`;
 - `RnicControlModel`: `InBandCollective` or `CentralOracle`;
 - `RnicPacerModel`: `Prbs`, `CentralPacketSlots`, or `None`.
@@ -426,7 +427,7 @@ pacing: it changes the mean rate and is prohibited.
 The sender stamps packet eligibility `eta` at the physical route-injection
 boundary: source serializer completion plus packet-specific no-load physical
 transit. That transit includes the route's pipe and switch-pipeline latency and
-the remaining Tomahawk 3 egress serialization at the packet's exact wire
+the remaining `ns-tm3` egress serialization at the packet's exact wire
 extent. A same-ToR path has one ToR-downlink serialization; a cross-ToR
 two-tier path has two inter-switch serializations at the aggregation-tier link
 rate plus one ToR-downlink serialization. The physical HTSIM route starts at
@@ -478,12 +479,12 @@ W_RB >= R_in_peak * Delta + M.
 Drops are classified as early-window, late-window, or capacity violations;
 tests never merge these causes.
 
-## Tomahawk 3 Clos model
+## `ns-tm3` Clos model
 
-Every Clos profile uses the Tomahawk 3 switch model at ToR, aggregation, and
-core tiers until explicitly overridden by a future model. This is a behavioral
-traffic-manager model, not a cycle-accurate claim about a particular ASIC
-revision.
+Every Clos profile uses the `ns-tm3` switch model at ToR, aggregation, and core
+tiers until explicitly overridden by a future model. This is a behavioral
+traffic-manager contract motivated by the Tomahawk 3 hardware family, not a
+cycle-accurate claim about a particular ASIC revision.
 
 The switch reuses the existing Clos FIB and path selection, then enqueues by
 `(physical ingress port, physical egress port)` into VoQs. Each egress arbitrates
@@ -497,7 +498,7 @@ must not be confused with endpoint resequencing capacity.
 
 Every reported run records the resolved profile dimensions, link rates, fixed
 latencies, MTU, `Delta`, `delta`, control margin/RTT, PRBS identity and global seed,
-Tomahawk 3 scheduler policy, topology, workload hash, simulator commit, and
+`ns-tm3` scheduler policy, topology, workload hash, simulator commit, and
 ATLAHS commit.
 
 Tests are layered:

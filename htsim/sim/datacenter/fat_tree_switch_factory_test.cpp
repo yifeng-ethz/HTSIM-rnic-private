@@ -6,7 +6,7 @@
 
 #include "fat_tree_switch_factory.h"
 #include "fat_tree_topology.h"
-#include "tomahawk3_switch.h"
+#include "ns_tm3_switch.h"
 
 namespace {
 
@@ -36,9 +36,9 @@ TEST(FatTreeTopologyCfgTest, SwitchModelIsIndependentOfQueueConfiguration) {
     FatTreeTopologyCfg cfg(input, kQueueSize, COMPOSITE, FAIR_PRIO);
 
     EXPECT_EQ(cfg.switch_model(), FatTreeSwitchModel::Default);
-    cfg.set_switch_model(FatTreeSwitchModel::Tomahawk3);
+    cfg.set_switch_model(FatTreeSwitchModel::NsTm3);
 
-    EXPECT_EQ(cfg.switch_model(), FatTreeSwitchModel::Tomahawk3);
+    EXPECT_EQ(cfg.switch_model(), FatTreeSwitchModel::NsTm3);
     EXPECT_EQ(cfg.queue_down(TOR_TIER), kQueueSize);
     EXPECT_EQ(cfg.queue_up(TOR_TIER), kQueueSize);
 }
@@ -46,13 +46,15 @@ TEST(FatTreeTopologyCfgTest, SwitchModelIsIndependentOfQueueConfiguration) {
 TEST(FatTreeSwitchModelTest, HasStableManifestNames) {
     EXPECT_EQ(fat_tree_switch_model_name(FatTreeSwitchModel::Default),
               "default");
-    EXPECT_EQ(fat_tree_switch_model_name(FatTreeSwitchModel::Tomahawk3),
-              "tomahawk3");
+    EXPECT_EQ(fat_tree_switch_model_name(FatTreeSwitchModel::NsTm3),
+              "ns-tm3");
     EXPECT_EQ(fat_tree_switch_model_from_string("default"),
               FatTreeSwitchModel::Default);
-    EXPECT_EQ(fat_tree_switch_model_from_string("tomahawk3"),
-              FatTreeSwitchModel::Tomahawk3);
+    EXPECT_EQ(fat_tree_switch_model_from_string("ns-tm3"),
+              FatTreeSwitchModel::NsTm3);
     EXPECT_THROW(fat_tree_switch_model_from_string("tm3"),
+                 std::invalid_argument);
+    EXPECT_THROW(fat_tree_switch_model_from_string("tomahawk3"),
                  std::invalid_argument);
 }
 
@@ -68,16 +70,16 @@ TEST(FatTreeSwitchFactoryTest, DefaultPreservesCurrentImplementation) {
     EXPECT_EQ(switch_instance->getID(), 7);
 }
 
-TEST(FatTreeSwitchFactoryTest, ConstructsTomahawk3) {
+TEST(FatTreeSwitchFactoryTest, ConstructsNsTm3) {
     EventList& eventlist = EventList::getTheEventList();
 
     auto switch_instance = FatTreeSwitchFactory::create(
-        FatTreeSwitchModel::Tomahawk3, eventlist, "tomahawk3-switch",
+        FatTreeSwitchModel::NsTm3, eventlist, "ns-tm3-switch",
         FatTreeSwitch::TOR, 0, 0, nullptr, 32768);
 
-    auto* tomahawk3 = dynamic_cast<Tomahawk3Switch*>(switch_instance.get());
-    ASSERT_NE(tomahawk3, nullptr);
-    EXPECT_EQ(tomahawk3->shared_buffer_capacity(), 32768);
+    auto* ns_tm3 = dynamic_cast<NsTm3Switch*>(switch_instance.get());
+    ASSERT_NE(ns_tm3, nullptr);
+    EXPECT_EQ(ns_tm3->shared_buffer_capacity(), 32768);
 }
 
 }  // namespace

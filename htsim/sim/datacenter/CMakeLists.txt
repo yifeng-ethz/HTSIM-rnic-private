@@ -17,7 +17,7 @@ set(LIB_SOURCES
     fat_tree_switch.cpp
     fat_tree_switch_factory.cpp
     fat_tree_switch_model.cpp
-    tomahawk3_switch.cpp
+    ns_tm3_switch.cpp
     dragon_fly_topology.cpp
     slimfly_topology.cpp
     slimfly_switch.cpp
@@ -96,9 +96,9 @@ if ( ENABLE_TESTS )
         PROPERTIES TIMEOUT 60
     )
 
-    add_executable(tomahawk3_switch_test tomahawk3_switch_test.cpp)
-    target_link_libraries(tomahawk3_switch_test PRIVATE htsim_dc htsim gtest_main)
-    gtest_discover_tests(tomahawk3_switch_test
+    add_executable(ns_tm3_switch_test ns_tm3_switch_test.cpp)
+    target_link_libraries(ns_tm3_switch_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(ns_tm3_switch_test
         PROPERTIES LABELS "unit"
         PROPERTIES TIMEOUT 60
     )

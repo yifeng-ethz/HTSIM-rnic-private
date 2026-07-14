@@ -34,7 +34,7 @@ RnicProfileSpec resolveRnicProfile(RnicProfile profile) {
     switch (profile) {
     case RnicProfile::CollectiveNetwork:
         return {profile,
-                RnicFabricModel::Tomahawk3Clos,
+                RnicFabricModel::NsTm3Clos,
                 RnicTrafficModel::Packetized,
                 RnicControlModel::InBandCollective,
                 RnicPacerModel::Prbs};
@@ -56,8 +56,8 @@ RnicProfileSpec resolveRnicProfile(RnicProfile profile) {
 
 const char* rnicFabricModelName(RnicFabricModel model) {
     switch (model) {
-    case RnicFabricModel::Tomahawk3Clos:
-        return "tomahawk3-clos";
+    case RnicFabricModel::NsTm3Clos:
+        return "ns-tm3-clos";
     case RnicFabricModel::TopologyFreeManifold:
         return "manifold-nn";
     }

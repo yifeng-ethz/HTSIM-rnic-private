@@ -1,5 +1,5 @@
 // -*- c-basic-offset: 4; indent-tabs-mode: nil -*-
-#include "tomahawk3_switch.h"
+#include "ns_tm3_switch.h"
 
 #include "fat_tree_topology.h"
 
@@ -8,44 +8,44 @@
 #include <stdexcept>
 #include <utility>
 
-Tomahawk3IngressPort::Tomahawk3IngressPort(Tomahawk3Switch& owner,
+NsTm3IngressPort::NsTm3IngressPort(NsTm3Switch& owner,
                                            uint32_t ingress_id,
                                            std::string name)
     : _owner(owner),
       _ingress_id(ingress_id),
       _name(std::move(name)) {}
 
-void Tomahawk3IngressPort::receivePacket(Packet& pkt) {
+void NsTm3IngressPort::receivePacket(Packet& pkt) {
     _owner.receive_from_physical_ingress(pkt, _ingress_id);
 }
 
-Tomahawk3EgressSerializer::Tomahawk3EgressSerializer(linkspeed_bps bitrate,
+NsTm3EgressSerializer::NsTm3EgressSerializer(linkspeed_bps bitrate,
                                            EventList& eventlist,
                                            QueueLogger* logger)
     : BaseQueue(bitrate, eventlist, logger) {
-    _nodename = "Tomahawk3EgressSerializer";
+    _nodename = "ns-tm3-egress-serializer";
 }
 
-void Tomahawk3EgressSerializer::bind(Tomahawk3Switch& owner,
+void NsTm3EgressSerializer::bind(NsTm3Switch& owner,
                                 uint32_t egress_id) {
     if (_owner != nullptr) {
-        throw std::logic_error("Tomahawk3 egress serializer already bound");
+        throw std::logic_error("ns-tm3 egress serializer already bound");
     }
     _owner = &owner;
     _egress_id = egress_id;
 }
 
-void Tomahawk3EgressSerializer::receivePacket(Packet& pkt) {
+void NsTm3EgressSerializer::receivePacket(Packet& pkt) {
     if (_owner == nullptr) {
-        throw std::logic_error("unbound Tomahawk3 egress serializer");
+        throw std::logic_error("unbound ns-tm3 egress serializer");
     }
     if (_authorized_dispatch != &pkt) {
         throw std::logic_error(
-            "Tomahawk3 egress serializer cannot bypass the traffic manager");
+            "ns-tm3 egress serializer cannot bypass the traffic manager");
     }
     if (_packet_in_service != nullptr) {
         throw std::logic_error(
-            "Tomahawk3 traffic manager dispatched onto a busy serializer");
+            "ns-tm3 traffic manager dispatched onto a busy serializer");
     }
 
     _authorized_dispatch = nullptr;
@@ -53,10 +53,10 @@ void Tomahawk3EgressSerializer::receivePacket(Packet& pkt) {
     eventlist().sourceIsPendingRel(*this, drainTime(&pkt));
 }
 
-void Tomahawk3EgressSerializer::dispatch(Packet& pkt) {
+void NsTm3EgressSerializer::dispatch(Packet& pkt) {
     if (_authorized_dispatch != nullptr) {
         throw std::logic_error(
-            "Tomahawk3 egress serializer has a pending dispatch");
+            "ns-tm3 egress serializer has a pending dispatch");
     }
 
     _authorized_dispatch = &pkt;
@@ -64,7 +64,7 @@ void Tomahawk3EgressSerializer::dispatch(Packet& pkt) {
         PacketSink* selected_sink = pkt.sendOn();
         if (selected_sink != this || _authorized_dispatch != nullptr) {
             throw std::logic_error(
-                "Tomahawk3 packet route did not consume its authorized "
+                "ns-tm3 packet route did not consume its authorized "
                 "egress dispatch");
         }
     } catch (...) {
@@ -73,9 +73,9 @@ void Tomahawk3EgressSerializer::dispatch(Packet& pkt) {
     }
 }
 
-void Tomahawk3EgressSerializer::doNextEvent() {
+void NsTm3EgressSerializer::doNextEvent() {
     if (_packet_in_service == nullptr) {
-        throw std::logic_error("idle Tomahawk3 serializer received an event");
+        throw std::logic_error("idle ns-tm3 serializer received an event");
     }
 
     Packet* packet = _packet_in_service;
@@ -92,38 +92,38 @@ void Tomahawk3EgressSerializer::doNextEvent() {
     _owner->egress_serialization_complete(_egress_id);
 }
 
-mem_b Tomahawk3EgressSerializer::queuesize() const {
+mem_b NsTm3EgressSerializer::queuesize() const {
     if (_owner == nullptr) {
         return in_service_bytes();
     }
     return _owner->egress_backlog_bytes(_egress_id);
 }
 
-mem_b Tomahawk3EgressSerializer::maxsize() const {
+mem_b NsTm3EgressSerializer::maxsize() const {
     return _owner == nullptr ? 0 : _owner->shared_buffer_capacity();
 }
 
-mem_b Tomahawk3EgressSerializer::in_service_bytes() const {
+mem_b NsTm3EgressSerializer::in_service_bytes() const {
     return _packet_in_service == nullptr ? 0 : _packet_in_service->size();
 }
 
-void Tomahawk3EgressSerializer::note_packet_enqueued(Packet& pkt) {
+void NsTm3EgressSerializer::note_packet_enqueued(Packet& pkt) {
     pkt.flow().logTraffic(pkt, *this, TrafficLogger::PKT_ARRIVE);
     if (_logger != nullptr) {
         _logger->logQueue(*this, QueueLogger::PKT_ENQUEUE, pkt);
     }
 }
 
-void Tomahawk3EgressSerializer::note_shared_buffer_drop(Packet& pkt) {
+void NsTm3EgressSerializer::note_shared_buffer_drop(Packet& pkt) {
     pkt.flow().logTraffic(pkt, *this, TrafficLogger::PKT_DROP);
 
     // Admission belongs to the switch-wide shared-buffer domain. A per-egress
     // queue logger cannot represent a drop caused by occupancy on other
     // egresses (and several legacy loggers assume local backlog >= drop size).
-    // Tomahawk3BufferCounters are therefore the authoritative drop ledger.
+    // NsTm3BufferCounters are therefore the authoritative drop ledger.
 }
 
-Tomahawk3Switch::Tomahawk3Switch(EventList& eventlist, const string& name,
+NsTm3Switch::NsTm3Switch(EventList& eventlist, const string& name,
                                  switch_type type, uint32_t id,
                                  simtime_picosec switch_delay,
                                  FatTreeTopology* topology,
@@ -132,15 +132,15 @@ Tomahawk3Switch::Tomahawk3Switch(EventList& eventlist, const string& name,
       _shared_buffer_capacity(shared_buffer_capacity) {
     if (_shared_buffer_capacity <= 0) {
         throw std::invalid_argument(
-            "Tomahawk3 shared-buffer capacity must be positive");
+            "ns-tm3 shared-buffer capacity must be positive");
     }
 }
 
-int Tomahawk3Switch::addPort(BaseQueue* queue) {
-    auto* serializer = dynamic_cast<Tomahawk3EgressSerializer*>(queue);
+int NsTm3Switch::addPort(BaseQueue* queue) {
+    auto* serializer = dynamic_cast<NsTm3EgressSerializer*>(queue);
     if (serializer == nullptr) {
         throw std::invalid_argument(
-            "Tomahawk3 switch ports must be physical egress serializers");
+            "ns-tm3 switch ports must be physical egress serializers");
     }
 
     const int egress_id = FatTreeSwitch::addPort(queue);
@@ -153,52 +153,52 @@ int Tomahawk3Switch::addPort(BaseQueue* queue) {
     return egress_id;
 }
 
-PacketSink* Tomahawk3Switch::create_physical_ingress(const string& name) {
+PacketSink* NsTm3Switch::create_physical_ingress(const string& name) {
     const uint32_t ingress_id =
         static_cast<uint32_t>(_physical_ingresses.size());
     auto ingress =
-        std::make_unique<Tomahawk3IngressPort>(*this, ingress_id, name);
+        std::make_unique<NsTm3IngressPort>(*this, ingress_id, name);
     PacketSink* result = ingress.get();
     _physical_ingresses.push_back(std::move(ingress));
     return result;
 }
 
-void Tomahawk3Switch::receive_from_physical_ingress(Packet& pkt,
+void NsTm3Switch::receive_from_physical_ingress(Packet& pkt,
                                                      uint32_t ingress_id) {
     if (pkt.type() == ETH_PAUSE) {
         throw std::invalid_argument(
-            "Tomahawk3 model does not support PAUSE/PFC packets");
+            "ns-tm3 model does not support PAUSE/PFC packets");
     }
     if (ingress_id >= _physical_ingresses.size()) {
-        throw std::out_of_range("unknown Tomahawk3 physical ingress");
+        throw std::out_of_range("unknown ns-tm3 physical ingress");
     }
     if (!_pipeline_ingress.emplace(&pkt, ingress_id).second) {
         throw std::logic_error(
-            "packet entered the Tomahawk3 switch pipeline twice");
+            "packet entered the ns-tm3 switch pipeline twice");
     }
 
     schedule_through_switch_pipeline(pkt);
 }
 
-void Tomahawk3Switch::receivePacket(Packet& pkt) {
+void NsTm3Switch::receivePacket(Packet& pkt) {
     if (pkt.type() == ETH_PAUSE) {
         throw std::invalid_argument(
-            "Tomahawk3 model does not support PAUSE/PFC packets");
+            "ns-tm3 model does not support PAUSE/PFC packets");
     }
 
     auto pending = _pipeline_ingress.find(&pkt);
     if (pending == _pipeline_ingress.end()) {
         throw std::logic_error(
-            "Tomahawk3 packets must enter through a physical ingress");
+            "ns-tm3 packets must enter through a physical ingress");
     }
     const uint32_t ingress_id = pending->second;
     _pipeline_ingress.erase(pending);
 
-    Tomahawk3EgressSerializer& egress = resolve_selected_egress(pkt);
+    NsTm3EgressSerializer& egress = resolve_selected_egress(pkt);
     enqueue(pkt, ingress_id, egress);
 }
 
-size_t Tomahawk3Switch::traffic_class(Packet::PktPriority priority) {
+size_t NsTm3Switch::traffic_class(Packet::PktPriority priority) {
     switch (priority) {
     case Packet::PRIO_HI:
         return 0;
@@ -211,13 +211,13 @@ size_t Tomahawk3Switch::traffic_class(Packet::PktPriority priority) {
     throw std::invalid_argument("unknown packet priority");
 }
 
-Tomahawk3EgressSerializer& Tomahawk3Switch::resolve_selected_egress(Packet& pkt) {
+NsTm3EgressSerializer& NsTm3Switch::resolve_selected_egress(Packet& pkt) {
     if (pkt.route() != nullptr && pkt.nexthop() < pkt.route()->size()) {
         auto* egress =
-            dynamic_cast<Tomahawk3EgressSerializer*>(pkt.route()->at(pkt.nexthop()));
+            dynamic_cast<NsTm3EgressSerializer*>(pkt.route()->at(pkt.nexthop()));
         if (egress == nullptr || egress->owner() != this) {
             throw std::logic_error(
-                "Tomahawk3 physical ingress is not followed by a local "
+                "ns-tm3 physical ingress is not followed by a local "
                 "physical egress");
         }
         return *egress;
@@ -225,20 +225,20 @@ Tomahawk3EgressSerializer& Tomahawk3Switch::resolve_selected_egress(Packet& pkt)
 
     Route* selected_route = FatTreeSwitch::getNextHop(pkt, nullptr);
     if (selected_route == nullptr || selected_route->size() == 0) {
-        throw std::logic_error("Tomahawk3 FIB selected an empty route");
+        throw std::logic_error("ns-tm3 FIB selected an empty route");
     }
     pkt.set_route(*selected_route);
 
-    auto* egress = dynamic_cast<Tomahawk3EgressSerializer*>(selected_route->at(0));
+    auto* egress = dynamic_cast<NsTm3EgressSerializer*>(selected_route->at(0));
     if (egress == nullptr || egress->owner() != this) {
         throw std::logic_error(
-            "Tomahawk3 FIB did not select a local physical egress");
+            "ns-tm3 FIB did not select a local physical egress");
     }
     return *egress;
 }
 
-void Tomahawk3Switch::enqueue(Packet& pkt, uint32_t ingress_id,
-                              Tomahawk3EgressSerializer& egress) {
+void NsTm3Switch::enqueue(Packet& pkt, uint32_t ingress_id,
+                              NsTm3EgressSerializer& egress) {
     const mem_b packet_bytes = pkt.size();
     if (packet_bytes > _shared_buffer_capacity ||
         _shared_buffer_occupancy >
@@ -265,7 +265,7 @@ void Tomahawk3Switch::enqueue(Packet& pkt, uint32_t ingress_id,
     schedule_egress(egress.egress_id());
 }
 
-Packet* Tomahawk3Switch::select_next_packet(EgressState& egress) {
+Packet* NsTm3Switch::select_next_packet(EgressState& egress) {
     for (TrafficClassVoqs& traffic_class : egress.traffic_classes) {
         auto& voqs = traffic_class.packets_by_ingress;
         if (voqs.empty()) {
@@ -294,7 +294,7 @@ Packet* Tomahawk3Switch::select_next_packet(EgressState& egress) {
     return nullptr;
 }
 
-void Tomahawk3Switch::schedule_egress(uint32_t egress_id) {
+void NsTm3Switch::schedule_egress(uint32_t egress_id) {
     EgressState& state = egress_state(egress_id);
     if (state.serializer->is_busy()) {
         return;
@@ -308,13 +308,13 @@ void Tomahawk3Switch::schedule_egress(uint32_t egress_id) {
     const mem_b packet_bytes = packet->size();
     if (state.buffered_bytes < packet_bytes ||
         _shared_buffer_occupancy < packet_bytes) {
-        throw std::logic_error("Tomahawk3 shared-buffer accounting underflow");
+        throw std::logic_error("ns-tm3 shared-buffer accounting underflow");
     }
     if (packet->route() == nullptr ||
         packet->nexthop() >= packet->route()->size() ||
         packet->route()->at(packet->nexthop()) != state.serializer) {
         throw std::logic_error(
-            "Tomahawk3 dequeued packet does not target its serializer");
+            "ns-tm3 dequeued packet does not target its serializer");
     }
 
     state.buffered_bytes -= packet_bytes;
@@ -325,31 +325,31 @@ void Tomahawk3Switch::schedule_egress(uint32_t egress_id) {
     state.serializer->dispatch(*packet);
 }
 
-void Tomahawk3Switch::egress_serialization_complete(uint32_t egress_id) {
+void NsTm3Switch::egress_serialization_complete(uint32_t egress_id) {
     schedule_egress(egress_id);
 }
 
-mem_b Tomahawk3Switch::egress_buffered_bytes(uint32_t egress_id) const {
+mem_b NsTm3Switch::egress_buffered_bytes(uint32_t egress_id) const {
     return egress_state(egress_id).buffered_bytes;
 }
 
-mem_b Tomahawk3Switch::egress_backlog_bytes(uint32_t egress_id) const {
+mem_b NsTm3Switch::egress_backlog_bytes(uint32_t egress_id) const {
     const EgressState& state = egress_state(egress_id);
     return state.buffered_bytes + state.serializer->in_service_bytes();
 }
 
-Tomahawk3Switch::EgressState& Tomahawk3Switch::egress_state(
+NsTm3Switch::EgressState& NsTm3Switch::egress_state(
     uint32_t egress_id) {
     if (egress_id >= _egresses.size()) {
-        throw std::out_of_range("unknown Tomahawk3 physical egress");
+        throw std::out_of_range("unknown ns-tm3 physical egress");
     }
     return _egresses[egress_id];
 }
 
-const Tomahawk3Switch::EgressState& Tomahawk3Switch::egress_state(
+const NsTm3Switch::EgressState& NsTm3Switch::egress_state(
     uint32_t egress_id) const {
     if (egress_id >= _egresses.size()) {
-        throw std::out_of_range("unknown Tomahawk3 physical egress");
+        throw std::out_of_range("unknown ns-tm3 physical egress");
     }
     return _egresses[egress_id];
 }

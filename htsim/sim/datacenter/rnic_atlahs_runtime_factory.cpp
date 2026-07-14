@@ -103,14 +103,14 @@ std::unique_ptr<RnicAtlahsRuntimeAssembly> makeRnicAtlahsRuntime(
                 "downlink rate");
         }
 
-        // Tomahawk3 is the physical traffic manager for every Clos profile.
+        // ns-tm3 is the physical traffic manager for every Clos profile.
         // Set it at the assembly boundary so a caller cannot accidentally
         // construct the legacy switch model and only discover that later.
-        topology_config->set_switch_model(FatTreeSwitchModel::Tomahawk3);
+        topology_config->set_switch_model(FatTreeSwitchModel::NsTm3);
         if (topology_config->switch_model()
-            != FatTreeSwitchModel::Tomahawk3) {
+            != FatTreeSwitchModel::NsTm3) {
             throw std::logic_error(
-                "rnic-cn failed to select the Tomahawk3 switch model");
+                "rnic-cn failed to select the ns-tm3 switch model");
         }
 
         // ETA is a no-queue physical baseline, not a caller-selected model

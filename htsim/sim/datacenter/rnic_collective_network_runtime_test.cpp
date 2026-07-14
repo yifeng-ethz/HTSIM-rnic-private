@@ -32,8 +32,8 @@ public:
                           FAIR_PRIO) {
         while (EventList::doNextEvent()) {
         }
-        topology_config.set_switch_model(FatTreeSwitchModel::Tomahawk3);
-        topology_config.set_tomahawk3_shared_buffer_capacity(1 << 20);
+        topology_config.set_switch_model(FatTreeSwitchModel::NsTm3);
+        topology_config.set_ns_tm3_shared_buffer_capacity(1 << 20);
         topology = std::make_unique<FatTreeTopology>(
             &topology_config, nullptr, &events, nullptr);
     }

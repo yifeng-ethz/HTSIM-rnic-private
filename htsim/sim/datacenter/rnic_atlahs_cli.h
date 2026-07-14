@@ -28,7 +28,7 @@ struct RnicAtlahsManifoldCliOptions {
 };
 
 // Options needed to assemble the physical collective-network profile.  A
-// missing topology file means a generated two-tier Tomahawk3 Clos.  A supplied
+// missing topology file means a generated two-tier ns-tm3 Clos.  A supplied
 // topology file still has to resolve to that same checked physical model in
 // the assembly layer.
 struct RnicAtlahsCollectiveCliOptions {
@@ -42,7 +42,7 @@ struct RnicAtlahsCollectiveCliOptions {
     std::uint64_t ring_delay_window_ps = 4096000;
     std::uint64_t ring_release_tick_ps = 16000;
     std::uint64_t ring_wire_capacity_bytes = UINT64_C(1) << 20;
-    std::uint64_t tomahawk3_shared_buffer_bytes = UINT64_C(1) << 20;
+    std::uint64_t ns_tm3_shared_buffer_bytes = UINT64_C(1) << 20;
 };
 
 // Defaults remain visible in the resolved options, while this side table lets
@@ -64,7 +64,7 @@ struct RnicAtlahsExplicitCliOptions {
     bool ring_delay_window_ps = false;
     bool ring_release_tick_ps = false;
     bool ring_wire_capacity_bytes = false;
-    bool tomahawk3_shared_buffer_bytes = false;
+    bool ns_tm3_shared_buffer_bytes = false;
 };
 
 struct RnicAtlahsCliOptions {
@@ -90,7 +90,7 @@ RnicAtlahsCliOptions parseRnicAtlahsCli(
     int argc, const char* const argv[]);
 
 // HTSIM's generated two-tier Clos has N = K^2/2 endpoints for an even
-// Tomahawk3 radix K. The driver also applies this predicate after deriving N
+// ns-tm3 radix K. The driver also applies this predicate after deriving N
 // from GOAL, when no explicit -nodes validation override was supplied.
 bool isRnicGeneratedTwoTierClosNodeCount(
     std::uint32_t node_count) noexcept;

@@ -1,6 +1,6 @@
 // -*- c-basic-offset: 4; indent-tabs-mode: nil -*-
 #include "fat_tree_switch_factory.h"
-#include "tomahawk3_switch.h"
+#include "ns_tm3_switch.h"
 
 #include <stdexcept>
 
@@ -17,8 +17,8 @@ std::unique_ptr<FatTreeSwitch> FatTreeSwitchFactory::create(
     case FatTreeSwitchModel::Default:
         return std::make_unique<FatTreeSwitch>(eventlist, name, type, id,
                                                switch_delay, topology);
-    case FatTreeSwitchModel::Tomahawk3:
-        return std::make_unique<Tomahawk3Switch>(
+    case FatTreeSwitchModel::NsTm3:
+        return std::make_unique<NsTm3Switch>(
             eventlist, name, type, id, switch_delay, topology,
             shared_buffer_capacity);
     }

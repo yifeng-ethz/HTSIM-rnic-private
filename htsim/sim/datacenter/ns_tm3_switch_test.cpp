@@ -11,7 +11,7 @@
 #include "fat_tree_switch_factory.h"
 #include "fat_tree_topology.h"
 #include "loggers.h"
-#include "tomahawk3_switch.h"
+#include "ns_tm3_switch.h"
 
 namespace {
 
@@ -66,38 +66,38 @@ private:
     string _name{"RecordingSink"};
 };
 
-class Tomahawk3Harness {
+class NsTm3Harness {
 public:
-    explicit Tomahawk3Harness(mem_b shared_buffer_capacity =
+    explicit NsTm3Harness(mem_b shared_buffer_capacity =
                                    kDefaultSharedBuffer,
                                FatTreeSwitch::switch_type type =
                                    FatTreeSwitch::TOR,
                                simtime_picosec switch_delay = 0)
         : eventlist(EventList::getTheEventList()),
           switch_owner(FatTreeSwitchFactory::create(
-              FatTreeSwitchModel::Tomahawk3, eventlist, "Tomahawk3Test", type,
+              FatTreeSwitchModel::NsTm3, eventlist, "ns-tm3-test", type,
               0, switch_delay, nullptr, shared_buffer_capacity)),
           traffic_manager(
-              dynamic_cast<Tomahawk3Switch*>(switch_owner.get())) {
+              dynamic_cast<NsTm3Switch*>(switch_owner.get())) {
         if (traffic_manager == nullptr) {
-            throw std::logic_error("factory did not construct Tomahawk3Switch");
+            throw std::logic_error("factory did not construct ns-tm3 switch");
         }
     }
 
-    Tomahawk3EgressSerializer& add_egress(QueueLogger* logger = nullptr) {
-        auto serializer = std::make_unique<Tomahawk3EgressSerializer>(
+    NsTm3EgressSerializer& add_egress(QueueLogger* logger = nullptr) {
+        auto serializer = std::make_unique<NsTm3EgressSerializer>(
             kLinkSpeed, eventlist, logger);
-        Tomahawk3EgressSerializer* result = serializer.get();
+        NsTm3EgressSerializer* result = serializer.get();
         serializers.push_back(std::move(serializer));
         traffic_manager->addPort(result);
         return *result;
     }
 
-    Tomahawk3IngressPort& add_ingress(const string& name) {
-        auto* ingress = dynamic_cast<Tomahawk3IngressPort*>(
+    NsTm3IngressPort& add_ingress(const string& name) {
+        auto* ingress = dynamic_cast<NsTm3IngressPort*>(
             traffic_manager->create_physical_ingress(name));
         if (ingress == nullptr) {
-            throw std::logic_error("Tomahawk3 ingress adapter was not created");
+            throw std::logic_error("ns-tm3 ingress adapter was not created");
         }
         return *ingress;
     }
@@ -108,12 +108,12 @@ public:
     }
 
     EventList& eventlist;
-    std::vector<std::unique_ptr<Tomahawk3EgressSerializer>> serializers;
+    std::vector<std::unique_ptr<NsTm3EgressSerializer>> serializers;
     std::unique_ptr<FatTreeSwitch> switch_owner;
-    Tomahawk3Switch* traffic_manager;
+    NsTm3Switch* traffic_manager;
 };
 
-Route route_via(Tomahawk3EgressSerializer& serializer, RecordingSink& sink) {
+Route route_via(NsTm3EgressSerializer& serializer, RecordingSink& sink) {
     Route route;
     route.push_back(&serializer);
     route.push_back(&sink);
@@ -128,11 +128,11 @@ std::vector<packetid_t> arrival_order(const RecordingSink& sink) {
     return result;
 }
 
-TEST(Tomahawk3SwitchTest, SeparatesHeadOfLineBlockingByEgressVoq) {
-    Tomahawk3Harness harness;
-    Tomahawk3EgressSerializer& blocked_egress = harness.add_egress();
-    Tomahawk3EgressSerializer& free_egress = harness.add_egress();
-    Tomahawk3IngressPort& ingress = harness.add_ingress("ingress-0");
+TEST(NsTm3SwitchTest, SeparatesHeadOfLineBlockingByEgressVoq) {
+    NsTm3Harness harness;
+    NsTm3EgressSerializer& blocked_egress = harness.add_egress();
+    NsTm3EgressSerializer& free_egress = harness.add_egress();
+    NsTm3IngressPort& ingress = harness.add_ingress("ingress-0");
     RecordingSink sink;
     Route blocked_route = route_via(blocked_egress, sink);
     Route free_route = route_via(free_egress, sink);
@@ -145,18 +145,18 @@ TEST(Tomahawk3SwitchTest, SeparatesHeadOfLineBlockingByEgressVoq) {
     ingress.receivePacket(blocked_first);
     ingress.receivePacket(blocked_second);
     ingress.receivePacket(escapes_hol);
-    Tomahawk3Harness::drain_all_events();
+    NsTm3Harness::drain_all_events();
 
     EXPECT_LT(sink.arrival_time(3), sink.arrival_time(2));
     EXPECT_EQ(sink.arrival_time(3), start_time + timeFromNs(100));
     EXPECT_EQ(sink.arrival_time(2), start_time + timeFromNs(400));
 }
 
-TEST(Tomahawk3SwitchTest, RoundRobinsIngressVoqsForTheSameEgress) {
-    Tomahawk3Harness harness;
-    Tomahawk3EgressSerializer& egress = harness.add_egress();
-    Tomahawk3IngressPort& ingress_0 = harness.add_ingress("ingress-0");
-    Tomahawk3IngressPort& ingress_1 = harness.add_ingress("ingress-1");
+TEST(NsTm3SwitchTest, RoundRobinsIngressVoqsForTheSameEgress) {
+    NsTm3Harness harness;
+    NsTm3EgressSerializer& egress = harness.add_egress();
+    NsTm3IngressPort& ingress_0 = harness.add_ingress("ingress-0");
+    NsTm3IngressPort& ingress_1 = harness.add_ingress("ingress-1");
     RecordingSink sink;
     Route route = route_via(egress, sink);
     PacketFlow flow(nullptr);
@@ -169,17 +169,17 @@ TEST(Tomahawk3SwitchTest, RoundRobinsIngressVoqsForTheSameEgress) {
     ingress_0.receivePacket(second_0);
     ingress_1.receivePacket(first_1);
     ingress_1.receivePacket(second_1);
-    Tomahawk3Harness::drain_all_events();
+    NsTm3Harness::drain_all_events();
 
     EXPECT_EQ(arrival_order(sink),
               (std::vector<packetid_t>{1, 3, 2, 4}));
 }
 
-TEST(Tomahawk3SwitchTest, SerializesIndependentEgressesConcurrently) {
-    Tomahawk3Harness harness;
-    Tomahawk3EgressSerializer& egress_0 = harness.add_egress();
-    Tomahawk3EgressSerializer& egress_1 = harness.add_egress();
-    Tomahawk3IngressPort& ingress = harness.add_ingress("ingress-0");
+TEST(NsTm3SwitchTest, SerializesIndependentEgressesConcurrently) {
+    NsTm3Harness harness;
+    NsTm3EgressSerializer& egress_0 = harness.add_egress();
+    NsTm3EgressSerializer& egress_1 = harness.add_egress();
+    NsTm3IngressPort& ingress = harness.add_ingress("ingress-0");
     RecordingSink sink;
     Route route_0 = route_via(egress_0, sink);
     Route route_1 = route_via(egress_1, sink);
@@ -190,18 +190,18 @@ TEST(Tomahawk3SwitchTest, SerializesIndependentEgressesConcurrently) {
     const simtime_picosec start_time = EventList::now();
     ingress.receivePacket(packet_0);
     ingress.receivePacket(packet_1);
-    Tomahawk3Harness::drain_all_events();
+    NsTm3Harness::drain_all_events();
 
     EXPECT_EQ(sink.arrival_time(1), sink.arrival_time(2));
     EXPECT_EQ(sink.arrival_time(1), start_time + timeFromNs(100));
 }
 
-TEST(Tomahawk3SwitchTest, AppliesConfiguredSwitchPipelineDelay) {
+TEST(NsTm3SwitchTest, AppliesConfiguredSwitchPipelineDelay) {
     const simtime_picosec kSwitchDelay = timeFromNs(37u);
-    Tomahawk3Harness harness(kDefaultSharedBuffer, FatTreeSwitch::TOR,
+    NsTm3Harness harness(kDefaultSharedBuffer, FatTreeSwitch::TOR,
                              kSwitchDelay);
-    Tomahawk3EgressSerializer& egress = harness.add_egress();
-    Tomahawk3IngressPort& ingress = harness.add_ingress("ingress-0");
+    NsTm3EgressSerializer& egress = harness.add_egress();
+    NsTm3IngressPort& ingress = harness.add_ingress("ingress-0");
     RecordingSink sink;
     Route route = route_via(egress, sink);
     PacketFlow flow(nullptr);
@@ -209,16 +209,16 @@ TEST(Tomahawk3SwitchTest, AppliesConfiguredSwitchPipelineDelay) {
 
     const simtime_picosec start_time = EventList::now();
     ingress.receivePacket(packet);
-    Tomahawk3Harness::drain_all_events();
+    NsTm3Harness::drain_all_events();
 
     EXPECT_EQ(sink.arrival_time(1),
               start_time + kSwitchDelay + timeFromNs(100));
 }
 
-TEST(Tomahawk3SwitchTest, AppliesStrictPriorityOnlyAtPacketBoundaries) {
-    Tomahawk3Harness harness;
-    Tomahawk3EgressSerializer& egress = harness.add_egress();
-    Tomahawk3IngressPort& ingress = harness.add_ingress("ingress-0");
+TEST(NsTm3SwitchTest, AppliesStrictPriorityOnlyAtPacketBoundaries) {
+    NsTm3Harness harness;
+    NsTm3EgressSerializer& egress = harness.add_egress();
+    NsTm3IngressPort& ingress = harness.add_ingress("ingress-0");
     RecordingSink sink;
     Route route = route_via(egress, sink);
     PacketFlow flow(nullptr);
@@ -230,7 +230,7 @@ TEST(Tomahawk3SwitchTest, AppliesStrictPriorityOnlyAtPacketBoundaries) {
     ingress.receivePacket(low_in_service);
     ingress.receivePacket(low_waiting);
     ingress.receivePacket(high_waiting);
-    Tomahawk3Harness::drain_all_events();
+    NsTm3Harness::drain_all_events();
 
     EXPECT_EQ(arrival_order(sink),
               (std::vector<packetid_t>{1, 3, 2}));
@@ -239,10 +239,10 @@ TEST(Tomahawk3SwitchTest, AppliesStrictPriorityOnlyAtPacketBoundaries) {
     EXPECT_EQ(sink.arrival_time(2), start_time + timeFromNs(300));
 }
 
-TEST(Tomahawk3SwitchTest, ConservesOneSharedBufferAccountingDomain) {
-    Tomahawk3Harness harness(300);
-    Tomahawk3EgressSerializer& egress = harness.add_egress();
-    Tomahawk3IngressPort& ingress = harness.add_ingress("ingress-0");
+TEST(NsTm3SwitchTest, ConservesOneSharedBufferAccountingDomain) {
+    NsTm3Harness harness(300);
+    NsTm3EgressSerializer& egress = harness.add_egress();
+    NsTm3IngressPort& ingress = harness.add_ingress("ingress-0");
     RecordingSink sink;
     Route route = route_via(egress, sink);
     PacketFlow flow(nullptr);
@@ -257,7 +257,7 @@ TEST(Tomahawk3SwitchTest, ConservesOneSharedBufferAccountingDomain) {
     ASSERT_TRUE(EventList::doNextEvent());
     ASSERT_TRUE(EventList::doNextEvent());
 
-    const Tomahawk3BufferCounters& active =
+    const NsTm3BufferCounters& active =
         harness.traffic_manager->buffer_counters();
     EXPECT_EQ(active.admitted_bytes, 300);
     EXPECT_EQ(active.dequeued_bytes, 100);
@@ -268,18 +268,18 @@ TEST(Tomahawk3SwitchTest, ConservesOneSharedBufferAccountingDomain) {
     EXPECT_EQ(harness.traffic_manager->egress_backlog_bytes(0), 300);
     EXPECT_EQ(harness.traffic_manager->shared_buffer_high_watermark(), 200);
 
-    Tomahawk3Harness::drain_all_events();
-    const Tomahawk3BufferCounters& drained =
+    NsTm3Harness::drain_all_events();
+    const NsTm3BufferCounters& drained =
         harness.traffic_manager->buffer_counters();
     EXPECT_EQ(drained.admitted_bytes, drained.dequeued_bytes);
     EXPECT_EQ(harness.traffic_manager->shared_buffer_occupancy(), 0);
     EXPECT_EQ(harness.traffic_manager->egress_backlog_bytes(0), 0);
 }
 
-TEST(Tomahawk3SwitchTest, DropsOnlyWhenSharedBufferCapacityIsExceeded) {
-    Tomahawk3Harness harness(150);
-    Tomahawk3EgressSerializer& egress = harness.add_egress();
-    Tomahawk3IngressPort& ingress = harness.add_ingress("ingress-0");
+TEST(NsTm3SwitchTest, DropsOnlyWhenSharedBufferCapacityIsExceeded) {
+    NsTm3Harness harness(150);
+    NsTm3EgressSerializer& egress = harness.add_egress();
+    NsTm3IngressPort& ingress = harness.add_ingress("ingress-0");
     RecordingSink sink;
     Route route = route_via(egress, sink);
     PacketFlow flow(nullptr);
@@ -294,7 +294,7 @@ TEST(Tomahawk3SwitchTest, DropsOnlyWhenSharedBufferCapacityIsExceeded) {
     ASSERT_TRUE(EventList::doNextEvent());
     ASSERT_TRUE(EventList::doNextEvent());
 
-    const Tomahawk3BufferCounters& counters =
+    const NsTm3BufferCounters& counters =
         harness.traffic_manager->buffer_counters();
     EXPECT_EQ(counters.admitted_packets, 2);
     EXPECT_EQ(counters.dropped_packets, 1);
@@ -304,14 +304,14 @@ TEST(Tomahawk3SwitchTest, DropsOnlyWhenSharedBufferCapacityIsExceeded) {
     EXPECT_EQ(counters.admitted_bytes - counters.dequeued_bytes,
               harness.traffic_manager->shared_buffer_occupancy());
 
-    Tomahawk3Harness::drain_all_events();
+    NsTm3Harness::drain_all_events();
     EXPECT_EQ(arrival_order(sink),
               (std::vector<packetid_t>{1, 2}));
 }
 
-TEST(Tomahawk3SwitchTest, RejectsRoutesThatBypassTheTrafficManager) {
-    Tomahawk3Harness harness;
-    Tomahawk3EgressSerializer& egress = harness.add_egress();
+TEST(NsTm3SwitchTest, RejectsRoutesThatBypassTheTrafficManager) {
+    NsTm3Harness harness;
+    NsTm3EgressSerializer& egress = harness.add_egress();
     RecordingSink sink;
     Route route = route_via(egress, sink);
     PacketFlow flow(nullptr);
@@ -322,7 +322,7 @@ TEST(Tomahawk3SwitchTest, RejectsRoutesThatBypassTheTrafficManager) {
     EXPECT_TRUE(sink.arrivals.empty());
 }
 
-TEST(Tomahawk3SwitchTest, SharedDropDoesNotMisreportAnEmptyEgressQueue) {
+TEST(NsTm3SwitchTest, SharedDropDoesNotMisreportAnEmptyEgressQueue) {
     EventList& eventlist = EventList::getTheEventList();
     QueueLoggerSampling empty_egress_logger(timeFromUs(uint32_t{10}),
                                             eventlist);
@@ -330,11 +330,11 @@ TEST(Tomahawk3SwitchTest, SharedDropDoesNotMisreportAnEmptyEgressQueue) {
     // periodic sample before draining this finite test.
     ASSERT_TRUE(EventList::doNextEvent());
 
-    Tomahawk3Harness harness(100);
-    Tomahawk3EgressSerializer& busy_egress = harness.add_egress();
-    Tomahawk3EgressSerializer& empty_egress =
+    NsTm3Harness harness(100);
+    NsTm3EgressSerializer& busy_egress = harness.add_egress();
+    NsTm3EgressSerializer& empty_egress =
         harness.add_egress(&empty_egress_logger);
-    Tomahawk3IngressPort& ingress = harness.add_ingress("ingress-0");
+    NsTm3IngressPort& ingress = harness.add_ingress("ingress-0");
     RecordingSink sink;
     Route busy_route = route_via(busy_egress, sink);
     Route empty_route = route_via(empty_egress, sink);
@@ -355,29 +355,29 @@ TEST(Tomahawk3SwitchTest, SharedDropDoesNotMisreportAnEmptyEgressQueue) {
     EXPECT_EQ(harness.traffic_manager->buffer_counters().dropped_packets, 1);
 
     EventList::cancelPendingSource(empty_egress_logger);
-    Tomahawk3Harness::drain_all_events();
+    NsTm3Harness::drain_all_events();
 }
 
-TEST(Tomahawk3SwitchTest, FactoryConstructsEveryClosTier) {
+TEST(NsTm3SwitchTest, FactoryConstructsEveryClosTier) {
     EventList& eventlist = EventList::getTheEventList();
     for (FatTreeSwitch::switch_type type :
          {FatTreeSwitch::TOR, FatTreeSwitch::AGG, FatTreeSwitch::CORE}) {
         auto switch_instance = FatTreeSwitchFactory::create(
-            FatTreeSwitchModel::Tomahawk3, eventlist, "Tomahawk3Tier", type,
+            FatTreeSwitchModel::NsTm3, eventlist, "ns-tm3-tier", type,
             static_cast<uint32_t>(type), 0, nullptr, kDefaultSharedBuffer);
-        auto* tomahawk3 =
-            dynamic_cast<Tomahawk3Switch*>(switch_instance.get());
-        ASSERT_NE(tomahawk3, nullptr);
-        EXPECT_EQ(tomahawk3->getType(), type);
+        auto* ns_tm3 =
+            dynamic_cast<NsTm3Switch*>(switch_instance.get());
+        ASSERT_NE(ns_tm3, nullptr);
+        EXPECT_EQ(ns_tm3->getType(), type);
     }
 }
 
-TEST(Tomahawk3SwitchTest, PreservesFatTreeFibPathSelection) {
+TEST(NsTm3SwitchTest, PreservesFatTreeFibPathSelection) {
     EventList& eventlist = EventList::getTheEventList();
     FatTreeTopologyCfg cfg(2, 32, speedFromGbps(100), 32768,
                            timeFromNs(1000), 0, COMPOSITE, FAIR_PRIO);
-    cfg.set_switch_model(FatTreeSwitchModel::Tomahawk3);
-    cfg.set_tomahawk3_shared_buffer_capacity(65536);
+    cfg.set_switch_model(FatTreeSwitchModel::NsTm3);
+    cfg.set_ns_tm3_shared_buffer_capacity(65536);
     FatTreeTopology topology(&cfg, nullptr, &eventlist, nullptr);
 
     constexpr uint32_t source_host = 0;
@@ -404,28 +404,28 @@ TEST(Tomahawk3SwitchTest, PreservesFatTreeFibPathSelection) {
     packet.set_src(source_host);
     packet.set_dst(destination_host);
     packet.sendOn();
-    Tomahawk3Harness::drain_all_events();
+    NsTm3Harness::drain_all_events();
 
     ASSERT_EQ(destination.arrivals.size(), 1);
     EXPECT_EQ(destination.arrivals.front().packet_id, 1);
 }
 
-TEST(Tomahawk3SwitchTest, ThreeTierRoutesUsePhysicalIngressAdapters) {
+TEST(NsTm3SwitchTest, ThreeTierRoutesUsePhysicalIngressAdapters) {
     EventList& eventlist = EventList::getTheEventList();
     FatTreeTopologyCfg cfg(3, 128, speedFromGbps(100), 32768,
                            timeFromNs(1000), 0, COMPOSITE, FAIR_PRIO);
-    cfg.set_switch_model(FatTreeSwitchModel::Tomahawk3);
-    cfg.set_tomahawk3_shared_buffer_capacity(65536);
+    cfg.set_switch_model(FatTreeSwitchModel::NsTm3);
+    cfg.set_ns_tm3_shared_buffer_capacity(65536);
     FatTreeTopology topology(&cfg, nullptr, &eventlist, nullptr);
 
     for (Switch* switch_instance : topology.switches_lp) {
-        EXPECT_NE(dynamic_cast<Tomahawk3Switch*>(switch_instance), nullptr);
+        EXPECT_NE(dynamic_cast<NsTm3Switch*>(switch_instance), nullptr);
     }
     for (Switch* switch_instance : topology.switches_up) {
-        EXPECT_NE(dynamic_cast<Tomahawk3Switch*>(switch_instance), nullptr);
+        EXPECT_NE(dynamic_cast<NsTm3Switch*>(switch_instance), nullptr);
     }
     for (Switch* switch_instance : topology.switches_c) {
-        EXPECT_NE(dynamic_cast<Tomahawk3Switch*>(switch_instance), nullptr);
+        EXPECT_NE(dynamic_cast<NsTm3Switch*>(switch_instance), nullptr);
     }
 
     std::unique_ptr<std::vector<const Route*>> paths(
@@ -435,10 +435,10 @@ TEST(Tomahawk3SwitchTest, ThreeTierRoutesUsePhysicalIngressAdapters) {
     size_t ingress_adapters = 0;
     size_t egress_serializers = 0;
     for (PacketSink* sink : *route) {
-        if (dynamic_cast<Tomahawk3IngressPort*>(sink) != nullptr) {
+        if (dynamic_cast<NsTm3IngressPort*>(sink) != nullptr) {
             ingress_adapters++;
         }
-        if (dynamic_cast<Tomahawk3EgressSerializer*>(sink) != nullptr) {
+        if (dynamic_cast<NsTm3EgressSerializer*>(sink) != nullptr) {
             egress_serializers++;
         }
     }
@@ -451,19 +451,19 @@ TEST(Tomahawk3SwitchTest, ThreeTierRoutesUsePhysicalIngressAdapters) {
     TestPacket packet(flow, delivery_route, 1, Packet::PRIO_LO);
 
     packet.sendOn();
-    Tomahawk3Harness::drain_all_events();
+    NsTm3Harness::drain_all_events();
 
     ASSERT_EQ(destination.arrivals.size(), 1);
     EXPECT_EQ(destination.arrivals.front().packet_id, 1);
 }
 
-TEST(Tomahawk3SwitchTest, ExplicitlyRejectsPauseQueueModes) {
+TEST(NsTm3SwitchTest, ExplicitlyRejectsPauseQueueModes) {
     EventList& eventlist = EventList::getTheEventList();
     for (queue_type queue_mode :
          {LOSSLESS, LOSSLESS_INPUT, LOSSLESS_INPUT_ECN}) {
         FatTreeTopologyCfg cfg(2, 32, speedFromGbps(100), 32768,
                                timeFromNs(1000), 0, queue_mode, FAIR_PRIO);
-        cfg.set_switch_model(FatTreeSwitchModel::Tomahawk3);
+        cfg.set_switch_model(FatTreeSwitchModel::NsTm3);
 
         EXPECT_THROW(FatTreeTopology(&cfg, nullptr, &eventlist, nullptr),
                      std::invalid_argument);

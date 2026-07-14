@@ -27,7 +27,7 @@ std::unique_ptr<FatTreeTopologyCfg> makeCollectiveTopologyConfig(
         const RnicAtlahsCliOptions& options,
         std::uint32_t physical_node_count) {
     const auto buffer_bytes = static_cast<mem_b>(
-        options.collective.tomahawk3_shared_buffer_bytes);
+        options.collective.ns_tm3_shared_buffer_bytes);
     std::unique_ptr<FatTreeTopologyCfg> topology_config;
     if (options.collective.topology_file.has_value()) {
         std::ifstream topology_probe(*options.collective.topology_file);
@@ -66,7 +66,7 @@ std::unique_ptr<FatTreeTopologyCfg> makeCollectiveTopologyConfig(
             COMPOSITE,
             FAIR_PRIO);
     }
-    topology_config->set_tomahawk3_shared_buffer_capacity(buffer_bytes);
+    topology_config->set_ns_tm3_shared_buffer_capacity(buffer_bytes);
     return topology_config;
 }
 
@@ -181,7 +181,7 @@ std::string renderRnicAtlahsModelManifest(
             << (options.collective.topology_file.has_value()
                     ? *options.collective.topology_file
                     : "generated-two-tier")
-            << " clos_tiers=2 switch=Tomahawk3"
+            << " clos_tiers=2 switch=ns-tm3"
             << " link_failures=0"
             << " eta_calibration_config=construction-snapshot"
             << " voq_key=physical-ingress-x-physical-egress"
@@ -190,7 +190,7 @@ std::string renderRnicAtlahsModelManifest(
             << " control_priority=strict-nonpreemptive"
             << " pfc=off ecn=off"
             << " shared_buffer_bytes="
-            << options.collective.tomahawk3_shared_buffer_bytes;
+            << options.collective.ns_tm3_shared_buffer_bytes;
         if (!options.collective.topology_file.has_value()) {
             manifest
                 << " hop_latency_ps="
@@ -240,7 +240,7 @@ std::string renderRnicAtlahsModelManifest(
             << options.collective.ring_wire_capacity_bytes
             << " scope=node-shared"
             << " eta=source-route-injection-plus-packet-specific-no-load-transit"
-            << " eta_transit=pipe-switch-latency-plus-remaining-tm3-egress-serialization"
+            << " eta_transit=pipe-switch-latency-plus-remaining-ns-tm3-egress-serialization"
             << " same_time_order=release-before-admission"
             << '\n';
     } else {

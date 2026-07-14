@@ -348,9 +348,9 @@ void RnicCollectiveNetworkRuntime::Impl::validateConfiguration() const {
         throw std::invalid_argument(
             "rnic-cn runtime requires a two-tier Clos");
     }
-    if (clos.switch_model() != FatTreeSwitchModel::Tomahawk3) {
+    if (clos.switch_model() != FatTreeSwitchModel::NsTm3) {
         throw std::invalid_argument(
-            "rnic-cn runtime requires Tomahawk3 switches");
+            "rnic-cn runtime requires ns-tm3 switches");
     }
     if (clos.uses_pause_flow_control()) {
         throw std::invalid_argument(
