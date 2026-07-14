@@ -32,6 +32,29 @@ and buffer parameters across all baselines.  A seed changes only the logical-ran
 to physical-node permutation and each protocol's explicitly seeded stochastic
 components.
 
+## Join / finite-byte exit dynamics
+
+The dynamics workload uses eight incast sources, one per leaf, and node 63 as
+the destination.  Flow `i` joins at `i * 5 ms`.  Its payload is the ceiling of
+the ideal 400-Gbit/s processor-sharing service integral from its join until its
+target completion.  Consequently all eight flows are active before flow 0
+finishes, flow 0 finishes first, and target finishes are then spaced by 5 ms.
+These are byte-limited flows: there is no stop event or exit timer, so every
+protocol determines its own actual completion time.
+
+```sh
+python3 experiments/rnic_multibaseline/generate_join_exit_goal.py \
+  --output /tmp/join-exit.goal \
+  --metadata /tmp/join-exit.json
+
+/path/to/htsim_goal_txt2bin \
+  -i /tmp/join-exit.goal \
+  -o /tmp/join-exit.bin
+```
+
+The metadata records overall, 1-to-2-flow join, and 2-to-1-flow exit zoom
+windows for aligned `rnic-cn` and DCQCN plots.
+
 ## Statistical plot contract
 
 For each protocol and seed, build an empirical FCT CDF from all directed flows.
