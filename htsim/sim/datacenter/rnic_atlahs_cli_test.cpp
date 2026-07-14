@@ -141,6 +141,7 @@ TEST(RnicAtlahsCliTest, RecordsExplicitGeneratedCollectiveOverrides) {
 
 TEST(RnicAtlahsCliTest, ResolvesCanonicalSlingshotLikeOverrides) {
     std::vector<std::string> arguments = baseArguments("rnic-ss");
+    append(arguments, "-rnic_ss_state_trace_csv", "results/ss-state.csv");
     append(arguments, "-rnic_ss_control_wire_bytes", "96");
     append(arguments, "-rnic_ss_ns_rosetta_buffer_bytes", "16777216");
     append(arguments, "-rnic_ss_q_hi_bytes", "4194304");
@@ -159,6 +160,8 @@ TEST(RnicAtlahsCliTest, ResolvesCanonicalSlingshotLikeOverrides) {
 
     const RnicAtlahsCliOptions options = parse(std::move(arguments));
     EXPECT_EQ(options.profile, RnicProfile::SlingshotLike);
+    ASSERT_TRUE(options.slingshot.state_trace_csv.has_value());
+    EXPECT_EQ(*options.slingshot.state_trace_csv, "results/ss-state.csv");
     EXPECT_EQ(options.slingshot.control_wire_bytes, 96U);
     EXPECT_EQ(options.slingshot.ns_rosetta_shared_buffer_bytes, 16777216U);
     EXPECT_EQ(options.slingshot.q_hi_bytes, 4194304U);
@@ -176,6 +179,7 @@ TEST(RnicAtlahsCliTest, ResolvesCanonicalSlingshotLikeOverrides) {
     EXPECT_TRUE(options.slingshot.allow_loss_stress);
     EXPECT_TRUE(options.explicitly_supplied.ss_routing);
     EXPECT_TRUE(options.explicitly_supplied.ss_loss_stress);
+    EXPECT_TRUE(options.explicitly_supplied.ss_state_trace_csv);
 }
 
 TEST(RnicAtlahsCliTest, ResolvesOrderedSack128SlingshotDefaults) {
@@ -391,6 +395,10 @@ TEST(RnicAtlahsCliTest, RejectsCrossProfileOptions) {
     append(cn_ss, "-rnic_ss_q_hi_bytes", "1048576");
     EXPECT_THROW(parse(std::move(cn_ss)), std::invalid_argument);
 
+    std::vector<std::string> cn_ss_trace = baseArguments("rnic-cn");
+    append(cn_ss_trace, "-rnic_ss_state_trace_csv", "state.csv");
+    EXPECT_THROW(parse(std::move(cn_ss_trace)), std::invalid_argument);
+
     std::vector<std::string> nn_trace = baseArguments("rnic-nn");
     append(nn_trace, "-rnic_cn_queue_trace_csv", "queues.csv");
     EXPECT_THROW(parse(std::move(nn_trace)), std::invalid_argument);
@@ -516,6 +524,8 @@ TEST(RnicAtlahsCliTest, UsageNamesOnlyCanonicalProfilesAndExactUnits) {
     EXPECT_NE(usage.find("-rnic_cn_state_trace_csv FILE"),
               std::string::npos);
     EXPECT_NE(usage.find("-rnic_ss_ns_rosetta_buffer_bytes"),
+              std::string::npos);
+    EXPECT_NE(usage.find("-rnic_ss_state_trace_csv FILE"),
               std::string::npos);
     EXPECT_NE(usage.find("-rnic_ss_routing unordered|ordered"),
               std::string::npos);

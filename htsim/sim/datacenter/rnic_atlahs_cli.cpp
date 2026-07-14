@@ -230,6 +230,11 @@ void validateSlingshotOptions(const RnicAtlahsCliOptions& options) {
         throw std::invalid_argument(
             "rnic-ss DATA/control wire extents must fit uint16_t");
     }
+    if (options.slingshot.state_trace_csv.has_value()
+        && options.slingshot.state_trace_csv->empty()) {
+        throw std::invalid_argument(
+            "-rnic_ss_state_trace_csv: path must be nonempty");
+    }
     requirePositive(options.slingshot.ns_rosetta_shared_buffer_bytes,
                     "-rnic_ss_ns_rosetta_buffer_bytes");
     requirePositive(options.slingshot.q_hi_bytes, "-rnic_ss_q_hi_bytes");
@@ -315,7 +320,8 @@ void rejectCrossProfileOptions(const RnicAtlahsCliOptions& options) {
     }
 
     const bool supplied_ss =
-        supplied.ss_control_wire_bytes
+        supplied.ss_state_trace_csv
+        || supplied.ss_control_wire_bytes
         || supplied.ns_rosetta_shared_buffer_bytes
         || supplied.ss_q_hi_bytes
         || supplied.ss_q_lo_bytes
@@ -479,6 +485,12 @@ RnicAtlahsCliOptions parseRnicAtlahsCli(
             options.collective.maximum_repair_retries =
                 parseUnsigned32(option, value);
             options.explicitly_supplied.cn_maximum_repair_retries = true;
+        } else if (option == "-rnic_ss_state_trace_csv") {
+            if (value.empty()) {
+                throw optionError(option, "path must be nonempty");
+            }
+            options.slingshot.state_trace_csv = value;
+            options.explicitly_supplied.ss_state_trace_csv = true;
         } else if (option == "-rnic_ss_control_wire_bytes") {
             options.slingshot.control_wire_bytes = parseUnsigned(option, value);
             options.explicitly_supplied.ss_control_wire_bytes = true;
@@ -621,6 +633,7 @@ std::string rnicAtlahsCliUsage(const std::string& program_name) {
         << "rnic-ss: [-topo FILE]"
            " [-rnic_hop_latency_ps PS]"
            " [-rnic_switch_latency_ps PS]"
+           " [-rnic_ss_state_trace_csv FILE]"
            " [-rnic_ss_control_wire_bytes BYTES]"
            " [-rnic_ss_ns_rosetta_buffer_bytes BYTES]"
            " [-rnic_ss_q_hi_bytes BYTES]"

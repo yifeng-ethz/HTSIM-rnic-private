@@ -133,11 +133,24 @@ class CommandBuilderTest(unittest.TestCase):
             self.parameters,
             Path("/state.csv"),
         )
+        ss = runner.build_simulator_command(
+            self.tools,
+            "rnic-ss",
+            Path("/w.bin"),
+            Path("/flows.csv"),
+            Path("/clos.topo"),
+            1,
+            self.parameters,
+            Path("/state.csv"),
+        )
         self.assertEqual(
             dcqcn[dcqcn.index("-state_trace_csv") + 1], "/state.csv"
         )
         self.assertEqual(
             cn[cn.index("-rnic_cn_state_trace_csv") + 1], "/state.csv"
+        )
+        self.assertEqual(
+            ss[ss.index("-rnic_ss_state_trace_csv") + 1], "/state.csv"
         )
         with self.assertRaisesRegex(runner.OrchestrationError, "not implemented"):
             runner.build_simulator_command(
@@ -326,7 +339,9 @@ class EndToEndOrchestrationTest(unittest.TestCase):
                     trace_flag = (
                         '-state_trace_csv' if '-state_trace_csv' in args
                         else '-rnic_cn_state_trace_csv'
-                        if '-rnic_cn_state_trace_csv' in args else None
+                        if '-rnic_cn_state_trace_csv' in args
+                        else '-rnic_ss_state_trace_csv'
+                        if '-rnic_ss_state_trace_csv' in args else None
                     )
                     if trace_flag is not None:
                         trace = pathlib.Path(args[args.index(trace_flag) + 1])

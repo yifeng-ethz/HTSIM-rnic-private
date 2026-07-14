@@ -165,6 +165,7 @@ RnicAtlahsRuntimeConfig slingshotRuntimeConfig(
         options.slingshot.routing_seed,
         options.slingshot.unordered_packet_routing,
         options.slingshot.allow_loss_stress,
+        options.slingshot.state_trace_csv,
     };
 }
 
@@ -225,6 +226,10 @@ std::string renderRnicAtlahsModelManifest(
         throw std::logic_error(
             "RNIC manifest profile differs from assembled runtime");
     }
+    const std::optional<std::string>& state_trace_csv =
+        spec.profile == RnicProfile::SlingshotLike
+            ? options.slingshot.state_trace_csv
+            : options.collective.state_trace_csv;
 
     std::ostringstream manifest;
     manifest
@@ -246,8 +251,7 @@ std::string renderRnicAtlahsModelManifest(
         << (options.completion_csv.has_value()
                 ? *options.completion_csv : "off")
         << " state_trace_csv="
-        << (options.collective.state_trace_csv.has_value()
-                ? *options.collective.state_trace_csv : "off")
+        << (state_trace_csv.has_value() ? *state_trace_csv : "off")
         << " requested_rank_mapping="
         << rnicAtlahsGoalRankMappingName(options.goal_rank_mapping)
         << " resolved_rank_mapping="
@@ -395,6 +399,14 @@ std::string renderRnicAtlahsModelManifest(
             << " path_hysteresis_ps="
             << options.slingshot.path_hysteresis_ps
             << " routing_seed=" << options.slingshot.routing_seed
+            << '\n';
+        manifest
+            << "[RNIC manifest] state_trace_rate="
+               "sender-local-credit-feedback-service"
+            << " state_trace_rate_oracle=false"
+            << " state_trace_rate_before_bp=access-link"
+            << " state_trace_rate_during_bp="
+               "delta-cumulative-credit-over-physical-arrival-interval"
             << '\n';
         manifest
             << "[RNIC manifest] pair_tracking=endpoint-pair-outstanding"

@@ -72,6 +72,10 @@ void RnicSsRuntimeConfig::validate() const {
         throw std::invalid_argument(
             "rnic-ss initial credit quantum exceeds credit-ahead bound");
     }
+    if (state_trace_csv.has_value() && state_trace_csv->empty()) {
+        throw std::invalid_argument(
+            "rnic-ss state trace CSV path must be nonempty");
+    }
 }
 
 struct RnicSsRuntime::Impl {
@@ -92,6 +96,9 @@ struct RnicSsRuntime::Impl {
         std::uint64_t source_payload_bytes_packetized{0};
         std::uint64_t delivered_payload_bytes{0};
         std::uint64_t delivered_data_packets{0};
+        std::uint64_t new_packets_sent{0};
+        std::uint64_t retransmitted_packets_sent{0};
+        std::uint64_t acknowledged_packets{0};
         bool completion_notified{false};
     };
 
@@ -106,7 +113,8 @@ struct RnicSsRuntime::Impl {
               ledger(value, config.selective_repeat),
               scoreboard(0),
               selector(config.path_selection),
-              credit(value, config.credit) {}
+              credit(value, config.credit),
+              observed_service_rate_bps(config.access_wire_capacity_bps) {}
 
         RnicSsEndpointPair pair;
         RnicSsSelectiveRepeatLedger ledger;
@@ -121,6 +129,12 @@ struct RnicSsRuntime::Impl {
         std::optional<std::uint8_t> current_path;
         std::optional<std::uint8_t> ordered_path;
         std::uint64_t telemetry_sequence{0};
+        // This is sender-local observation, not an allocation oracle.  Once
+        // selective backpressure begins, cumulative service credits and their
+        // physical arrival times estimate the pair's delivered service rate.
+        std::uint64_t observed_service_rate_bps;
+        std::optional<TimePs> last_credit_feedback_ps;
+        std::uint64_t last_credit_granted_total{0};
     };
 
     struct ControlAction {
@@ -243,7 +257,8 @@ struct RnicSsRuntime::Impl {
           config(std::move(value)),
           route_provider(topology),
           packet_observer(std::make_shared<PacketObserver>(*this)),
-          control_flow(nullptr) {
+          control_flow(nullptr),
+          state_trace(config.state_trace_csv.has_value()) {
         config.validate();
         validateSwitchBufferThresholds();
         control_flow.set_flowid(0);
@@ -517,6 +532,85 @@ struct RnicSsRuntime::Impl {
         return *it->second;
     }
 
+    std::size_t activeSourceFlowCount(const PairState& pair) const {
+        return static_cast<std::size_t>(std::count_if(
+            pair.flow_ids.begin(), pair.flow_ids.end(),
+            [this](AtlahsFlowId flow_id) {
+                const FlowState& flow = requireFlow(flow_id);
+                return flow.source_payload_bytes_packetized
+                    < flow.request.payload_bytes;
+            }));
+    }
+
+    void traceFlow(const PairState& pair,
+                   const FlowState& flow,
+                   const char* event) {
+        if (!state_trace.enabled()) {
+            return;
+        }
+        const bool source_active =
+            flow.source_payload_bytes_packetized
+            < flow.request.payload_bytes;
+        const std::size_t active = activeSourceFlowCount(pair);
+        const std::uint64_t effective_rate =
+            source_active && active != 0
+                ? pair.observed_service_rate_bps / active : 0;
+        state_trace.append(
+            {EventList::now(),
+             flow.request.flow_id,
+             flow.request.source,
+             flow.request.destination,
+             event,
+             config.access_wire_capacity_bps,
+             effective_rate,
+             std::nullopt,
+             std::nullopt,
+             flow.new_packets_sent,
+             flow.retransmitted_packets_sent,
+             flow.acknowledged_packets});
+    }
+
+    void tracePair(const PairState& pair, const char* event) {
+        for (AtlahsFlowId flow_id : pair.flow_ids) {
+            traceFlow(pair, requireFlow(flow_id), event);
+        }
+    }
+
+    bool updateObservedServiceRate(
+            PairState& pair,
+            std::uint64_t granted_total,
+            TimePs now_ps) {
+        if (!pair.last_credit_feedback_ps.has_value()) {
+            pair.last_credit_feedback_ps = now_ps;
+            pair.last_credit_granted_total = granted_total;
+            return false;
+        }
+        const TimePs epoch_ps = *pair.last_credit_feedback_ps;
+        if (now_ps <= epoch_ps
+            || granted_total <= pair.last_credit_granted_total) {
+            return false;
+        }
+        const std::uint64_t delta_bytes =
+            granted_total - pair.last_credit_granted_total;
+        const Wide numerator = static_cast<Wide>(delta_bytes)
+                               * 8 * UINT64_C(1000000000000);
+        // Use the cumulative service since this BP epoch rather than one
+        // credit quantum.  A quantum is intentionally bursty; its point rate
+        // is often line rate even when the contributor's sustained share is
+        // C/N.  The cumulative estimate remains entirely sender-local while
+        // exposing that physically observed share to the sparse trace.
+        const Wide measured = numerator / (now_ps - epoch_ps);
+        const std::uint64_t rate = measured
+                > config.access_wire_capacity_bps
+            ? config.access_wire_capacity_bps
+            : static_cast<std::uint64_t>(measured);
+        if (rate == pair.observed_service_rate_bps) {
+            return false;
+        }
+        pair.observed_service_rate_bps = rate;
+        return true;
+    }
+
     void send(const AtlahsFlowRequest& request) {
         throwDeferredFailure();
         if (!setup_complete) {
@@ -542,6 +636,12 @@ struct RnicSsRuntime::Impl {
         }
         PairState& pair = ensurePair({request.source, request.destination});
         pair.flow_ids.push_back(request.flow_id);
+        for (AtlahsFlowId flow_id : pair.flow_ids) {
+            FlowState& member = requireFlow(flow_id);
+            traceFlow(pair, member,
+                      flow_id == request.flow_id
+                          ? "flow-start" : "pair-flow-join");
+        }
         (void)value;
         pumpPair(pair, EventList::now());
         refreshEvent();
@@ -764,6 +864,7 @@ struct RnicSsRuntime::Impl {
                 static_cast<std::uint32_t>(extent.payloadBytes()), path}};
         injectPacket(flow.packet_flow, *routes[path], std::move(metadata),
                      flow.request.flow_id, payload_offset, false);
+        flow.new_packets_sent++;
         statistics.new_data_packets++;
     }
 
@@ -800,6 +901,7 @@ struct RnicSsRuntime::Impl {
                 static_cast<std::uint32_t>(data.extent.payloadBytes()), path}};
         injectPacket(flow.packet_flow, *routes[path], std::move(metadata),
                      data.flow_id, data.payload_offset, true);
+        flow.retransmitted_packets_sent++;
         if (reason == RnicSsRetransmissionReason::SACK_HOLE) {
             statistics.sack_retransmissions++;
         } else {
@@ -809,6 +911,7 @@ struct RnicSsRuntime::Impl {
     }
 
     void pumpPair(PairState& pair, TimePs now_ps) {
+        const std::size_t active_before = activeSourceFlowCount(pair);
         while (true) {
             if (!pair.retransmissions.empty()) {
                 auto retry = pair.retransmissions.begin();
@@ -835,6 +938,9 @@ struct RnicSsRuntime::Impl {
                 break;
             }
             sendNewData(pair, flow, next->first, now_ps);
+        }
+        if (activeSourceFlowCount(pair) != active_before) {
+            tracePair(pair, "source-active-set-change");
         }
     }
 
@@ -893,6 +999,7 @@ struct RnicSsRuntime::Impl {
         if (!flow.completion_notified
             && flow.delivered_payload_bytes == flow.request.payload_bytes) {
             flow.completion_notified = true;
+            traceFlow(pair, flow, "completion");
             complete_flow(flow.request.flow_id);
         }
     }
@@ -906,6 +1013,12 @@ struct RnicSsRuntime::Impl {
         const RnicSsAckResult result = pair.ledger.applyAck(ack);
         for (const RnicSsOutstandingPacket& acknowledged :
              result.newly_acked) {
+            const auto packet = pair.packets.find(acknowledged.sequence);
+            if (packet == pair.packets.end()) {
+                throw std::logic_error(
+                    "rnic-ss ACK retired an unknown DATA record");
+            }
+            requireFlow(packet->second.flow_id).acknowledged_packets++;
             pair.packets.erase(acknowledged.sequence);
             pair.retransmissions.erase(acknowledged.sequence);
             pair.sack_retry_guard.erase(acknowledged.sequence);
@@ -955,12 +1068,34 @@ struct RnicSsRuntime::Impl {
                 throw std::logic_error("rnic-ss BP payload is malformed");
             }
             PairState& pair = requirePair(bp->forward_pair);
+            RnicSsControlApplyResult applied;
             if (packet.kind() == RnicSsPacketKind::BP_ENABLE) {
-                pair.credit.applyEnable(*bp);
+                applied = pair.credit.applyEnable(*bp);
+                if (applied == RnicSsControlApplyResult::APPLIED) {
+                    pair.last_credit_feedback_ps = EventList::now();
+                    pair.last_credit_granted_total =
+                        bp->granted_wire_bytes_total;
+                    // The sender has entered a finite-credit epoch but has no
+                    // service-rate observation yet.  Report zero until the
+                    // first physical cumulative CREDIT establishes one.
+                    pair.observed_service_rate_bps = 0;
+                }
             } else {
-                pair.credit.applyDisable(*bp);
+                applied = pair.credit.applyDisable(*bp);
+                if (applied == RnicSsControlApplyResult::APPLIED) {
+                    pair.last_credit_feedback_ps.reset();
+                    pair.last_credit_granted_total = 0;
+                    pair.observed_service_rate_bps =
+                        config.access_wire_capacity_bps;
+                }
             }
             pumpPair(pair, EventList::now());
+            if (applied == RnicSsControlApplyResult::APPLIED) {
+                tracePair(
+                    pair,
+                    packet.kind() == RnicSsPacketKind::BP_ENABLE
+                        ? "bp-enable" : "bp-disable");
+            }
             refreshEvent();
             return;
         }
@@ -972,8 +1107,17 @@ struct RnicSsRuntime::Impl {
                     "rnic-ss credit payload is malformed");
             }
             PairState& pair = requirePair(credit->forward_pair);
-            pair.credit.applyCredit(*credit);
+            const RnicSsControlApplyResult applied =
+                pair.credit.applyCredit(*credit);
+            const bool rate_changed =
+                applied == RnicSsControlApplyResult::APPLIED
+                && updateObservedServiceRate(
+                    pair, credit->granted_wire_bytes_total,
+                    EventList::now());
             pumpPair(pair, EventList::now());
+            if (rate_changed) {
+                tracePair(pair, "service-rate-change");
+            }
             refreshEvent();
             return;
         }
@@ -1445,6 +1589,7 @@ struct RnicSsRuntime::Impl {
     CompletionHandler complete_flow;
     packetid_t next_packet_id{1};
     RnicSsRuntimeStatistics statistics;
+    AtlahsStateTrace state_trace;
     std::vector<std::unique_ptr<Endpoint>> endpoints;
     std::map<AtlahsFlowId, std::unique_ptr<FlowState>> flows;
     std::map<RnicSsEndpointPair, std::unique_ptr<PairState>> pairs;
@@ -1507,6 +1652,18 @@ const RnicSsRuntimeStatistics& RnicSsRuntime::statistics() const noexcept {
 
 void RnicSsRuntime::validateQuiescent() const {
     _impl->validateQuiescent();
+}
+
+std::size_t RnicSsRuntime::stateTraceRowCount() const noexcept {
+    return _impl->state_trace.size();
+}
+
+void RnicSsRuntime::writeStateTraceCsv() const {
+    if (!_impl->config.state_trace_csv.has_value()) {
+        throw std::logic_error("rnic-ss state trace was not requested");
+    }
+    _impl->validateQuiescent();
+    _impl->state_trace.writeCsvAtomically(*_impl->config.state_trace_csv);
 }
 
 void RnicSsRuntime::doNextEvent() {

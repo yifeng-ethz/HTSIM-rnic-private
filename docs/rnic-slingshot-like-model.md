@@ -172,3 +172,12 @@ Debug-only presentation slides align per-flow injection/goodput, total and
 per-pair queue occupancy, backpressure epochs/credits, path shares, telemetry
 age, SACK holes, retransmissions, and RTOs on one time axis.  These slides are
 hidden in presentation mode but remain available for model review.
+
+The join/exit experiment can request the common sparse ATLAHS state schema
+with `-rnic_ss_state_trace_csv FILE`.  The trace is buffered and atomically
+installed only after physical quiescence.  Its effective sender rate is a
+local observation: access-link rate outside backpressure, zero before the
+first returned CREDIT in a new epoch, then cumulative service credit divided
+by its physical arrival interval from the epoch.  This state is write-only
+instrumentation; it is never consumed by routing, credit, SACK, or forwarding
+logic and introduces no oracle or global state.

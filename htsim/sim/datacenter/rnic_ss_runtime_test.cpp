@@ -3,6 +3,8 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <string>
@@ -141,6 +143,45 @@ TEST(RnicSsRuntimeTest, OrderedModeCompletesWithoutRtoOrLoss) {
     EXPECT_EQ(runtime->statistics().sack_retransmissions, 0U);
     EXPECT_EQ(runtime->statistics().rto_retransmissions, 0U);
     EXPECT_EQ(runtime->statistics().fabric_drops, 0U);
+}
+
+TEST(RnicSsRuntimeTest,
+     StateTraceUsesPhysicalCreditFeedbackAndInstallsAtQuiescence) {
+    EventList& event_list = testEventList();
+    const std::filesystem::path trace =
+        std::filesystem::temp_directory_path()
+        / ("rnic-ss-state-"
+           + std::to_string(reinterpret_cast<std::uintptr_t>(&event_list))
+           + ".csv");
+    std::filesystem::remove(trace);
+    std::filesystem::remove(trace.string() + ".tmp");
+    RnicSsRuntimeConfig config = runtimeConfig(false);
+    config.state_trace_csv = trace.string();
+    auto session = makeRnicAtlahsRuntime(
+        event_list, RnicProfile::SlingshotLike, std::move(config),
+        topologyConfig());
+    auto* runtime = dynamic_cast<RnicSsRuntime*>(&session->implementation());
+    ASSERT_NE(runtime, nullptr);
+    runtime->setup(kNodeCount, [](AtlahsFlowId) {});
+    for (std::uint32_t source = 0; source < 4; ++source) {
+        runtime->send({UINT64_C(0x210000001) + source,
+                       source, 63, 2U << 20, EventList::now(), source});
+    }
+    EXPECT_THROW(runtime->writeStateTraceCsv(), std::logic_error);
+    drain(*runtime);
+
+    runtime->validateQuiescent();
+    EXPECT_GT(runtime->stateTraceRowCount(), 2U);
+    runtime->writeStateTraceCsv();
+    EXPECT_TRUE(std::filesystem::is_regular_file(trace));
+    EXPECT_FALSE(std::filesystem::exists(trace.string() + ".tmp"));
+    std::ifstream input(trace);
+    const std::string text((std::istreambuf_iterator<char>(input)),
+                           std::istreambuf_iterator<char>());
+    EXPECT_NE(text.find(",flow-start,"), std::string::npos);
+    EXPECT_NE(text.find(",service-rate-change,"), std::string::npos);
+    EXPECT_NE(text.find(",completion,"), std::string::npos);
+    std::filesystem::remove(trace);
 }
 
 TEST(RnicSsRuntimeTest, ExplicitUnorderedSensitivityStillQuiesces) {

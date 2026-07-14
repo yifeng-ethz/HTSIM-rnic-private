@@ -52,6 +52,7 @@ struct RnicAtlahsCollectiveCliOptions {
 // defaults is presented as proprietary hardware arithmetic; every threshold
 // remains explicit for the required sensitivity sweeps.
 struct RnicAtlahsSlingshotCliOptions {
+    std::optional<std::string> state_trace_csv;
     std::uint64_t control_wire_bytes = 64;
     std::uint64_t ns_rosetta_shared_buffer_bytes = UINT64_C(64) << 20;
     std::uint64_t q_hi_bytes = UINT64_C(4) << 20;
@@ -94,6 +95,7 @@ struct RnicAtlahsExplicitCliOptions {
     bool cn_maximum_repair_retries = false;
 
     bool ss_control_wire_bytes = false;
+    bool ss_state_trace_csv = false;
     bool ns_rosetta_shared_buffer_bytes = false;
     bool ss_q_hi_bytes = false;
     bool ss_q_lo_bytes = false;

@@ -48,7 +48,7 @@ REQUIRED_COMPLETION_COLUMNS = (
     "fct_ps",
 )
 
-STATE_TRACE_SCHEMES = frozenset({"dcqcn", "rnic-cn"})
+STATE_TRACE_SCHEMES = frozenset({"dcqcn", "rnic-cn", "rnic-ss"})
 REQUIRED_STATE_TRACE_COLUMNS = (
     "time_ps",
     "flow_id",
@@ -451,10 +451,6 @@ def build_rnic_command(
         if state_trace_csv is not None:
             command += ["-rnic_cn_state_trace_csv", str(state_trace_csv)]
     elif scheme == "rnic-ss":
-        if state_trace_csv is not None:
-            raise OrchestrationError(
-                "state tracing is not implemented for RNIC profile 'rnic-ss'"
-            )
         command += [
             "-topo", str(topology),
             "-rnic_ss_control_wire_bytes", str(parameters.ss_control_wire_bytes),
@@ -472,6 +468,8 @@ def build_rnic_command(
             "-rnic_ss_routing_seed", str(seed),
             "-rnic_ss_routing", parameters.ss_routing,
         ]
+        if state_trace_csv is not None:
+            command += ["-rnic_ss_state_trace_csv", str(state_trace_csv)]
     else:
         if state_trace_csv is not None:
             raise OrchestrationError(

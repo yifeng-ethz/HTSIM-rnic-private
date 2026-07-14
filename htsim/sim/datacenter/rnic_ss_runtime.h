@@ -5,7 +5,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
+#include <string>
 
+#include "atlahs_state_trace.h"
 #include "atlahs_flow_runtime.h"
 #include "eventlist.h"
 #include "rnic_packet_extent.h"
@@ -32,6 +35,9 @@ struct RnicSsRuntimeConfig {
     // Normal experiments are lossless invariants.  Only an explicitly named
     // recovery stress may tolerate a fabric drop or RTO at quiescence.
     bool allow_loss_stress{false};
+    // Optional sparse, event-driven sender state trace.  The runtime buffers
+    // rows and installs the CSV only after physical quiescence.
+    std::optional<std::string> state_trace_csv;
 
     void validate() const;
 };
@@ -98,6 +104,8 @@ public:
     RnicSsFlowSnapshot flow(AtlahsFlowId flow_id) const;
     const RnicSsRuntimeStatistics& statistics() const noexcept;
     void validateQuiescent() const;
+    std::size_t stateTraceRowCount() const noexcept;
+    void writeStateTraceCsv() const;
 
 private:
     struct Impl;

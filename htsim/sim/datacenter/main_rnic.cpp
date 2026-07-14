@@ -157,7 +157,11 @@ void validateRuntimeQuiescence(AtlahsHtsimApi& api) {
 void writeRequestedStateTrace(
         AtlahsHtsimApi& api,
         const RnicAtlahsCliOptions& options) {
-    if (!options.collective.state_trace_csv.has_value()) {
+    const bool collective_requested =
+        options.collective.state_trace_csv.has_value();
+    const bool slingshot_requested =
+        options.slingshot.state_trace_csv.has_value();
+    if (!collective_requested && !slingshot_requested) {
         return;
     }
     auto* assembly = dynamic_cast<RnicAtlahsRuntimeAssembly*>(
@@ -166,11 +170,21 @@ void writeRequestedStateTrace(
         throw std::logic_error(
             "RNIC state trace runtime is not an assembled profile");
     }
-    auto* runtime = dynamic_cast<RnicCollectiveNetworkRuntime*>(
+    if (collective_requested) {
+        auto* runtime = dynamic_cast<RnicCollectiveNetworkRuntime*>(
+            &assembly->implementation());
+        if (runtime == nullptr) {
+            throw std::logic_error(
+                "rnic-cn state trace requested for another profile");
+        }
+        runtime->writeStateTraceCsv();
+        return;
+    }
+    auto* runtime = dynamic_cast<RnicSsRuntime*>(
         &assembly->implementation());
     if (runtime == nullptr) {
         throw std::logic_error(
-            "RNIC state trace is only available for rnic-cn");
+            "rnic-ss state trace requested for another profile");
     }
     runtime->writeStateTraceCsv();
 }

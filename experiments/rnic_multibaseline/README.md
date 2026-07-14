@@ -192,12 +192,21 @@ is rejected if the process fails, the CSV is partial, timestamps disagree, or
 the completed transfer set differs from the GOAL.
 
 The join/exit runs additionally request an event-driven `stateTrace.csv` for
-DCQCN and `rnic-cn`.  It is buffered by the simulator and installed atomically
-only after physical quiescence.  The runner validates and hashes the common
-schema (`time_ps`, flow/endpoints, event, configured/effective rate, alpha,
+DCQCN, `rnic-cn`, and `rnic-ss`.  It is buffered by the simulator and installed
+atomically only after physical quiescence.  The runner validates and hashes the
+common schema (`time_ps`, flow/endpoints, event, configured/effective rate, alpha,
 pause state, and packet counters).  ACK progress remains real trace evidence
 but is collapsed when plotting unchanged rate state; no periodic rate samples
 are synthesized.
+
+For `rnic-ss`, the effective rate is sender-local evidence rather than a
+central allocation.  It is the access-link rate before pair-selective
+backpressure, zero while a new credit epoch has no returned service sample,
+and then cumulative serviced wire bytes divided by the physical CREDIT-arrival
+interval from that epoch.  Each active source flow on the same endpoint pair
+receives an equal share of this observational pair rate.  `flow-start`, source
+active-set changes, BP transitions, changed service-rate observations, and
+completion are traced; forwarding and control decisions do not read the trace.
 
 DCQCN and `rnic-cn` use the fixed `ns-tm3` Clos; `rnic-ss` uses the same Clos
 with `ns-rosetta`.  The `rnic-nn` and `rnic-nn-fluid` profiles remain
