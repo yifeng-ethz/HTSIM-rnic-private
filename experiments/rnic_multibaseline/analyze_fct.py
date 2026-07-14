@@ -76,12 +76,15 @@ SCAN_PARAMETER_COLUMNS = (
     "q_hi_bytes",
     "q_lo_bytes",
     "telemetry_delay_ns",
+    "path_hysteresis_ns",
     "credit_quantum_packets",
     "buffer_bytes",
 )
 SCAN_MANIFEST_COLUMNS = (
     "profile",
     "seed",
+    "status",
+    "reason",
     "completion_csv",
     *SCAN_PARAMETER_COLUMNS,
 )
@@ -123,6 +126,7 @@ class ScanParameters:
     q_hi_bytes: int
     q_lo_bytes: int
     telemetry_delay_ns: int
+    path_hysteresis_ns: int
     credit_quantum_packets: int
     buffer_bytes: int
 
@@ -138,11 +142,12 @@ class ScanParameters:
     def q_lo_fraction_buffer(self) -> float:
         return self.q_lo_bytes / self.buffer_bytes
 
-    def values(self) -> tuple[int, int, int, int, int]:
+    def values(self) -> tuple[int, int, int, int, int, int]:
         return (
             self.q_hi_bytes,
             self.q_lo_bytes,
             self.telemetry_delay_ns,
+            self.path_hysteresis_ns,
             self.credit_quantum_packets,
             self.buffer_bytes,
         )
@@ -699,8 +704,10 @@ def validate_scan_runs(scan_runs: Sequence[ScanRun]) -> None:
         raise AnalysisError("no parameter-scan runs supplied")
     validate_flow_contract([scan_run.run for scan_run in scan_runs])
 
-    seen: set[tuple[str, str, tuple[int, int, int, int, int]]] = set()
-    seeds_by_config: dict[tuple[str, tuple[int, int, int, int, int]], set[str]] = {}
+    seen: set[tuple[str, str, tuple[int, int, int, int, int, int]]] = set()
+    seeds_by_config: dict[
+        tuple[str, tuple[int, int, int, int, int, int]], set[str]
+    ] = {}
     for scan_run in scan_runs:
         context = f"{scan_run.run.profile}/{scan_run.run.seed}"
         _validate_scan_parameters(scan_run.parameters, context)
@@ -731,7 +738,7 @@ def read_scan_manifest(
         raise AnalysisError(f"cannot read scan manifest {manifest_path}: {exc}") from exc
 
     scan_runs: list[ScanRun] = []
-    seen: set[tuple[str, str, tuple[int, int, int, int, int]]] = set()
+    seen: set[tuple[str, str, tuple[int, int, int, int, int, int]]] = set()
     with handle:
         reader = csv.DictReader(handle)
         if not reader.fieldnames:
@@ -745,14 +752,28 @@ def read_scan_manifest(
             context = f"{manifest_path}:{row_number}"
             profile = (row.get("profile") or "").strip()
             seed = (row.get("seed") or "").strip()
+            status = (row.get("status") or "complete").strip()
+            reason = (row.get("reason") or "").strip()
             completion_text = (row.get("completion_csv") or "").strip()
-            if not profile or not seed or not completion_text:
+            if not profile or not seed:
                 raise AnalysisError(
-                    f"{context}: profile, seed, and completion_csv must be nonempty"
+                    f"{context}: profile and seed must be nonempty"
                 )
-            completion_csv = Path(completion_text)
-            if not completion_csv.is_absolute():
-                completion_csv = manifest_path.parent / completion_csv
+            if status not in {"complete", "expected-invalid"}:
+                raise AnalysisError(
+                    f"{context}: unknown scan status {status!r}"
+                )
+            if status == "complete" and not completion_text:
+                raise AnalysisError(
+                    f"{context}: a complete scan row requires completion_csv"
+                )
+            if status == "expected-invalid" and (
+                completion_text or not reason
+            ):
+                raise AnalysisError(
+                    f"{context}: expected-invalid requires an empty "
+                    "completion_csv and a nonempty reason"
+                )
             parameters = ScanParameters(
                 **{
                     column: _parse_nonnegative_int(row.get(column) or "", column, context)
@@ -766,6 +787,11 @@ def read_scan_manifest(
                     f"{context}: duplicate profile/seed/parameter combination {key!r}"
                 )
             seen.add(key)
+            if status == "expected-invalid":
+                continue
+            completion_csv = Path(completion_text)
+            if not completion_csv.is_absolute():
+                completion_csv = manifest_path.parent / completion_csv
             scan_runs.append(
                 ScanRun(
                     Run(
@@ -778,7 +804,9 @@ def read_scan_manifest(
                 )
             )
     if not scan_runs:
-        raise AnalysisError(f"{manifest_path}: scan manifest contains no rows")
+        raise AnalysisError(
+            f"{manifest_path}: scan manifest contains no complete rows"
+        )
 
     validate_scan_runs(scan_runs)
     return scan_runs
@@ -792,6 +820,7 @@ def _scan_parameter_row(parameters: ScanParameters) -> dict[str, object]:
         "q_hi_fraction_buffer": _format_float(parameters.q_hi_fraction_buffer),
         "q_lo_fraction_buffer": _format_float(parameters.q_lo_fraction_buffer),
         "telemetry_delay_ns": parameters.telemetry_delay_ns,
+        "path_hysteresis_ns": parameters.path_hysteresis_ns,
         "credit_quantum_packets": parameters.credit_quantum_packets,
         "buffer_bytes": parameters.buffer_bytes,
     }
@@ -804,6 +833,7 @@ SCAN_OUTPUT_PARAMETER_FIELDS = (
     "q_hi_fraction_buffer",
     "q_lo_fraction_buffer",
     "telemetry_delay_ns",
+    "path_hysteresis_ns",
     "credit_quantum_packets",
     "buffer_bytes",
 )
@@ -841,9 +871,11 @@ def write_parameter_scan(scan_runs: Sequence[ScanRun], output_dir: Path) -> None
         run_rows,
     )
 
-    grouped: dict[tuple[str, tuple[int, int, int, int, int]], list[dict[str, object]]] = {}
+    grouped: dict[
+        tuple[str, tuple[int, int, int, int, int, int]], list[dict[str, object]]
+    ] = {}
     parameter_objects: dict[
-        tuple[str, tuple[int, int, int, int, int]], ScanParameters
+        tuple[str, tuple[int, int, int, int, int, int]], ScanParameters
     ] = {}
     for row, scan_run in zip(run_rows, ordered):
         key = (scan_run.run.profile, scan_run.parameters.values())

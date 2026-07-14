@@ -37,8 +37,9 @@ components.
 The dynamics workload uses eight incast sources, one per leaf, and node 63 as
 the destination.  Flow `i` joins at `i * 5 ms`.  Its payload is the ceiling of
 the ideal 400-Gbit/s processor-sharing service integral from its join until its
-target completion.  Consequently all eight flows are active before flow 0
-finishes, flow 0 finishes first, and target finishes are then spaced by 5 ms.
+target completion.  Consequently all eight flows are active before any target
+completion; flows then finish in reverse join order at 5 ms intervals, with
+flow 0 (the first joiner) deliberately completing last.
 These are byte-limited flows: there is no stop event or exit timer, so every
 protocol determines its own actual completion time.
 
@@ -52,8 +53,28 @@ python3 experiments/rnic_multibaseline/generate_join_exit_goal.py \
   -o /tmp/join-exit.bin
 ```
 
-The metadata records overall, 1-to-2-flow join, and 2-to-1-flow exit zoom
-windows for aligned `rnic-cn` and DCQCN plots.
+The metadata records the overall and 1-to-2-flow join windows.  The plotted
+2-to-1 exit is aligned to each protocol's actual penultimate completion, not
+to the ideal target timestamp, so a long DCQCN tail cannot silently move out
+of the zoom.
+
+## Simultaneous incast sweep
+
+`run_incast_sweep.py` runs paired finite 32 MiB incasts with 2, 4, 8, 16,
+32, and 64 directed flows.  Every send is eligible at time zero.  With one
+destination inside a fixed 64-node topology, the 64-flow point necessarily has
+63 distinct remote source RNICs and one additional flow from an existing
+source; plots must therefore label the x axis as **flow count**, not claim 64
+distinct senders.  Receiver payload goodput is
+`sum(payload bytes) * 8 / (last completion - first start)`.
+
+```sh
+python3 experiments/rnic_multibaseline/run_incast_sweep.py \
+  --build-dir /path/to/htsim-build \
+  --output-root /path/to/incast-results \
+  --seeds 1-8 \
+  --schemes dcqcn,rnic-cn
+```
 
 ## Statistical plot contract
 
@@ -112,12 +133,17 @@ the tool does not interpolate or manufacture samples.
 Record each scan run in a CSV manifest with these required columns:
 
 ```text
-profile,seed,completion_csv,q_hi_bytes,q_lo_bytes,telemetry_delay_ns,credit_quantum_packets,buffer_bytes
+profile,seed,status,reason,completion_csv,q_hi_bytes,q_lo_bytes,telemetry_delay_ns,path_hysteresis_ns,credit_quantum_packets,buffer_bytes
 ```
 
-`completion_csv` may be absolute or relative to the manifest.  Every parameter
-combination must contain the same paired seeds, and all completion files must
-have the same flow/payload contract.  Generate plotting inputs with:
+`status=complete` requires a `completion_csv`, which may be absolute or relative
+to the manifest.  `status=expected-invalid` requires an empty `completion_csv`
+and a nonempty reason; the analyzer validates the parameters but excludes that
+row from statistics and plotting.  The canonical 16 MiB `rnic-ss` buffer point
+uses this status because it is below the checked analytical envelope.  Every
+executed parameter combination must contain the same paired seeds, and all
+completion files must have the same flow/payload contract.  Generate plotting
+inputs with:
 
 ```sh
 python3 experiments/rnic_multibaseline/analyze_fct.py scan \
@@ -135,9 +161,90 @@ hysteresis gap and the high/low thresholds as fractions of the configured
 buffer.  The analyzer requires `Q_hi > Q_lo`, a positive packet-credit quantum
 and buffer, and `Q_hi <= buffer`; it never inserts unstated scan defaults.
 
+The reproducible hidden-slide sweep is one-factor-at-a-time around the declared
+default.  It covers `Q_hi`, `Q_lo/Q_hi`, extra telemetry delay, path-selection
+hysteresis, returned credit quantum, and shared buffer without pretending that
+the open values are proprietary Rosetta parameters:
+
+```sh
+python3 experiments/rnic_multibaseline/run_rnic_ss_scan.py \
+  --build-dir /path/to/htsim-build \
+  --output-root /path/to/scan-results \
+  --seeds 1-4
+```
+
 Run the synthetic analysis tests with:
 
 ```sh
 cd experiments/rnic_multibaseline
 python3 -m unittest -v test_analyze_fct.py
+```
+
+## Paired experiment runner
+
+`run_multibaseline.py` generates or verifies the flat 32 MiB, dependency-gated
+32 MiB DAG, and join/exit GOAL artifacts, converts them with the checked-in
+converter target, and runs the selected paired seeds through DCQCN and the four
+RNIC profiles.  The `flat32m` and `dag32m` schedules have the same transfer
+multiset and rank placement; only the phase dependencies differ.  Every run
+gets a completion CSV, stdout/stderr logs, and a provenance manifest.  A run
+is rejected if the process fails, the CSV is partial, timestamps disagree, or
+the completed transfer set differs from the GOAL.
+
+The join/exit runs additionally request an event-driven `stateTrace.csv` for
+DCQCN and `rnic-cn`.  It is buffered by the simulator and installed atomically
+only after physical quiescence.  The runner validates and hashes the common
+schema (`time_ps`, flow/endpoints, event, configured/effective rate, alpha,
+pause state, and packet counters).  ACK progress remains real trace evidence
+but is collapsed when plotting unchanged rate state; no periodic rate samples
+are synthesized.
+
+DCQCN and `rnic-cn` use the fixed `ns-tm3` Clos; `rnic-ss` uses the same Clos
+with `ns-rosetta`.  The `rnic-nn` and `rnic-nn-fluid` profiles remain
+topology-free manifold baselines and receive only their fixed propagation
+delay.  The ordered `rnic-ss` default uses the 128-entry SACK scoreboard/window
+needed by the rounded one-control-RTT allocation at 400 Gbit/s.
+
+The pinned 400-Gbit/s DCQCN comparator uses seeded linear RED
+(`Kmin=65,536 B`, `Kmax=655,360 B`, `Pmax=0.25`), PFC XON/XOFF thresholds of
+`520,000/720,000 B`, and a 100-Mbit/s minimum per-flow rate.  The RED and rate
+floor values preserve the earlier repository study's 400G scaling, while the
+RP/NP equations and 50/55-us timers remain the SIGCOMM'15 algorithm.  All of
+these values are emitted in each run manifest; the older deterministic
+single-threshold ECN mode is not the canonical comparison.
+
+```sh
+python3 experiments/rnic_multibaseline/run_multibaseline.py \
+  --build-dir /path/to/htsim-build \
+  --output-root /path/to/results \
+  --seeds 1-10 \
+  --schemes all \
+  --workloads all
+```
+
+Render the overall, 1-to-2 join, and actual 2-to-1 exit rate panels from one
+paired seed with:
+
+```sh
+python3 experiments/rnic_multibaseline/plot_presentation_results.py \
+  join-dynamics \
+  --dcqcn-trace /path/to/results/results/join-exit/dcqcn/seed-1/stateTrace.csv \
+  --rnic-cn-trace /path/to/results/results/join-exit/rnic-cn/seed-1/stateTrace.csv \
+  --metadata /path/to/results/workloads/join-exit/shared/workload.json \
+  --output /path/to/join-exit-dynamics.png
+```
+
+Use `--dry-run` to print every conversion and simulator command without
+creating output files.  Existing workloads and completed runs are reused only
+when their hashes, commands, parameters, and manifests match exactly;
+`--force` is required to replace a mismatched managed artifact.  The default
+Slingshot-like comparison uses ordered endpoint-pair routing; select the
+unordered sensitivity case explicitly with `--ss-routing unordered`.
+
+Run its unit and fake-tool integration tests with:
+
+```sh
+cd experiments/rnic_multibaseline
+python3 -m unittest -v \
+  test_run_multibaseline.py test_plot_presentation_results.py
 ```

@@ -2,10 +2,10 @@
 """Generate the eight-flow 5 ms join / finite-byte exit workload.
 
 Flow i joins at i*5 ms.  Payloads are derived from ideal destination-link
-processor sharing so that, after all eight flows are active, flow 0 completes
-first and each later flow completes about 5 ms after the preceding flow.  The
-simulator still determines the actual completion time; no stop event or exit
-timer is emitted.
+processor sharing so that, after all eight flows are active, flows complete in
+reverse join order at 5 ms intervals.  Flow 0, which joined first, is therefore
+the final flow to complete.  The simulator still determines the actual
+completion time; no stop event or exit timer is emitted.
 """
 
 from __future__ import annotations
@@ -38,7 +38,13 @@ def ideal_schedule(
     """Return join ns, target completion ns, and ceil-sized payload bytes."""
 
     joins = [index * interval_ns for index in range(flow_count)]
-    exits = [(flow_count + index) * interval_ns for index in range(flow_count)]
+    # The last join is at (N - 1) intervals.  Begin the target completion
+    # sequence one interval later, but retire in reverse join order so the
+    # first/long flow is the final survivor.
+    exits = [
+        (2 * flow_count - 1 - index) * interval_ns
+        for index in range(flow_count)
+    ]
     events = sorted(set(joins + exits))
     byte_rate = Fraction(link_bps, 8)
     payloads: list[int] = []
@@ -101,7 +107,7 @@ def build_goal(
     goal = "\n".join(lines)
 
     metadata: dict[str, object] = {
-        "schema": "rnic-join-exit-goal-v1",
+        "schema": "rnic-join-exit-goal-v2",
         "node_count": node_count,
         "source_nodes": list(sources),
         "destination_node": destination,
@@ -109,19 +115,22 @@ def build_goal(
         "join_interval_ns": interval_ns,
         "join_time_ns": joins,
         "ideal_target_completion_time_ns": exits,
+        "ideal_exit_flow_order": sorted(
+            range(len(sources)), key=lambda flow: (exits[flow], flow)
+        ),
         "payload_bytes": payloads,
         "payload_rule": (
             "ceil integral of C/N(t) from join to target completion; "
             "actual completion is network-driven with no exit timer"
         ),
         "ideal_destination_link_bps": link_bps,
-        "overall_plot_window_ns": [0, exits[-1] + interval_ns],
+        "overall_plot_window_ns": [0, max(exits) + interval_ns],
         "join_zoom_window_ns": [joins[1] - interval_ns // 2, joins[1] + interval_ns // 2],
-        # Just before flow N-2 completes, only flows N-2 and N-1 remain;
+        # At the penultimate target completion only flows 0 and 1 remain;
         # this window is the requested two-to-one divergence zoom.
         "exit_zoom_window_ns": [
-            exits[-2] - interval_ns // 2,
-            exits[-2] + interval_ns // 2,
+            sorted(exits)[-2] - interval_ns // 2,
+            sorted(exits)[-2] + interval_ns // 2,
         ],
         "goal_sha256": hashlib.sha256(goal.encode("utf-8")).hexdigest(),
     }

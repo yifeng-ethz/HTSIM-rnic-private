@@ -13,11 +13,17 @@ class JoinExitGoalTest(unittest.TestCase):
             8, 5_000_000, 400_000_000_000
         )
         self.assertEqual(joins, [index * 5_000_000 for index in range(8)])
-        self.assertEqual(exits, [(8 + index) * 5_000_000 for index in range(8)])
-        self.assertEqual(payloads[0], payloads[-1])
-        self.assertEqual(payloads[1], payloads[-2])
-        self.assertLess(payloads[3], payloads[2])
-        self.assertEqual(payloads[3], payloads[4])
+        self.assertEqual(
+            exits,
+            [(15 - index) * 5_000_000 for index in range(8)],
+        )
+        self.assertEqual(
+            sorted(range(8), key=lambda flow: exits[flow]),
+            list(reversed(range(8))),
+        )
+        self.assertGreater(payloads[0], payloads[1])
+        self.assertGreater(payloads[1], payloads[2])
+        self.assertGreater(payloads[-2], payloads[-1])
 
         # Ceil rounding adds less than one byte relative to the exact
         # processor-sharing integral, far below one physical packet.
@@ -40,10 +46,12 @@ class JoinExitGoalTest(unittest.TestCase):
         self.assertEqual(goal.count(" requires "), 7)
         self.assertNotIn("stop", goal.lower())
         self.assertEqual(metadata["join_time_ns"][7], 35_000_000)
-        self.assertEqual(metadata["ideal_target_completion_time_ns"][0], 40_000_000)
-        self.assertEqual(metadata["ideal_target_completion_time_ns"][7], 75_000_000)
+        self.assertEqual(metadata["schema"], "rnic-join-exit-goal-v2")
+        self.assertEqual(metadata["ideal_target_completion_time_ns"][0], 75_000_000)
+        self.assertEqual(metadata["ideal_target_completion_time_ns"][7], 40_000_000)
+        self.assertEqual(metadata["ideal_exit_flow_order"], list(reversed(range(8))))
         self.assertEqual(metadata["exit_zoom_window_ns"], [67_500_000, 72_500_000])
-        self.assertEqual(metadata["payload_bytes"][0], 679_464_286)
+        self.assertGreater(metadata["payload_bytes"][0], metadata["payload_bytes"][7])
 
 
 if __name__ == "__main__":

@@ -194,6 +194,7 @@ class ParameterScanTest(unittest.TestCase):
                         "q_hi_bytes": q_hi,
                         "q_lo_bytes": 4000,
                         "telemetry_delay_ns": 100,
+                        "path_hysteresis_ns": 250,
                         "credit_quantum_packets": 8,
                         "buffer_bytes": 16000,
                     }
@@ -212,6 +213,7 @@ class ParameterScanTest(unittest.TestCase):
             self.assertEqual(len(summary), 2)
             first = next(row for row in summary if row["q_hi_bytes"] == "8000")
             self.assertEqual(first["hysteresis_gap_bytes"], "4000")
+            self.assertEqual(first["path_hysteresis_ns"], "250")
             self.assertAlmostEqual(float(first["q_hi_fraction_buffer"]), 0.5)
             self.assertAlmostEqual(float(first["p50_fct_ps_mean"]), 15.0)
             self.assertAlmostEqual(float(first["p50_fct_ps_sigma"]), 5.0)
@@ -223,6 +225,51 @@ class ParameterScanTest(unittest.TestCase):
                 {row["metric"] for row in plot},
                 {"p50_fct", "p95_fct", "p99_fct", "p99_9_fct", "jct"},
             )
+
+    def test_scan_skips_explicit_expected_invalid_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            completion = root / "flowsInfo.csv"
+            write_flows(completion, {"f0": 10})
+            manifest = root / "scan.csv"
+            rows = (
+                {
+                    "profile": "default",
+                    "seed": "seed-1",
+                    "status": "complete",
+                    "reason": "",
+                    "completion_csv": completion.name,
+                    "q_hi_bytes": 4000,
+                    "q_lo_bytes": 2000,
+                    "telemetry_delay_ns": 0,
+                    "path_hysteresis_ns": 0,
+                    "credit_quantum_packets": 4,
+                    "buffer_bytes": 64000,
+                },
+                {
+                    "profile": "buffer-16m",
+                    "seed": "seed-1",
+                    "status": "expected-invalid",
+                    "reason": "below analytical envelope",
+                    "completion_csv": "",
+                    "q_hi_bytes": 4000,
+                    "q_lo_bytes": 2000,
+                    "telemetry_delay_ns": 0,
+                    "path_hysteresis_ns": 0,
+                    "credit_quantum_packets": 4,
+                    "buffer_bytes": 16000,
+                },
+            )
+            with manifest.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(
+                    handle, fieldnames=analyze_fct.SCAN_MANIFEST_COLUMNS
+                )
+                writer.writeheader()
+                writer.writerows(rows)
+
+            scan_runs = analyze_fct.read_scan_manifest(manifest)
+            self.assertEqual(len(scan_runs), 1)
+            self.assertEqual(scan_runs[0].run.profile, "default")
 
     def test_scan_rejects_invalid_hysteresis(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -243,6 +290,7 @@ class ParameterScanTest(unittest.TestCase):
                         "q_hi_bytes": 4000,
                         "q_lo_bytes": 4000,
                         "telemetry_delay_ns": 100,
+                        "path_hysteresis_ns": 250,
                         "credit_quantum_packets": 8,
                         "buffer_bytes": 16000,
                     }
