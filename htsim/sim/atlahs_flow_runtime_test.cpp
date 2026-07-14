@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <functional>
+#include <limits>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -54,6 +56,22 @@ public:
     std::uint64_t completed_start_time_ps = 0;
 };
 
+class CallbackEventSource final : public EventSource {
+public:
+    CallbackEventSource(EventList& event_list,
+                        std::function<void()> callback)
+        : EventSource(event_list, "ATLAHS boundary callback"),
+          callback(std::move(callback)) {}
+
+    void doNextEvent() override {
+        ++dispatch_count;
+        callback();
+    }
+
+    std::function<void()> callback;
+    std::uint64_t dispatch_count{0};
+};
+
 graph_node_properties makeFlow(std::uint32_t host,
                                std::uint32_t offset,
                                std::uint32_t destination,
@@ -103,6 +121,45 @@ TEST(AtlahsFlowRuntimeTest, NetworkTimingIsLegacyUntilRuntimeInjection) {
 
     api.setFlowRuntime(nullptr);
     EXPECT_EQ(logsim.getNetworkTiming(), AtlahsNetworkTiming::LegacyLogSimGap);
+}
+
+TEST(AtlahsFlowRuntimeTest,
+     ComputeBoundaryDrainsSameTimeEventsWithoutAdvancingPastIt) {
+    EventList event_list;
+    EventList::setEndtime(std::numeric_limits<simtime_picosec>::max());
+    LogSimInterface logsim(
+        nullptr,
+        static_cast<TrafficLoggerSimple*>(nullptr),
+        event_list,
+        nullptr,
+        nullptr);
+    CapturingAtlahsHtsimApi api;
+    api.setEventList(&event_list);
+    api.setLogSimInterface(&logsim);
+    logsim.htsim_api = &api;
+
+    CallbackEventSource compute_boundary(
+        event_list, [&]() { logsim.compute_over(1); });
+    CallbackEventSource same_time_feedback(event_list, []() {});
+    CallbackEventSource later_sentinel(event_list, []() {});
+    const simtime_picosec boundary_ps = EventList::now() + 1000;
+
+    logsim.compute_started = 1;
+    EventList::sourceIsPending(compute_boundary, boundary_ps);
+    EventList::sourceIsPending(same_time_feedback, boundary_ps);
+    EventList::sourceIsPending(later_sentinel, boundary_ps + 1);
+
+    logsim.htsim_simulate_until(-1);
+
+    EXPECT_EQ(EventList::now(), boundary_ps);
+    EXPECT_EQ(compute_boundary.dispatch_count, 1U);
+    EXPECT_EQ(same_time_feedback.dispatch_count, 1U);
+    EXPECT_EQ(later_sentinel.dispatch_count, 0U);
+    EXPECT_EQ(logsim.compute_started, 0);
+    EXPECT_FALSE(logsim.have_more);
+
+    ASSERT_TRUE(EventList::doNextEvent());
+    EXPECT_EQ(later_sentinel.dispatch_count, 1U);
 }
 
 TEST(AtlahsFlowRuntimeTest, PhysicalWorkQueryForwardsThroughApiAndLogSim) {

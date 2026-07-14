@@ -243,35 +243,45 @@ void LogSimInterface::htsim_simulate_until(int64_t until) {
     //printf("While1 - Size eventlist %lu\n", _eventlist->getPendingSources().size());
 
     bool returned_control = false;
+    bool boundary_waiting_for_same_time_quiescence = false;
     while (_eventlist->doNextEvent()) {
 
         if (htsim_api->send_done_return_control) {
             htsim_api->send_done_return_control = false;
             //printf("While2\n");
 
-            have_more = EventList::hasPendingSourceAt(_eventlist->now());
-            returned_control = true;
-            break;
+            boundary_waiting_for_same_time_quiescence = true;
         }
 
         ////printf("While3\n");
         if (_latest_recv->updated) {
           this->reset_latest_receive();
           if (_network_timing == AtlahsNetworkTiming::LegacyLogSimGap) {
-            have_more = EventList::hasPendingSourceAt(_eventlist->now());
+            boundary_waiting_for_same_time_quiescence = true;
+          } else {
+            // Runtime-owned DATA completion is a boundary between HTSIM and
+            // GOAL. Return immediately so the newly queued OP_MSG can unlock
+            // re-entrant work; the runtime itself owns same-time microphases.
+            returned_control = true;
+            break;
           }
-          // Runtime-owned DATA completion is a boundary between HTSIM and
-          // GOAL. Return immediately so the newly queued OP_MSG can unlock
-          // re-entrant work; the runtime itself owns same-time microphases.
-          returned_control = true;
-          break;
         }
 
         //printf("While4\n");
         if (compute_if_finished) {
           //printf("While5\n");
-          have_more = EventList::hasPendingSourceAt(_eventlist->now());
+            boundary_waiting_for_same_time_quiescence = true;
             compute_if_finished = false;
+        }
+
+        // A LogSim boundary and physical packets can share one timestamp.
+        // Drain only that exact HTSIM microphase before returning.  Returning
+        // with have_more=true made the outer GOAL loop skip its due compute
+        // completion; the next call then cleared have_more and could advance
+        // arbitrarily far, coalescing timed flow starts behind network work.
+        if (boundary_waiting_for_same_time_quiescence
+            && !EventList::hasPendingSourceAt(_eventlist->now())) {
+            have_more = false;
             returned_control = true;
             break;
         }
