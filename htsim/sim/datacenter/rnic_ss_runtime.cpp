@@ -17,6 +17,7 @@
 
 #include "fat_tree_topology.h"
 #include "ns_rosetta_switch.h"
+#include "rnic_prbs_pacer.h"
 #include "rnic_ss_packet.h"
 #include "rnic_ss_route.h"
 
@@ -106,6 +107,20 @@ struct RnicSsRuntime::Impl {
         RnicSsRetransmissionReason reason;
     };
 
+    struct CreditDomainState {
+        CreditDomainState(RnicSsEndpointPair pair,
+                          const RnicSsRuntimeConfig& config,
+                          RnicSsCongestionDomainId domain)
+            : credit(pair, config.credit, domain) {}
+
+        RnicSsPairCreditState credit;
+        // These anchors are sender-local observations of cumulative physical
+        // CREDIT packets for this one congestion point.
+        std::uint64_t observed_service_rate_bps{0};
+        std::optional<TimePs> last_credit_feedback_ps;
+        std::uint64_t last_credit_granted_total{0};
+    };
+
     struct PairState {
         PairState(RnicSsEndpointPair value,
                   const RnicSsRuntimeConfig& config)
@@ -113,14 +128,14 @@ struct RnicSsRuntime::Impl {
               ledger(value, config.selective_repeat),
               scoreboard(0),
               selector(config.path_selection),
-              credit(value, config.credit),
               observed_service_rate_bps(config.access_wire_capacity_bps) {}
 
         RnicSsEndpointPair pair;
         RnicSsSelectiveRepeatLedger ledger;
         RnicSsSackScoreboard scoreboard;
         RnicSsHystereticPathSelector selector;
-        RnicSsPairCreditState credit;
+        std::map<RnicSsCongestionDomainId,
+                 std::unique_ptr<CreditDomainState>> credit_domains;
         std::vector<AtlahsFlowId> flow_ids;
         std::size_t round_robin_cursor{0};
         std::map<RnicSsSequence, PacketRecord> packets;
@@ -129,12 +144,9 @@ struct RnicSsRuntime::Impl {
         std::optional<std::uint8_t> current_path;
         std::optional<std::uint8_t> ordered_path;
         std::uint64_t telemetry_sequence{0};
-        // This is sender-local observation, not an allocation oracle.  Once
-        // selective backpressure begins, cumulative service credits and their
-        // physical arrival times estimate the pair's delivered service rate.
+        // This is the minimum sender-local service observation across active
+        // physical credit domains, not an allocation oracle.
         std::uint64_t observed_service_rate_bps;
-        std::optional<TimePs> last_credit_feedback_ps;
-        std::uint64_t last_credit_granted_total{0};
     };
 
     struct ControlAction {
@@ -173,11 +185,32 @@ struct RnicSsRuntime::Impl {
         std::uint32_t pending_served_packets{0};
     };
 
-    struct DestinationEgressState {
+    struct PressureDomainState {
+        RnicSsCongestionDomainId domain{0};
         bool backpressure_enabled{false};
         std::uint64_t next_epoch{0};
-        std::uint64_t enable_epoch{0};
         std::map<RnicSsEndpointPair, ContributorState> contributors;
+    };
+
+    struct EgressPressureState {
+        PressureDomainState pressure;
+        std::set<RnicSsEndpointPair> resident_pairs;
+    };
+
+    struct SwitchPressureState {
+        PressureDomainState pressure;
+        std::set<RnicSsEndpointPair> resident_pairs;
+        std::uint64_t high_bytes{0};
+        std::uint64_t low_bytes{0};
+        std::uint64_t reaction_bytes{0};
+    };
+
+    struct SourcePacerState {
+        SourcePacerState(std::uint64_t seed, std::uint32_t node)
+            : pacer(seed, node) {}
+
+        RnicPrbsPacer pacer;
+        std::optional<TimePs> opportunity_ps;
     };
 
     class Endpoint final : public PacketSink {
@@ -317,6 +350,46 @@ struct RnicSsRuntime::Impl {
         return result;
     }
 
+    RnicSsCongestionDomainId congestionDomain(
+            NsRosetta& sw,
+            std::optional<std::uint32_t> egress_id) const {
+        const auto type = static_cast<std::uint64_t>(sw.getType());
+        if ((type != FatTreeSwitch::TOR && type != FatTreeSwitch::AGG)
+            || (egress_id.has_value()
+                && *egress_id >= UINT32_C(0x7fffffff))) {
+            throw std::invalid_argument(
+                "rnic-ss cannot encode this physical congestion domain");
+        }
+        // [63:60] tier, [59:32] switch, [31] shared scope,
+        // [30:0] one-based egress.  The value is opaque at the sender.
+        const std::uint64_t scope = egress_id.has_value()
+            ? static_cast<std::uint64_t>(*egress_id) + 1
+            : UINT64_C(0x80000000);
+        return (type << 60)
+            | (static_cast<std::uint64_t>(sw.getID()) << 32)
+            | scope;
+    }
+
+    std::vector<std::uint64_t> leafNodeCounts(
+            std::uint32_t count) const {
+        std::vector<std::uint64_t> result(topology.switches_lp.size(), 0);
+        for (std::uint32_t node = 0; node < count; ++node) {
+            const std::uint32_t leaf = topology.cfg().HOST_POD_SWITCH(node);
+            if (leaf >= result.size()) {
+                throw std::invalid_argument(
+                    "rnic-ss host maps outside the controlled Clos leaves");
+            }
+            result[leaf]++;
+        }
+        if (result.empty()
+            || std::any_of(result.begin(), result.end(),
+                           [](std::uint64_t nodes) { return nodes == 0; })) {
+            throw std::invalid_argument(
+                "rnic-ss controlled Clos contains an empty leaf");
+        }
+        return result;
+    }
+
     void validatePhysicalEnvelope(std::uint32_t count) {
         // A cross-leaf two-tier route contains the host serializer and three
         // ns-rosetta egress serializers.  The analytical bound uses a full
@@ -324,7 +397,19 @@ struct RnicSsRuntime::Impl {
         // destination-link serialization; that deliberate overestimate also
         // accounts for forward in-flight DATA.
         constexpr std::uint64_t serializers_per_cross_leaf_path = 4;
-        const std::uint64_t fan_in = count > 0 ? count - 1 : 0;
+        const std::vector<std::uint64_t> leaf_nodes = leafNodeCounts(count);
+        std::uint64_t maximum_cross_leaf_pairs = 0;
+        std::uint64_t all_cross_leaf_pairs = 0;
+        for (std::uint64_t nodes : leaf_nodes) {
+            const std::uint64_t cross = nodes * (count - nodes);
+            maximum_cross_leaf_pairs = std::max(
+                maximum_cross_leaf_pairs, cross);
+            all_cross_leaf_pairs = checkedAdd(
+                all_cross_leaf_pairs, cross,
+                "rnic-ss cross-leaf contributor count overflow");
+        }
+        const std::uint64_t fan_in = std::max<std::uint64_t>(
+            count > 0 ? count - 1 : 0, maximum_cross_leaf_pairs);
         statistics.maximum_bp_enable_fan_in = fan_in;
         const std::uint64_t diameter_ps = maximumNoLoadOneWayPs(count);
         const std::uint64_t data_serialization_ps = serializationPs(
@@ -400,50 +485,166 @@ struct RnicSsRuntime::Impl {
             }
             rounded_control_loop_packets *= 2;
         }
-        statistics.control_loop_window_packets =
-            rounded_control_loop_packets;
-        if (config.selective_repeat.window_packets
-            < statistics.control_loop_window_packets) {
+        statistics.control_loop_window_packets = rounded_control_loop_packets;
+        statistics.configured_window_below_control_loop =
+            config.selective_repeat.window_packets
+            < statistics.control_loop_window_packets;
+        if (statistics.configured_window_below_control_loop) {
             throw std::invalid_argument(
                 "rnic-ss outstanding window is below the rounded analytical "
                 "control-loop DATA envelope");
         }
-        statistics.configured_window_below_control_loop =
-            config.selective_repeat.window_packets
-            < statistics.control_loop_window_packets;
 
-        const Wide maximum_data =
-            config.packetization.maxWirePacketBytes();
-        const Wide sum_windows =
-            static_cast<Wide>(fan_in)
-            * config.selective_repeat.window_packets * maximum_data;
-        const Wide excess_rate =
-            fan_in > 1
-                ? static_cast<Wide>(fan_in - 1)
+        const Wide maximum_data = config.packetization.maxWirePacketBytes();
+        const Wide initial_credit =
+            static_cast<Wide>(config.credit_quantum_packets) * maximum_data;
+        statistics.minimum_shared_pressure_high_bytes =
+            std::numeric_limits<std::uint64_t>::max();
+
+        auto configure_switch = [&](NsRosetta& sw) {
+            const std::uint64_t ingress_count = sw.physical_ingress_count();
+            const std::uint64_t egress_count = sw.physical_egress_count();
+            if (ingress_count == 0 || egress_count == 0) {
+                throw std::invalid_argument(
+                    "rnic-ss controlled switch has no physical ports");
+            }
+            statistics.maximum_switch_physical_ingresses = std::max(
+                statistics.maximum_switch_physical_ingresses,
+                ingress_count);
+            statistics.maximum_switch_physical_egresses = std::max(
+                statistics.maximum_switch_physical_egresses,
+                egress_count);
+
+            std::uint64_t maximum_contributors = maximum_cross_leaf_pairs;
+            std::uint64_t switch_pairs = all_cross_leaf_pairs;
+            if (sw.getType() == FatTreeSwitch::TOR) {
+                if (sw.getID() >= leaf_nodes.size()) {
+                    throw std::invalid_argument(
+                        "rnic-ss leaf ID exceeds the host partition");
+                }
+                const std::uint64_t local = leaf_nodes[sw.getID()];
+                const std::uint64_t cross = local * (count - local);
+                const std::uint64_t intra = local * (local - 1);
+                maximum_contributors = std::max<std::uint64_t>(
+                    count - 1, cross);
+                switch_pairs = checkedAdd(
+                    checkedAdd(cross, cross,
+                               "rnic-ss leaf pair count overflow"),
+                    intra, "rnic-ss leaf pair count overflow");
+            }
+            statistics.maximum_switch_endpoint_pairs = std::max(
+                statistics.maximum_switch_endpoint_pairs, switch_pairs);
+
+            const Wide excess_rate = ingress_count > 1
+                ? static_cast<Wide>(ingress_count - 1)
                       * config.access_wire_capacity_bps
                 : 0;
-        const Wide reaction_bytes =
-            (excess_rate * statistics.physical_bound_control_loop_ps
-             + wire_bits_per_second_denominator - 1)
-            / wire_bits_per_second_denominator
-            + static_cast<Wide>(fan_in) * maximum_data;
-        const Wide burst = std::min(sum_windows, reaction_bytes);
-        const Wide queue_bound = config.q_hi_bytes + burst;
-        if (queue_bound > std::numeric_limits<std::uint64_t>::max()) {
-            throw std::overflow_error(
-                "rnic-ss analytical queue envelope overflow");
+            const Wide excess_bytes =
+                (excess_rate * statistics.physical_bound_control_loop_ps
+                 + wire_bits_per_second_denominator - 1)
+                / wire_bits_per_second_denominator;
+            // One packet of phase uncertainty and one finite initial grant
+            // are charged per possible contributor.  Two control packets per
+            // contributor cover the enable/credit occupancy on shared VoQs.
+            const Wide contributor_burst =
+                static_cast<Wide>(maximum_contributors)
+                * (maximum_data + initial_credit);
+            const Wide local_control_bytes =
+                static_cast<Wide>(2) * maximum_contributors
+                * config.control_wire_bytes;
+            const Wide local_reaction =
+                excess_bytes + contributor_burst + local_control_bytes;
+            const Wide local_bound =
+                static_cast<Wide>(config.q_hi_bytes) + local_reaction;
+            const Wide shared_control_bytes =
+                static_cast<Wide>(2) * switch_pairs
+                * config.control_wire_bytes;
+            const Wide shared_reaction = std::max(
+                local_reaction,
+                excess_bytes
+                    // A shared guard spans every output.  Charge one
+                    // packet-phase envelope for every switch-local directed
+                    // pair, rather than only one per physical ingress; the
+                    // latter misses packets already distributed across
+                    // upstream paths when aggregate pressure is observed.
+                    + static_cast<Wide>(switch_pairs) * maximum_data
+                    + shared_control_bytes);
+            if (local_bound > std::numeric_limits<std::uint64_t>::max()
+                || shared_reaction
+                       > std::numeric_limits<std::uint64_t>::max()) {
+                throw std::overflow_error(
+                    "rnic-ss switch analytical envelope overflow");
+            }
+            const std::uint64_t local_bound_bytes =
+                static_cast<std::uint64_t>(local_bound);
+            const std::uint64_t reaction_bytes =
+                static_cast<std::uint64_t>(shared_reaction);
+            statistics.analytical_queue_bound_bytes = std::max(
+                statistics.analytical_queue_bound_bytes,
+                local_bound_bytes);
+            statistics.analytical_shared_reaction_bytes = std::max(
+                statistics.analytical_shared_reaction_bytes,
+                reaction_bytes);
+
+            const std::uint64_t capacity =
+                static_cast<std::uint64_t>(sw.shared_buffer_capacity());
+            const bool unsafe = local_bound_bytes > capacity
+                || reaction_bytes >= capacity;
+            if (unsafe && !config.allow_loss_stress) {
+                throw std::invalid_argument(
+                    "rnic-ss shared buffer is below the aggregate "
+                    "controlled-Clos network-calculus envelope");
+            }
+
+            const Wide aggregate_q_hi_wide =
+                static_cast<Wide>(egress_count) * config.q_hi_bytes;
+            const std::uint64_t aggregate_q_hi =
+                aggregate_q_hi_wide
+                    > std::numeric_limits<std::uint64_t>::max()
+                ? std::numeric_limits<std::uint64_t>::max()
+                : static_cast<std::uint64_t>(aggregate_q_hi_wide);
+            const std::uint64_t headroom_high = capacity > reaction_bytes
+                ? capacity - reaction_bytes : capacity;
+            const std::uint64_t high = std::min(
+                aggregate_q_hi, headroom_high);
+            const std::uint64_t hysteresis =
+                config.q_hi_bytes - config.q_lo_bytes;
+            const Wide aggregate_q_lo_wide =
+                static_cast<Wide>(egress_count) * config.q_lo_bytes;
+            const std::uint64_t aggregate_q_lo =
+                aggregate_q_lo_wide
+                    > std::numeric_limits<std::uint64_t>::max()
+                ? std::numeric_limits<std::uint64_t>::max()
+                : static_cast<std::uint64_t>(aggregate_q_lo_wide);
+            const std::uint64_t low_ceiling = high > hysteresis
+                ? high - hysteresis : 0;
+            const std::uint64_t low = std::min(
+                aggregate_q_lo, low_ceiling);
+            if ((high == 0 || low >= high) && !config.allow_loss_stress) {
+                throw std::invalid_argument(
+                    "rnic-ss shared pressure guard has no hysteresis");
+            }
+
+            SwitchPressureState state;
+            state.pressure.domain = congestionDomain(sw, std::nullopt);
+            state.high_bytes = high;
+            state.low_bytes = low;
+            state.reaction_bytes = reaction_bytes;
+            switch_pressures.emplace(&sw, std::move(state));
+            statistics.minimum_shared_pressure_high_bytes = std::min(
+                statistics.minimum_shared_pressure_high_bytes, high);
+            statistics.maximum_shared_pressure_high_bytes = std::max(
+                statistics.maximum_shared_pressure_high_bytes, high);
+        };
+
+        for (const auto& [sw, observer] : switch_observers) {
+            (void)observer;
+            configure_switch(*sw);
         }
-        statistics.analytical_queue_bound_bytes =
-            static_cast<std::uint64_t>(queue_bound);
-        const std::uint64_t available = static_cast<std::uint64_t>(
-            std::min(
-                topology.cfg().ns_rosetta_shared_buffer_capacity(TOR_TIER),
-                topology.cfg().ns_rosetta_shared_buffer_capacity(AGG_TIER)));
-        if (!config.allow_loss_stress
-            && statistics.analytical_queue_bound_bytes > available) {
+        if (statistics.minimum_shared_pressure_high_bytes
+            == std::numeric_limits<std::uint64_t>::max()) {
             throw std::invalid_argument(
-                "rnic-ss shared buffer is below the controlled-Clos "
-                "analytical network-calculus envelope");
+                "rnic-ss controlled Clos contains no ns-rosetta switch");
         }
     }
 
@@ -489,8 +690,13 @@ struct RnicSsRuntime::Impl {
         }
         validatePhysicalEnvelope(count);
         endpoints.reserve(count);
+        source_pacers.reserve(count);
+        source_pairs.resize(count);
         for (std::uint32_t node = 0; node < count; ++node) {
             endpoints.push_back(std::make_unique<Endpoint>(*this, node));
+            source_pacers.push_back(std::make_unique<SourcePacerState>(
+                config.routing_seed ^ UINT64_C(0x73732d707262732d),
+                node));
         }
         node_count = count;
         complete_flow = std::move(completion);
@@ -505,6 +711,11 @@ struct RnicSsRuntime::Impl {
         auto state = std::make_unique<PairState>(pair, config);
         PairState& result = *state;
         pairs.emplace(pair, std::move(state));
+        if (pair.source >= source_pairs.size()) {
+            throw std::logic_error(
+                "rnic-ss pair precedes source pacer setup");
+        }
+        source_pairs[pair.source].push_back(&result);
         return result;
     }
 
@@ -576,22 +787,82 @@ struct RnicSsRuntime::Impl {
         }
     }
 
-    bool updateObservedServiceRate(
+    CreditDomainState& ensureCreditDomain(
             PairState& pair,
-            std::uint64_t granted_total,
-            TimePs now_ps) {
-        if (!pair.last_credit_feedback_ps.has_value()) {
-            pair.last_credit_feedback_ps = now_ps;
-            pair.last_credit_granted_total = granted_total;
+            RnicSsCongestionDomainId domain) {
+        auto existing = pair.credit_domains.find(domain);
+        if (existing != pair.credit_domains.end()) {
+            return *existing->second;
+        }
+        auto state = std::make_unique<CreditDomainState>(
+            pair.pair, config, domain);
+        CreditDomainState& result = *state;
+        pair.credit_domains.emplace(domain, std::move(state));
+        return result;
+    }
+
+    bool pairCanSend(const PairState& pair,
+                     std::uint32_t wire_bytes) const noexcept {
+        return std::all_of(
+            pair.credit_domains.begin(), pair.credit_domains.end(),
+            [wire_bytes](const auto& entry) {
+                return entry.second->credit.canSend(wire_bytes);
+            });
+    }
+
+    void consumePairCredit(PairState& pair, std::uint32_t wire_bytes) {
+        for (auto& [domain, state] : pair.credit_domains) {
+            (void)domain;
+            state->credit.consumeForData(wire_bytes);
+        }
+    }
+
+    std::uint64_t activeCreditDomainCount(
+            const PairState& pair) const noexcept {
+        return static_cast<std::uint64_t>(std::count_if(
+            pair.credit_domains.begin(), pair.credit_domains.end(),
+            [](const auto& entry) {
+                return entry.second->credit.snapshot().backpressure_enabled;
+            }));
+    }
+
+    bool recomputeObservedServiceRate(PairState& pair) {
+        std::uint64_t rate = config.access_wire_capacity_bps;
+        bool constrained = false;
+        for (const auto& [domain, state] : pair.credit_domains) {
+            (void)domain;
+            if (!state->credit.snapshot().backpressure_enabled) {
+                continue;
+            }
+            constrained = true;
+            rate = std::min(rate, state->observed_service_rate_bps);
+        }
+        if (!constrained) {
+            rate = config.access_wire_capacity_bps;
+        }
+        if (rate == pair.observed_service_rate_bps) {
             return false;
         }
-        const TimePs epoch_ps = *pair.last_credit_feedback_ps;
+        pair.observed_service_rate_bps = rate;
+        return true;
+    }
+
+    bool updateObservedServiceRate(
+            CreditDomainState& domain,
+            std::uint64_t granted_total,
+            TimePs now_ps) {
+        if (!domain.last_credit_feedback_ps.has_value()) {
+            domain.last_credit_feedback_ps = now_ps;
+            domain.last_credit_granted_total = granted_total;
+            return false;
+        }
+        const TimePs epoch_ps = *domain.last_credit_feedback_ps;
         if (now_ps <= epoch_ps
-            || granted_total <= pair.last_credit_granted_total) {
+            || granted_total <= domain.last_credit_granted_total) {
             return false;
         }
         const std::uint64_t delta_bytes =
-            granted_total - pair.last_credit_granted_total;
+            granted_total - domain.last_credit_granted_total;
         const Wide numerator = static_cast<Wide>(delta_bytes)
                                * 8 * UINT64_C(1000000000000);
         // Use the cumulative service since this BP epoch rather than one
@@ -604,10 +875,10 @@ struct RnicSsRuntime::Impl {
                 > config.access_wire_capacity_bps
             ? config.access_wire_capacity_bps
             : static_cast<std::uint64_t>(measured);
-        if (rate == pair.observed_service_rate_bps) {
+        if (rate == domain.observed_service_rate_bps) {
             return false;
         }
-        pair.observed_service_rate_bps = rate;
+        domain.observed_service_rate_bps = rate;
         return true;
     }
 
@@ -824,7 +1095,7 @@ struct RnicSsRuntime::Impl {
         if (extent.wireBytes() > std::numeric_limits<std::uint32_t>::max()) {
             throw std::overflow_error("rnic-ss DATA wire extent overflow");
         }
-        if (!pair.credit.canSend(
+        if (!pairCanSend(pair,
                 static_cast<std::uint32_t>(extent.wireBytes()))) {
             return;
         }
@@ -840,7 +1111,7 @@ struct RnicSsRuntime::Impl {
             throw std::logic_error("rnic-ss sequence allocation changed");
         }
         scheduleRto(pair, sequence);
-        pair.credit.consumeForData(
+        consumePairCredit(pair,
             static_cast<std::uint32_t>(extent.wireBytes()));
         const std::uint64_t payload_offset =
             flow.source_payload_bytes_packetized;
@@ -877,7 +1148,7 @@ struct RnicSsRuntime::Impl {
             return true;
         }
         const PacketRecord& data = record->second;
-        if (!pair.credit.canSend(
+        if (!pairCanSend(pair,
                 static_cast<std::uint32_t>(data.extent.wireBytes()))) {
             return false;
         }
@@ -889,7 +1160,7 @@ struct RnicSsRuntime::Impl {
             choosePath(pair, sequence, routes, now_ps, true);
         pair.ledger.recordRetransmission(sequence, now_ps, reason);
         scheduleRto(pair, sequence);
-        pair.credit.consumeForData(
+        consumePairCredit(pair,
             static_cast<std::uint32_t>(data.extent.wireBytes()));
         RnicSsWirePacketMetadata metadata{
             RnicSsPacketKind::DATA,
@@ -910,38 +1181,162 @@ struct RnicSsRuntime::Impl {
         return true;
     }
 
-    void pumpPair(PairState& pair, TimePs now_ps) {
+    std::optional<std::uint32_t> pairHeadWireBytes(PairState& pair) {
+        if (!pair.retransmissions.empty()) {
+            const auto record = pair.packets.find(
+                pair.retransmissions.begin()->first);
+            if (record == pair.packets.end()) {
+                return std::nullopt;
+            }
+            const auto bytes = static_cast<std::uint32_t>(
+                record->second.extent.wireBytes());
+            return pairCanSend(pair, bytes)
+                ? std::optional<std::uint32_t>(bytes) : std::nullopt;
+        }
+        if (!sequenceWindowHasRoom(pair)) {
+            return std::nullopt;
+        }
+        const auto next = nextSourceFlow(pair);
+        if (!next.has_value()) {
+            return std::nullopt;
+        }
+        const RnicPacketExtent extent = config.packetization.packetize(
+            next->second->request.payload_bytes
+            - next->second->source_payload_bytes_packetized);
+        const auto bytes = static_cast<std::uint32_t>(extent.wireBytes());
+        return pairCanSend(pair, bytes)
+            ? std::optional<std::uint32_t>(bytes) : std::nullopt;
+    }
+
+    void scheduleSourceOpportunity(std::uint32_t source, TimePs when_ps) {
+        if (source >= source_pacers.size()) {
+            throw std::logic_error("rnic-ss source pacer is unavailable");
+        }
+        std::optional<TimePs>& scheduled =
+            source_pacers[source]->opportunity_ps;
+        if (!scheduled.has_value() || when_ps < *scheduled) {
+            scheduled = when_ps;
+        }
+    }
+
+    void dispatchSourceOpportunity(std::uint32_t source, TimePs now_ps) {
+        SourcePacerState& source_state = *source_pacers.at(source);
+        source_state.opportunity_ps.reset();
+
+        struct Candidate {
+            PairState* pair;
+            std::uint32_t wire_bytes;
+        };
+        std::vector<Candidate> candidates;
+        for (PairState* pair : source_pairs.at(source)) {
+            const std::optional<std::uint32_t> head =
+                pairHeadWireBytes(*pair);
+            if (head.has_value()) {
+                candidates.push_back({pair, *head});
+            }
+        }
+        if (candidates.empty()) {
+            return;
+        }
+
+        BaseQueue* const physical_source =
+            topology.queues_ns_nlp[source]
+                                  [topology.cfg().HOST_POD_SWITCH(source)][0];
+        if (physical_source == nullptr) {
+            throw std::logic_error(
+                "rnic-ss source pacer lacks its physical serializer");
+        }
+        // HTSIM retains the packet in service in queuesize() through its
+        // completion event.  Permit one maximum DATA envelope so an
+        // opportunity at that exact boundary keeps the wire work-conserving;
+        // anything larger means a real queued head/control burst and is
+        // deferred.  Thus at most one future DATA head sits behind service.
+        if (physical_source->queuesize()
+            > static_cast<mem_b>(
+                config.packetization.maxWirePacketBytes())) {
+            statistics.source_prbs_busy_deferrals++;
+            scheduleSourceOpportunity(
+                source,
+                checkedAdd(
+                    now_ps,
+                    serializationPs(
+                        config.packetization.maxWirePacketBytes()),
+                    "rnic-ss source pacer deferral overflow"));
+            return;
+        }
+
+        const std::uint64_t base_rate =
+            config.access_wire_capacity_bps / candidates.size();
+        const std::uint64_t remainder =
+            config.access_wire_capacity_bps % candidates.size();
+        std::vector<RnicPrbsWireCandidate> lottery;
+        lottery.reserve(candidates.size());
+        for (std::size_t index = 0; index < candidates.size(); ++index) {
+            lottery.push_back(
+                {candidates[index].pair->pair.destination,
+                 base_rate + (index < remainder ? 1 : 0),
+                 candidates[index].wire_bytes});
+        }
+        const std::optional<std::uint64_t> selected =
+            source_state.pacer.selectWireEvent(
+                lottery,
+                config.access_wire_capacity_bps,
+                config.packetization.maxWirePacketBytes());
+        if (!selected.has_value()) {
+            throw std::logic_error(
+                "rnic-ss full-rate PRBS lottery selected idle");
+        }
+        auto chosen = std::find_if(
+            candidates.begin(), candidates.end(),
+            [selected](const Candidate& candidate) {
+                return candidate.pair->pair.destination == *selected;
+            });
+        if (chosen == candidates.end()) {
+            throw std::logic_error(
+                "rnic-ss PRBS selected an unknown endpoint pair");
+        }
+
+        PairState& pair = *chosen->pair;
         const std::size_t active_before = activeSourceFlowCount(pair);
-        while (true) {
-            if (!pair.retransmissions.empty()) {
-                auto retry = pair.retransmissions.begin();
-                if (!sendRetransmission(pair, retry->first,
-                                        retry->second.reason, now_ps)) {
-                    break;
-                }
-                pair.retransmissions.erase(retry);
-                continue;
+        if (!pair.retransmissions.empty()) {
+            auto retry = pair.retransmissions.begin();
+            if (!sendRetransmission(
+                    pair, retry->first, retry->second.reason, now_ps)) {
+                throw std::logic_error(
+                    "rnic-ss PRBS selected a credit-blocked repair");
             }
-            if (!sequenceWindowHasRoom(pair)) {
-                break;
-            }
+            pair.retransmissions.erase(retry);
+        } else {
             const auto next = nextSourceFlow(pair);
             if (!next.has_value()) {
-                break;
+                throw std::logic_error(
+                    "rnic-ss PRBS selected a pair without a DATA head");
             }
-            FlowState& flow = *next->second;
-            const RnicPacketExtent extent = config.packetization.packetize(
-                flow.request.payload_bytes
-                - flow.source_payload_bytes_packetized);
-            if (!pair.credit.canSend(
-                    static_cast<std::uint32_t>(extent.wireBytes()))) {
-                break;
-            }
-            sendNewData(pair, flow, next->first, now_ps);
+            sendNewData(pair, *next->second, next->first, now_ps);
         }
+        statistics.source_prbs_data_opportunities++;
         if (activeSourceFlowCount(pair) != active_before) {
             tracePair(pair, "source-active-set-change");
         }
+        scheduleSourceOpportunity(
+            source,
+            checkedAdd(now_ps, serializationPs(chosen->wire_bytes),
+                       "rnic-ss source pacer opportunity overflow"));
+    }
+
+    void dispatchDueSourceOpportunities(TimePs now_ps) {
+        for (std::uint32_t source = 0;
+             source < source_pacers.size(); ++source) {
+            const std::optional<TimePs> scheduled =
+                source_pacers[source]->opportunity_ps;
+            if (scheduled.has_value() && *scheduled <= now_ps) {
+                dispatchSourceOpportunity(source, now_ps);
+            }
+        }
+    }
+
+    void pumpPair(PairState& pair, TimePs now_ps) {
+        scheduleSourceOpportunity(pair.pair.source, now_ps);
     }
 
     void receiveData(RnicSsPacket& packet) {
@@ -1068,26 +1463,34 @@ struct RnicSsRuntime::Impl {
                 throw std::logic_error("rnic-ss BP payload is malformed");
             }
             PairState& pair = requirePair(bp->forward_pair);
+            CreditDomainState& domain = ensureCreditDomain(
+                pair, bp->congestion_domain);
             RnicSsControlApplyResult applied;
             if (packet.kind() == RnicSsPacketKind::BP_ENABLE) {
-                applied = pair.credit.applyEnable(*bp);
+                applied = domain.credit.applyEnable(*bp);
                 if (applied == RnicSsControlApplyResult::APPLIED) {
-                    pair.last_credit_feedback_ps = EventList::now();
-                    pair.last_credit_granted_total =
+                    domain.last_credit_feedback_ps = EventList::now();
+                    domain.last_credit_granted_total =
                         bp->granted_wire_bytes_total;
                     // The sender has entered a finite-credit epoch but has no
                     // service-rate observation yet.  Report zero until the
                     // first physical cumulative CREDIT establishes one.
-                    pair.observed_service_rate_bps = 0;
+                    domain.observed_service_rate_bps = 0;
                 }
             } else {
-                applied = pair.credit.applyDisable(*bp);
+                applied = domain.credit.applyDisable(*bp);
                 if (applied == RnicSsControlApplyResult::APPLIED) {
-                    pair.last_credit_feedback_ps.reset();
-                    pair.last_credit_granted_total = 0;
-                    pair.observed_service_rate_bps =
+                    domain.last_credit_feedback_ps.reset();
+                    domain.last_credit_granted_total = 0;
+                    domain.observed_service_rate_bps =
                         config.access_wire_capacity_bps;
                 }
+            }
+            if (applied == RnicSsControlApplyResult::APPLIED) {
+                statistics.maximum_active_credit_domains = std::max(
+                    statistics.maximum_active_credit_domains,
+                    activeCreditDomainCount(pair));
+                recomputeObservedServiceRate(pair);
             }
             pumpPair(pair, EventList::now());
             if (applied == RnicSsControlApplyResult::APPLIED) {
@@ -1107,13 +1510,17 @@ struct RnicSsRuntime::Impl {
                     "rnic-ss credit payload is malformed");
             }
             PairState& pair = requirePair(credit->forward_pair);
+            CreditDomainState& domain = ensureCreditDomain(
+                pair, credit->congestion_domain);
             const RnicSsControlApplyResult applied =
-                pair.credit.applyCredit(*credit);
-            const bool rate_changed =
+                domain.credit.applyCredit(*credit);
+            const bool domain_rate_changed =
                 applied == RnicSsControlApplyResult::APPLIED
                 && updateObservedServiceRate(
-                    pair, credit->granted_wire_bytes_total,
+                    domain, credit->granted_wire_bytes_total,
                     EventList::now());
+            const bool rate_changed = domain_rate_changed
+                && recomputeObservedServiceRate(pair);
             pumpPair(pair, EventList::now());
             if (rate_changed) {
                 tracePair(pair, "service-rate-change");
@@ -1202,18 +1609,23 @@ struct RnicSsRuntime::Impl {
         }
     }
 
-    void enableContributor(DestinationEgressState& state,
-                           RnicSsEndpointPair pair) {
-        if (state.contributors.count(pair) != 0) {
+    std::uint64_t nextPressureEpoch(PressureDomainState& state) {
+        if (state.next_epoch == std::numeric_limits<std::uint64_t>::max()) {
+            throw std::overflow_error("rnic-ss BP epoch exhausted");
+        }
+        return ++state.next_epoch;
+    }
+
+    void enableContributor(PressureDomainState& state,
+                           RnicSsEndpointPair pair,
+                           std::uint64_t initial_credit) {
+        if (!state.backpressure_enabled
+            || state.contributors.count(pair) != 0) {
             return;
         }
-        const Wide initial_wide =
-            static_cast<Wide>(config.credit_quantum_packets)
-            * config.packetization.maxWirePacketBytes();
-        const std::uint64_t initial =
-            static_cast<std::uint64_t>(initial_wide);
+        const std::uint64_t epoch = nextPressureEpoch(state);
         state.contributors.emplace(
-            pair, ContributorState{state.enable_epoch, initial});
+            pair, ContributorState{epoch, initial_credit});
         queueControl(
             EventList::now(),
             RnicSsWirePacketMetadata{
@@ -1222,53 +1634,75 @@ struct RnicSsRuntime::Impl {
                 pair.source,
                 static_cast<std::uint32_t>(config.control_wire_bytes),
                 RnicSsBackpressureMetadata{
-                    pair, state.enable_epoch, initial}});
+                    pair, state.domain, epoch, initial_credit}});
+    }
+
+    void disableContributor(PressureDomainState& state,
+                            RnicSsEndpointPair pair) {
+        auto contributor = state.contributors.find(pair);
+        if (contributor == state.contributors.end()) {
+            return;
+        }
+        const std::uint64_t epoch = nextPressureEpoch(state);
+        queueControl(
+            EventList::now(),
+            RnicSsWirePacketMetadata{
+                RnicSsPacketKind::BP_DISABLE,
+                pair.destination,
+                pair.source,
+                static_cast<std::uint32_t>(config.control_wire_bytes),
+                RnicSsBackpressureMetadata{
+                    pair, state.domain, epoch, 0}});
+        state.contributors.erase(contributor);
     }
 
     void beginBackpressure(NsRosetta& sw,
-                           std::uint32_t egress_id,
-                           DestinationEgressState& state) {
-        if (state.next_epoch == std::numeric_limits<std::uint64_t>::max()) {
-            throw std::overflow_error("rnic-ss BP epoch exhausted");
+                           PressureDomainState& state,
+                           const std::set<RnicSsEndpointPair>& residents,
+                           std::uint64_t initial_credit,
+                           bool shared) {
+        if (state.backpressure_enabled) {
+            return;
         }
         state.backpressure_enabled = true;
-        state.enable_epoch = ++state.next_epoch;
-        for (const auto& [pair, pair_state] : pairs) {
-            (void)pair_state;
-            if (sw.egress_pair_backlog_bytes(egress_id, pair) > 0) {
-                enableContributor(state, pair);
+        for (const RnicSsEndpointPair& pair : residents) {
+            enableContributor(state, pair, initial_credit);
+        }
+        if (sw.getType() == FatTreeSwitch::TOR) {
+            if (shared) {
+                statistics.leaf_shared_bp_enable_events++;
+            } else {
+                statistics.leaf_egress_bp_enable_events++;
+            }
+        } else if (sw.getType() == FatTreeSwitch::AGG) {
+            if (shared) {
+                statistics.spine_shared_bp_enable_events++;
+            } else {
+                statistics.spine_egress_bp_enable_events++;
             }
         }
     }
 
-    void endBackpressure(DestinationEgressState& state) {
+    void endBackpressure(PressureDomainState& state) {
         if (!state.backpressure_enabled) {
             return;
         }
-        if (state.next_epoch == std::numeric_limits<std::uint64_t>::max()) {
-            throw std::overflow_error("rnic-ss BP epoch exhausted");
-        }
-        const std::uint64_t disable_epoch = ++state.next_epoch;
+        std::vector<RnicSsEndpointPair> contributors;
+        contributors.reserve(state.contributors.size());
         for (const auto& [pair, contributor] : state.contributors) {
             (void)contributor;
-            queueControl(
-                EventList::now(),
-                RnicSsWirePacketMetadata{
-                    RnicSsPacketKind::BP_DISABLE,
-                    pair.destination,
-                    pair.source,
-                    static_cast<std::uint32_t>(config.control_wire_bytes),
-                    RnicSsBackpressureMetadata{
-                        pair, disable_epoch, 0}});
+            contributors.push_back(pair);
         }
-        state.contributors.clear();
+        for (const RnicSsEndpointPair& pair : contributors) {
+            disableContributor(state, pair);
+        }
         state.backpressure_enabled = false;
-        state.enable_epoch = 0;
     }
 
-    void creditServicedPacket(DestinationEgressState& state,
+    void creditServicedPacket(PressureDomainState& state,
                               RnicSsEndpointPair pair,
-                              std::uint64_t wire_bytes) {
+                              std::uint64_t wire_bytes,
+                              bool flush_partial) {
         auto contributor = state.contributors.find(pair);
         if (contributor == state.contributors.end()) {
             return;
@@ -1278,7 +1712,9 @@ struct RnicSsRuntime::Impl {
             value.pending_served_bytes, wire_bytes,
             "rnic-ss pending credit bytes overflow");
         value.pending_served_packets++;
-        if (value.pending_served_packets < config.credit_quantum_packets) {
+        if (!flush_partial
+            && value.pending_served_packets
+                   < config.credit_quantum_packets) {
             return;
         }
         value.granted_total = checkedAdd(
@@ -1294,7 +1730,7 @@ struct RnicSsRuntime::Impl {
                 pair.source,
                 static_cast<std::uint32_t>(config.control_wire_bytes),
                 RnicSsCreditMetadata{
-                    pair, value.epoch, value.granted_total}});
+                    pair, state.domain, value.epoch, value.granted_total}});
     }
 
     void observeSwitch(
@@ -1325,37 +1761,104 @@ struct RnicSsRuntime::Impl {
             queue_entry_times.erase(queue_key);
         }
 
+        statistics.maximum_observed_shared_buffer_bytes = std::max(
+            statistics.maximum_observed_shared_buffer_bytes,
+            static_cast<std::uint64_t>(
+                observation.shared_buffer_occupancy));
+
         auto live = live_packets.find(observation.packet_id);
         if (live == live_packets.end()
-            || live->second->kind() != RnicSsPacketKind::DATA
-            || observation.switch_type != FatTreeSwitch::TOR
-            || topology.cfg().HOST_POD_SWITCH(
-                   observation.pair.destination) != sw.getID()) {
+            || live->second->kind() != RnicSsPacketKind::DATA) {
             return;
         }
 
         const auto egress_key = std::make_pair(&sw, observation.egress_id);
-        DestinationEgressState& state = destination_egresses[egress_key];
-        if (!state.backpressure_enabled
+        auto [egress_it, inserted] = egress_pressures.try_emplace(egress_key);
+        EgressPressureState& egress = egress_it->second;
+        if (inserted) {
+            egress.pressure.domain = congestionDomain(
+                sw, observation.egress_id);
+        }
+        auto switch_it = switch_pressures.find(&sw);
+        if (switch_it == switch_pressures.end()) {
+            throw std::logic_error(
+                "rnic-ss observed a switch before envelope setup");
+        }
+        SwitchPressureState& shared = switch_it->second;
+
+        if (observation.pair_backlog_bytes > 0) {
+            egress.resident_pairs.insert(observation.pair);
+        } else {
+            egress.resident_pairs.erase(observation.pair);
+        }
+        if (sw.pair_backlog_bytes(observation.pair) > 0) {
+            shared.resident_pairs.insert(observation.pair);
+        } else {
+            shared.resident_pairs.erase(observation.pair);
+        }
+
+        const Wide initial_wide =
+            static_cast<Wide>(config.credit_quantum_packets)
+            * config.packetization.maxWirePacketBytes();
+        const std::uint64_t initial_credit =
+            static_cast<std::uint64_t>(initial_wide);
+        if (!egress.pressure.backpressure_enabled
             && observation.egress_backlog_bytes
                    >= static_cast<mem_b>(config.q_hi_bytes)) {
-            beginBackpressure(sw, observation.egress_id, state);
+            beginBackpressure(
+                sw, egress.pressure, egress.resident_pairs,
+                initial_credit, false);
         }
-        if (state.backpressure_enabled
-            && observation.transition == NsRosettaQueueTransition::Enqueued
-            && observation.pair_backlog_bytes > 0) {
-            enableContributor(state, observation.pair);
+        if (egress.pressure.backpressure_enabled) {
+            if (observation.transition
+                == NsRosettaQueueTransition::SerializationCompleted) {
+                creditServicedPacket(
+                    egress.pressure, observation.pair,
+                    observation.packet_bytes,
+                    observation.pair_backlog_bytes == 0);
+            }
+            if (observation.pair_backlog_bytes > 0) {
+                enableContributor(
+                    egress.pressure, observation.pair, initial_credit);
+            } else {
+                disableContributor(egress.pressure, observation.pair);
+            }
         }
-        if (state.backpressure_enabled
-            && observation.transition
-                   == NsRosettaQueueTransition::SerializationCompleted) {
-            creditServicedPacket(
-                state, observation.pair, observation.packet_bytes);
-        }
-        if (state.backpressure_enabled
+        if (egress.pressure.backpressure_enabled
             && observation.egress_backlog_bytes
                    <= static_cast<mem_b>(config.q_lo_bytes)) {
-            endBackpressure(state);
+            endBackpressure(egress.pressure);
+        }
+
+        if (!shared.pressure.backpressure_enabled
+            && static_cast<std::uint64_t>(
+                   observation.shared_buffer_occupancy)
+                   >= shared.high_bytes) {
+            // The aggregate guard starts with zero credit: only service that
+            // is observed after the physical enable may replenish this gate.
+            beginBackpressure(
+                sw, shared.pressure, shared.resident_pairs, 0, true);
+        }
+        if (shared.pressure.backpressure_enabled) {
+            const bool resident =
+                sw.pair_backlog_bytes(observation.pair) > 0;
+            if (observation.transition
+                == NsRosettaQueueTransition::SerializationCompleted) {
+                creditServicedPacket(
+                    shared.pressure, observation.pair,
+                    observation.packet_bytes, !resident);
+            }
+            if (resident) {
+                enableContributor(shared.pressure, observation.pair, 0);
+            } else {
+                disableContributor(shared.pressure, observation.pair);
+            }
+        }
+        if (shared.pressure.backpressure_enabled
+            && static_cast<std::uint64_t>(
+                   observation.shared_buffer_occupancy)
+                   <= shared.low_bytes) {
+            endBackpressure(shared.pressure);
         }
     }
 
@@ -1468,6 +1971,13 @@ struct RnicSsRuntime::Impl {
         if (!pending_controls.empty()) {
             next = pending_controls.begin()->first;
         }
+        for (const auto& source : source_pacers) {
+            if (source->opportunity_ps.has_value()
+                && (!next.has_value()
+                    || *source->opportunity_ps < *next)) {
+                next = *source->opportunity_ps;
+            }
+        }
         const std::optional<TimePs> rto = nextRtoTime();
         if (rto.has_value() && (!next.has_value() || *rto < *next)) {
             next = *rto;
@@ -1513,6 +2023,7 @@ struct RnicSsRuntime::Impl {
         }
         dispatchDueControls(now_ps);
         processRtos(now_ps);
+        dispatchDueSourceOpportunities(now_ps);
         throwDeferredFailure();
         refreshEvent();
     }
@@ -1540,10 +2051,17 @@ struct RnicSsRuntime::Impl {
                 return true;
             }
         }
-        for (const auto& [key, state] : destination_egresses) {
+        for (const auto& [key, state] : egress_pressures) {
             (void)key;
-            if (state.backpressure_enabled
-                || !state.contributors.empty()) {
+            if (state.pressure.backpressure_enabled
+                || !state.pressure.contributors.empty()) {
+                return true;
+            }
+        }
+        for (const auto& [sw, state] : switch_pressures) {
+            (void)sw;
+            if (state.pressure.backpressure_enabled
+                || !state.pressure.contributors.empty()) {
                 return true;
             }
         }
@@ -1591,6 +2109,8 @@ struct RnicSsRuntime::Impl {
     RnicSsRuntimeStatistics statistics;
     AtlahsStateTrace state_trace;
     std::vector<std::unique_ptr<Endpoint>> endpoints;
+    std::vector<std::unique_ptr<SourcePacerState>> source_pacers;
+    std::vector<std::vector<PairState*>> source_pairs;
     std::map<AtlahsFlowId, std::unique_ptr<FlowState>> flows;
     std::map<RnicSsEndpointPair, std::unique_ptr<PairState>> pairs;
     std::map<packetid_t, RnicSsPacket*> live_packets;
@@ -1599,8 +2119,9 @@ struct RnicSsRuntime::Impl {
                         std::vector<RtoDeadline>,
                         LaterRtoDeadline> rto_deadlines;
     std::map<std::pair<NsRosetta*, packetid_t>, TimePs> queue_entry_times;
-    std::map<std::pair<NsRosetta*, std::uint32_t>, DestinationEgressState>
-        destination_egresses;
+    std::map<std::pair<NsRosetta*, std::uint32_t>, EgressPressureState>
+        egress_pressures;
+    std::map<NsRosetta*, SwitchPressureState> switch_pressures;
     std::vector<std::pair<NsRosetta*, std::shared_ptr<SwitchObserver>>>
         switch_observers;
     std::optional<EventList::Handle> event_handle;

@@ -16,6 +16,7 @@
 namespace {
 
 constexpr RnicSsEndpointPair kPair{3, 11};
+constexpr RnicSsCongestionDomainId kDomain = 42;
 
 RnicSsWirePacketMetadata wirePacket(
         RnicSsPacketKind kind,
@@ -46,15 +47,15 @@ TEST(RnicSsWireMetadataTest, ValidatesEveryPhysicalPacketKind) {
         wirePacket(RnicSsPacketKind::BP_ENABLE,
                    11,
                    3,
-                   RnicSsBackpressureMetadata{kPair, 1, 4096}),
+                   RnicSsBackpressureMetadata{kPair, kDomain, 1, 4096}),
         wirePacket(RnicSsPacketKind::BP_DISABLE,
                    11,
                    3,
-                   RnicSsBackpressureMetadata{kPair, 2, 0}),
+                   RnicSsBackpressureMetadata{kPair, kDomain, 2, 0}),
         wirePacket(RnicSsPacketKind::CREDIT,
                    11,
                    3,
-                   RnicSsCreditMetadata{kPair, 1, 8192}),
+                   RnicSsCreditMetadata{kPair, kDomain, 1, 8192}),
     };
 
     for (const auto& packet : packets) {
@@ -68,21 +69,28 @@ TEST(RnicSsWireMetadataTest, RejectsWrongPayloadAndNonPhysicalDirection) {
             RnicSsPacketKind::ACK_SACK,
             11,
             3,
-            RnicSsCreditMetadata{kPair, 1, 64})),
+            RnicSsCreditMetadata{kPair, kDomain, 1, 64})),
         std::invalid_argument);
     EXPECT_THROW(
         validateRnicSsWirePacket(wirePacket(
             RnicSsPacketKind::BP_ENABLE,
             3,
             11,
-            RnicSsBackpressureMetadata{kPair, 1, 64})),
+            RnicSsBackpressureMetadata{kPair, kDomain, 1, 64})),
         std::invalid_argument);
     EXPECT_THROW(
         validateRnicSsWirePacket(wirePacket(
             RnicSsPacketKind::BP_DISABLE,
             11,
             3,
-            RnicSsBackpressureMetadata{kPair, 2, 1})),
+            RnicSsBackpressureMetadata{kPair, kDomain, 2, 1})),
+        std::invalid_argument);
+    EXPECT_THROW(
+        validateRnicSsWirePacket(wirePacket(
+            RnicSsPacketKind::BP_ENABLE,
+            11,
+            3,
+            RnicSsBackpressureMetadata{kPair, 0, 1, 64})),
         std::invalid_argument);
 }
 
@@ -276,36 +284,40 @@ TEST(RnicSsSelectiveRepeatLedgerTest,
 }
 
 TEST(RnicSsPairCreditStateTest, AppliesPhysicalEpochsAndCumulativeCredits) {
-    RnicSsPairCreditState state(kPair, RnicSsCreditConfig{4096});
+    RnicSsPairCreditState state(
+        kPair, RnicSsCreditConfig{4096}, kDomain);
     EXPECT_TRUE(state.canSend(4000));
 
-    EXPECT_EQ(state.applyEnable({kPair, 7, 1500}),
+    EXPECT_EQ(state.applyEnable({kPair, kDomain, 7, 1500}),
               RnicSsControlApplyResult::APPLIED);
     EXPECT_TRUE(state.canSend(1500));
     EXPECT_FALSE(state.canSend(1501));
     state.consumeForData(1000);
     EXPECT_EQ(state.snapshot().availableWireBytes(), 500U);
 
-    EXPECT_EQ(state.applyCredit({kPair, 7, 3000}),
+    EXPECT_EQ(state.applyCredit({kPair, kDomain, 7, 3000}),
               RnicSsControlApplyResult::APPLIED);
-    EXPECT_EQ(state.applyCredit({kPair, 7, 2000}),
+    EXPECT_EQ(state.applyCredit({kPair, kDomain, 7, 2000}),
               RnicSsControlApplyResult::DUPLICATE_OR_STALE);
     EXPECT_EQ(state.snapshot().availableWireBytes(), 2000U);
-    EXPECT_EQ(state.applyCredit({kPair, 8, 4000}),
+    EXPECT_EQ(state.applyCredit({kPair, kDomain, 8, 4000}),
               RnicSsControlApplyResult::WRONG_EPOCH);
 
-    EXPECT_EQ(state.applyDisable({kPair, 8, 0}),
+    EXPECT_EQ(state.applyDisable({kPair, kDomain, 8, 0}),
               RnicSsControlApplyResult::APPLIED);
     EXPECT_TRUE(state.canSend(std::numeric_limits<std::uint32_t>::max()));
-    EXPECT_EQ(state.applyEnable({kPair, 7, 1}),
+    EXPECT_EQ(state.applyEnable({kPair, kDomain, 7, 1}),
               RnicSsControlApplyResult::DUPLICATE_OR_STALE);
+    EXPECT_THROW(
+        state.applyEnable({kPair, kDomain + 1, 9, 1}),
+        std::invalid_argument);
 }
 
 TEST(RnicSsPairCreditStateTest, TableKeepsDirectedContributorsIndependent) {
     RnicSsPairCreditTable table(RnicSsCreditConfig{4096});
     auto& first = table.stateFor({1, 9});
     auto& second = table.stateFor({2, 9});
-    first.applyEnable({{1, 9}, 1, 1000});
+    first.applyEnable({{1, 9}, 1, 1, 1000});
 
     EXPECT_TRUE(first.snapshot().backpressure_enabled);
     EXPECT_FALSE(second.snapshot().backpressure_enabled);

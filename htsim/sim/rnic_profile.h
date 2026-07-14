@@ -30,7 +30,6 @@ enum class RnicControlModel {
 
 enum class RnicPacerModel {
     Prbs,
-    OutstandingWindowCredits,
     CentralPacketSlots,
     None,
 };

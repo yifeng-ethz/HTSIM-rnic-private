@@ -22,7 +22,7 @@ TEST(RnicProfileTest, SlingshotLikeUsesNsRosettaAndPairSelectiveCredits) {
     EXPECT_EQ(spec.fabric, RnicFabricModel::NsRosettaClos);
     EXPECT_EQ(spec.traffic, RnicTrafficModel::Packetized);
     EXPECT_EQ(spec.control, RnicControlModel::PairSelectiveBackpressure);
-    EXPECT_EQ(spec.pacer, RnicPacerModel::OutstandingWindowCredits);
+    EXPECT_EQ(spec.pacer, RnicPacerModel::Prbs);
 }
 
 TEST(RnicProfileTest, CollectiveNetworkUsesNsTm3AndPrbs) {

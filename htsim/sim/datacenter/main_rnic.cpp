@@ -14,6 +14,7 @@
 #include "logsim-interface.h"
 #include "rnic_atlahs_cli.h"
 #include "rnic_atlahs_driver.h"
+#include "rnic_prbs_pacer.h"
 
 namespace {
 
@@ -88,7 +89,7 @@ void validateRuntimeQuiescence(AtlahsHtsimApi& api) {
         const RnicSsRuntimeStatistics& statistics = runtime->statistics();
         std::cout
             << "[RNIC manifest] rnic_ss_bound_kind="
-               "controlled-clos-analytical-envelope"
+               "controlled-clos-per-domain-aggregate-envelope"
             << " rnic_ss_forward_data_observation_ps="
             << statistics.physical_forward_data_observation_ps
             << " rnic_ss_last_bp_enable_feedback_ps="
@@ -97,6 +98,12 @@ void validateRuntimeQuiescence(AtlahsHtsimApi& api) {
             << statistics.physical_bound_control_loop_ps
             << " rnic_ss_maximum_bp_enable_fan_in="
             << statistics.maximum_bp_enable_fan_in
+            << " rnic_ss_maximum_switch_endpoint_pairs="
+            << statistics.maximum_switch_endpoint_pairs
+            << " rnic_ss_maximum_switch_physical_ingresses="
+            << statistics.maximum_switch_physical_ingresses
+            << " rnic_ss_maximum_switch_physical_egresses="
+            << statistics.maximum_switch_physical_egresses
             << " rnic_ss_control_loop_window_packets="
             << statistics.control_loop_window_packets
             << " rnic_ss_configured_window_below_control_loop="
@@ -104,6 +111,16 @@ void validateRuntimeQuiescence(AtlahsHtsimApi& api) {
                     ? "true" : "false")
             << " rnic_ss_analytical_queue_bound_bytes="
             << statistics.analytical_queue_bound_bytes
+            << " rnic_ss_analytical_shared_reaction_bytes="
+            << statistics.analytical_shared_reaction_bytes
+            << " rnic_ss_minimum_shared_pressure_high_bytes="
+            << statistics.minimum_shared_pressure_high_bytes
+            << " rnic_ss_maximum_shared_pressure_high_bytes="
+            << statistics.maximum_shared_pressure_high_bytes
+            << " rnic_ss_source_pacer="
+            << RnicPrbsPacer::kAlgorithmName
+            << " rnic_ss_source_pacer_version="
+            << RnicPrbsPacer::kAlgorithmVersion
             << '\n';
         std::cout
             << "[RNIC manifest] rnic_ss_new_data_packets="
@@ -122,6 +139,22 @@ void validateRuntimeQuiescence(AtlahsHtsimApi& api) {
             << statistics.rto_deadline_heap_high_watermark
             << " rnic_ss_fabric_drops="
             << statistics.fabric_drops
+            << " rnic_ss_maximum_observed_shared_buffer_bytes="
+            << statistics.maximum_observed_shared_buffer_bytes
+            << " rnic_ss_leaf_egress_bp_enable_events="
+            << statistics.leaf_egress_bp_enable_events
+            << " rnic_ss_spine_egress_bp_enable_events="
+            << statistics.spine_egress_bp_enable_events
+            << " rnic_ss_leaf_shared_bp_enable_events="
+            << statistics.leaf_shared_bp_enable_events
+            << " rnic_ss_spine_shared_bp_enable_events="
+            << statistics.spine_shared_bp_enable_events
+            << " rnic_ss_maximum_active_credit_domains="
+            << statistics.maximum_active_credit_domains
+            << " rnic_ss_source_prbs_data_opportunities="
+            << statistics.source_prbs_data_opportunities
+            << " rnic_ss_source_prbs_busy_deferrals="
+            << statistics.source_prbs_busy_deferrals
             << " rnic_ss_source_priority_violations="
             << statistics.source_priority_violations
             << '\n';

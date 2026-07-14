@@ -181,6 +181,10 @@ void validateRnicSsWirePacket(
                 "Slingshot-like backpressure kind has mismatched metadata");
         }
         validatePair(backpressure->forward_pair);
+        if (backpressure->congestion_domain == 0) {
+            throw std::invalid_argument(
+                "Slingshot-like backpressure requires a physical domain");
+        }
         if (!isReverseWireDirection(packet, backpressure->forward_pair)) {
             throw std::invalid_argument(
                 "Slingshot-like backpressure must use the reverse physical path");
@@ -209,6 +213,10 @@ void validateRnicSsWirePacket(
                 "Slingshot-like CREDIT kind has mismatched metadata");
         }
         validatePair(credit->forward_pair);
+        if (credit->congestion_domain == 0) {
+            throw std::invalid_argument(
+                "Slingshot-like credit requires a physical domain");
+        }
         if (!isReverseWireDirection(packet, credit->forward_pair)) {
             throw std::invalid_argument(
                 "Slingshot-like CREDIT must use the reverse physical path");
@@ -487,17 +495,29 @@ void RnicSsCreditConfig::validate() const {
 
 RnicSsPairCreditState::RnicSsPairCreditState(
         RnicSsEndpointPair pair,
-        RnicSsCreditConfig config)
-    : _pair(pair), _config(config) {
+        RnicSsCreditConfig config,
+        RnicSsCongestionDomainId congestion_domain)
+    : _pair(pair),
+      _config(config),
+      _congestion_domain(congestion_domain) {
     ::validatePair(pair);
     _config.validate();
+    if (_congestion_domain == 0) {
+        throw std::invalid_argument(
+            "Slingshot-like credit state requires a physical domain");
+    }
 }
 
-void RnicSsPairCreditState::validatePair(
-        const RnicSsEndpointPair& pair) const {
+void RnicSsPairCreditState::validateControl(
+        const RnicSsEndpointPair& pair,
+        RnicSsCongestionDomainId congestion_domain) const {
     if (pair != _pair) {
         throw std::invalid_argument(
             "Slingshot-like control packet belongs to another endpoint pair");
+    }
+    if (congestion_domain != _congestion_domain) {
+        throw std::invalid_argument(
+            "Slingshot-like control packet belongs to another congestion domain");
     }
 }
 
@@ -513,7 +533,7 @@ void RnicSsPairCreditState::validateCreditAhead(
 
 RnicSsControlApplyResult RnicSsPairCreditState::applyEnable(
         const RnicSsBackpressureMetadata& enable) {
-    validatePair(enable.forward_pair);
+    validateControl(enable.forward_pair, enable.congestion_domain);
     if (enable.control_epoch == 0) {
         throw std::invalid_argument(
             "Slingshot-like BP_ENABLE epoch must be nonzero");
@@ -535,7 +555,7 @@ RnicSsControlApplyResult RnicSsPairCreditState::applyEnable(
 
 RnicSsControlApplyResult RnicSsPairCreditState::applyDisable(
         const RnicSsBackpressureMetadata& disable) {
-    validatePair(disable.forward_pair);
+    validateControl(disable.forward_pair, disable.congestion_domain);
     if (disable.control_epoch == 0) {
         throw std::invalid_argument(
             "Slingshot-like BP_DISABLE epoch must be nonzero");
@@ -556,7 +576,7 @@ RnicSsControlApplyResult RnicSsPairCreditState::applyDisable(
 
 RnicSsControlApplyResult RnicSsPairCreditState::applyCredit(
         const RnicSsCreditMetadata& credit) {
-    validatePair(credit.forward_pair);
+    validateControl(credit.forward_pair, credit.congestion_domain);
     if (credit.control_epoch == 0
         || credit.granted_wire_bytes_total == 0) {
         throw std::invalid_argument(

@@ -1,6 +1,7 @@
 // -*- c-basic-offset: 4; indent-tabs-mode: nil -*-
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -61,14 +62,14 @@ RnicSsRuntimeConfig runtimeConfig(bool unordered = false) {
     };
 }
 
-void drain(RnicSsRuntime& runtime) {
-    constexpr std::size_t kMaximumEvents = 500000;
+void drain(RnicSsRuntime& runtime,
+           std::size_t maximum_events = 500000) {
     std::size_t events = 0;
-    while (runtime.hasPendingPhysicalWork() && events < kMaximumEvents) {
+    while (runtime.hasPendingPhysicalWork() && events < maximum_events) {
         ASSERT_TRUE(EventList::doNextEvent());
         ++events;
     }
-    ASSERT_LT(events, kMaximumEvents);
+    ASSERT_LT(events, maximum_events);
 }
 
 TEST(RnicSsRuntimeTest,
@@ -109,12 +110,16 @@ TEST(RnicSsRuntimeTest,
     EXPECT_EQ(stats.rto_deadline_due_pops, 0U);
     EXPECT_GT(stats.rto_deadline_heap_high_watermark, 0U);
     EXPECT_EQ(stats.physical_forward_data_observation_ps, 4332800U);
-    EXPECT_EQ(stats.physical_last_bp_enable_feedback_ps, 4417280U);
-    EXPECT_EQ(stats.physical_bound_control_loop_ps, 8750080U);
-    EXPECT_EQ(stats.maximum_bp_enable_fan_in, 63U);
+    EXPECT_EQ(stats.physical_last_bp_enable_feedback_ps, 4910080U);
+    EXPECT_EQ(stats.physical_bound_control_loop_ps, 9242880U);
+    EXPECT_EQ(stats.maximum_bp_enable_fan_in, 448U);
+    EXPECT_EQ(stats.maximum_switch_endpoint_pairs, 3584U);
+    EXPECT_EQ(stats.maximum_switch_physical_ingresses, 16U);
+    EXPECT_EQ(stats.maximum_switch_physical_egresses, 16U);
     EXPECT_EQ(stats.control_loop_window_packets, 128U);
     EXPECT_FALSE(stats.configured_window_below_control_loop);
-    EXPECT_EQ(stats.analytical_queue_bound_bytes, 27388328U);
+    EXPECT_EQ(stats.analytical_queue_bound_bytes, 10717864U);
+    EXPECT_GT(stats.source_prbs_data_opportunities, 0U);
 
     ASSERT_FALSE(session->physicalTopology()->switches_lp.empty());
     for (Switch* base : session->physicalTopology()->switches_lp) {
@@ -209,6 +214,7 @@ TEST(RnicSsRuntimeTest, RejectsBufferBelowAnalyticalControlledClosEnvelope) {
     RnicSsRuntimeConfig config = runtimeConfig();
     config.q_hi_bytes = 4U << 20;
     config.q_lo_bytes = 2U << 20;
+    config.credit_quantum_packets = 4;
     auto session = makeRnicAtlahsRuntime(
         event_list, RnicProfile::SlingshotLike, std::move(config),
         topologyConfig(16 << 20));
@@ -225,6 +231,7 @@ TEST(RnicSsRuntimeTest,
     RnicSsRuntimeConfig config = runtimeConfig();
     config.q_hi_bytes = 4U << 20;
     config.q_lo_bytes = 2U << 20;
+    config.credit_quantum_packets = 4;
     auto session = makeRnicAtlahsRuntime(
         event_list, RnicProfile::SlingshotLike, std::move(config),
         topologyConfig(32 << 20));
@@ -234,12 +241,77 @@ TEST(RnicSsRuntimeTest,
 
     const RnicSsRuntimeStatistics& stats = runtime->statistics();
     EXPECT_EQ(stats.physical_forward_data_observation_ps, 4332800U);
-    EXPECT_EQ(stats.physical_last_bp_enable_feedback_ps, 4417280U);
-    EXPECT_EQ(stats.physical_bound_control_loop_ps, 8750080U);
-    EXPECT_EQ(stats.maximum_bp_enable_fan_in, 63U);
+    EXPECT_EQ(stats.physical_last_bp_enable_feedback_ps, 4910080U);
+    EXPECT_EQ(stats.physical_bound_control_loop_ps, 9242880U);
+    EXPECT_EQ(stats.maximum_bp_enable_fan_in, 448U);
     EXPECT_EQ(stats.control_loop_window_packets, 128U);
-    EXPECT_EQ(stats.analytical_queue_bound_bytes, 31581632U);
+    EXPECT_EQ(stats.analytical_queue_bound_bytes, 20502208U);
+    EXPECT_EQ(stats.analytical_shared_reaction_bytes, 18603200U);
+    EXPECT_EQ(stats.minimum_shared_pressure_high_bytes, 14951232U);
+    EXPECT_EQ(stats.maximum_shared_pressure_high_bytes, 17246528U);
     EXPECT_LT(stats.analytical_queue_bound_bytes, 32U << 20);
+}
+
+TEST(RnicSsRuntimeTest,
+     SpineHotspotUsesPhysicalPairSelectiveDomainsWithoutOverflow) {
+    EventList& event_list = testEventList();
+    RnicSsRuntimeConfig config = runtimeConfig(false);
+    config.q_hi_bytes = 512U << 10;
+    config.q_lo_bytes = 256U << 10;
+    config.credit_quantum_packets = 4;
+    const std::uint64_t routing_seed = config.routing_seed;
+    auto session = makeRnicAtlahsRuntime(
+        event_list, RnicProfile::SlingshotLike, std::move(config),
+        topologyConfig(24 << 20));
+    auto* runtime = dynamic_cast<RnicSsRuntime*>(&session->implementation());
+    ASSERT_NE(runtime, nullptr);
+    std::size_t completions = 0;
+    runtime->setup(kNodeCount,
+                   [&completions](AtlahsFlowId) { ++completions; });
+
+    // Every selected pair chooses spine 0 in the ordered, initially unloaded
+    // four-of-eight decision.  Destinations span one leaf, so seven source
+    // leaf links contend for the same spine downlink.  The legacy
+    // destination-leaf-only observer overflowed this switch-shared buffer.
+    std::size_t flows = 0;
+    for (std::uint32_t source = 0; source < kNodeCount; ++source) {
+        if (source >= 16 && source < 24) {
+            continue;
+        }
+        for (std::uint32_t destination = 16;
+             destination < 24; ++destination) {
+            const RnicSsEndpointPair pair{source, destination};
+            const auto candidates =
+                RnicSsHystereticPathSelector::sampleFourOfEight(
+                    pair, routing_seed);
+            if (*std::min_element(candidates.begin(), candidates.end())
+                != 0) {
+                continue;
+            }
+            runtime->send(
+                {UINT64_C(0x500000000) + flows,
+                 source, destination, 6U << 20,
+                 EventList::now(), static_cast<std::uint32_t>(flows)});
+            ++flows;
+            break;
+        }
+    }
+    ASSERT_GE(flows, 48U);
+    drain(*runtime, 4000000);
+
+    EXPECT_EQ(completions, flows);
+    runtime->validateQuiescent();
+    const RnicSsRuntimeStatistics& stats = runtime->statistics();
+    EXPECT_EQ(stats.fabric_drops, 0U);
+    EXPECT_EQ(stats.rto_retransmissions, 0U);
+    EXPECT_GT(stats.spine_egress_bp_enable_events, 0U);
+    EXPECT_GE(stats.maximum_active_credit_domains, 2U);
+    EXPECT_LT(stats.maximum_observed_shared_buffer_bytes, 24U << 20);
+    for (Switch* base : session->physicalTopology()->switches_up) {
+        const auto* spine = dynamic_cast<const NsRosetta*>(base);
+        ASSERT_NE(spine, nullptr);
+        EXPECT_EQ(spine->buffer_counters().dropped_packets, 0U);
+    }
 }
 
 TEST(RnicSsRuntimeTest,

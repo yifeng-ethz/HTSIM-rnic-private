@@ -48,7 +48,7 @@ RnicProfileSpec resolveRnicProfile(RnicProfile profile) {
                 RnicFabricModel::NsRosettaClos,
                 RnicTrafficModel::Packetized,
                 RnicControlModel::PairSelectiveBackpressure,
-                RnicPacerModel::OutstandingWindowCredits};
+                RnicPacerModel::Prbs};
     case RnicProfile::PacketizedManifold:
         return {profile,
                 RnicFabricModel::TopologyFreeManifold,
@@ -103,8 +103,6 @@ const char* rnicPacerModelName(RnicPacerModel model) {
     switch (model) {
     case RnicPacerModel::Prbs:
         return "prbs";
-    case RnicPacerModel::OutstandingWindowCredits:
-        return "outstanding-window-credits";
     case RnicPacerModel::CentralPacketSlots:
         return "central-packet-slots";
     case RnicPacerModel::None:

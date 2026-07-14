@@ -60,6 +60,8 @@ struct RnicSsRuntimeStatistics {
     std::uint64_t source_bp_serializer_packets{0};
     std::uint64_t source_credit_serializer_packets{0};
     std::uint64_t source_priority_violations{0};
+    std::uint64_t source_prbs_data_opportunities{0};
+    std::uint64_t source_prbs_busy_deferrals{0};
     // Analytical components of the controlled-Clos queue envelope.  The
     // bound_control_loop interval is forward_data_observation plus the time
     // until the last serialized BP_ENABLE can reach a contributor.
@@ -67,8 +69,24 @@ struct RnicSsRuntimeStatistics {
     std::uint64_t physical_last_bp_enable_feedback_ps{0};
     std::uint64_t physical_bound_control_loop_ps{0};
     std::uint64_t maximum_bp_enable_fan_in{0};
+    std::uint64_t maximum_switch_endpoint_pairs{0};
+    std::uint64_t maximum_switch_physical_ingresses{0};
+    std::uint64_t maximum_switch_physical_egresses{0};
     std::uint64_t control_loop_window_packets{0};
+    // Per-egress and switch-shared envelopes are distinct.  The shared guard
+    // is armed below capacity by at least analytical_shared_reaction_bytes;
+    // therefore the latter is the post-observation headroom requirement, not
+    // a second independently buffered queue.
     std::uint64_t analytical_queue_bound_bytes{0};
+    std::uint64_t analytical_shared_reaction_bytes{0};
+    std::uint64_t minimum_shared_pressure_high_bytes{0};
+    std::uint64_t maximum_shared_pressure_high_bytes{0};
+    std::uint64_t maximum_observed_shared_buffer_bytes{0};
+    std::uint64_t leaf_egress_bp_enable_events{0};
+    std::uint64_t spine_egress_bp_enable_events{0};
+    std::uint64_t leaf_shared_bp_enable_events{0};
+    std::uint64_t spine_shared_bp_enable_events{0};
+    std::uint64_t maximum_active_credit_domains{0};
     bool configured_window_below_control_loop{false};
 };
 

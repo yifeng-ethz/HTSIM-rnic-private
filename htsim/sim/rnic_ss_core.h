@@ -17,6 +17,10 @@
 using RnicSsNodeId = std::uint32_t;
 using RnicSsSequence = std::uint64_t;
 using RnicSsTimePs = std::uint64_t;
+// Opaque physical congestion-point identity carried by BP/CREDIT packets.
+// The runtime derives this from switch-local coordinates; the sender never
+// dereferences it into fabric state.
+using RnicSsCongestionDomainId = std::uint64_t;
 
 struct RnicSsEndpointPair {
     RnicSsNodeId source;
@@ -78,19 +82,23 @@ struct RnicSsTelemetryMetadata {
     RnicSsDelayedLoadSample sample;
 };
 
-// Each enable/disable transition uses a strictly increasing control epoch.
-// An enable can include an initial cumulative byte grant.  A disable carries
-// zero: it removes credit gating rather than granting an implicit burst.
+// Each physical congestion domain owns an independent, strictly increasing
+// control epoch.  An enable can include an initial cumulative byte grant.  A
+// disable carries zero: it removes only this domain's credit gate rather than
+// granting an implicit burst or disabling another bottleneck on the path.
 struct RnicSsBackpressureMetadata {
     RnicSsEndpointPair forward_pair;
+    RnicSsCongestionDomainId congestion_domain;
     std::uint64_t control_epoch;
     std::uint64_t granted_wire_bytes_total;
 };
 
-// Credits are cumulative within one control epoch.  This makes duplicate,
-// delayed, and reordered physical CREDIT packets idempotent without an oracle.
+// Credits are cumulative within one domain and control epoch.  This makes
+// duplicate, delayed, and reordered physical CREDIT packets idempotent without
+// an oracle and lets a sender obey several physical bottlenecks at once.
 struct RnicSsCreditMetadata {
     RnicSsEndpointPair forward_pair;
+    RnicSsCongestionDomainId congestion_domain;
     std::uint64_t control_epoch;
     std::uint64_t granted_wire_bytes_total;
 };
@@ -264,7 +272,8 @@ class RnicSsPairCreditState {
 public:
     RnicSsPairCreditState(
         RnicSsEndpointPair pair,
-        RnicSsCreditConfig config = {});
+        RnicSsCreditConfig config = {},
+        RnicSsCongestionDomainId congestion_domain = 1);
 
     RnicSsControlApplyResult applyEnable(
         const RnicSsBackpressureMetadata& enable);
@@ -276,13 +285,19 @@ public:
     bool canSend(std::uint32_t wire_bytes) const noexcept;
     void consumeForData(std::uint32_t wire_bytes);
     RnicSsPairCreditSnapshot snapshot() const noexcept;
+    RnicSsCongestionDomainId congestionDomain() const noexcept {
+        return _congestion_domain;
+    }
 
 private:
-    void validatePair(const RnicSsEndpointPair& pair) const;
+    void validateControl(
+        const RnicSsEndpointPair& pair,
+        RnicSsCongestionDomainId congestion_domain) const;
     void validateCreditAhead(std::uint64_t granted_total) const;
 
     RnicSsEndpointPair _pair;
     RnicSsCreditConfig _config;
+    RnicSsCongestionDomainId _congestion_domain;
     bool _enabled{false};
     std::uint64_t _control_epoch{0};
     std::uint64_t _granted_total{0};

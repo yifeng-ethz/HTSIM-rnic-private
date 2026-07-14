@@ -28,7 +28,7 @@ model invalidates an old result.
 | Profile | Traffic | Fabric | Allocation and feedback | Sender scheduling |
 | --- | --- | --- | --- | --- |
 | `rnic-cn` | packets | `ns-tm3` two-tier Clos with VoQ | receiver-observed, in-band collective-network grants | node-wide PRBS packet pacer |
-| `rnic-ss` | packets | `ns-rosetta` two-tier Clos with input-buffered request/grant switching | local load telemetry, endpoint-pair tracking, contributor-selective backpressure, and SACK/selective repeat | bounded outstanding-window credits with physical node-access serialization |
+| `rnic-ss` | packets | `ns-rosetta` two-tier Clos with input-buffered request/grant switching | local load telemetry, endpoint-pair tracking, contributor-selective backpressure, and SACK/selective repeat | node-wide PRBS packet opportunities gated by every active physical credit domain |
 | `rnic-nn` | packets | topology-free NN manifold with fixed propagation | instantaneous centralized packetized max-min | centrally feasible packet slots; PRBS may randomize ties |
 | `rnic-nn-fluid` | fluid bytes | topology-free NN manifold with fixed propagation | instantaneous centralized fluid max-min | continuous service; no packet pacer |
 
@@ -45,8 +45,7 @@ The implementation keeps the following dimensions independent internally:
 - `RnicTrafficModel`: `Packetized` or `Fluid`;
 - `RnicControlModel`: `InBandCollective`, `PairSelectiveBackpressure`, or
   `CentralOracle`;
-- `RnicPacerModel`: `Prbs`, `OutstandingWindowCredits`,
-  `CentralPacketSlots`, or `None`.
+- `RnicPacerModel`: `Prbs`, `CentralPacketSlots`, or `None`.
 
 The profile resolver is the only place that combines them. Initially it rejects
 unvalidated combinations rather than exposing a matrix of accidental modes.

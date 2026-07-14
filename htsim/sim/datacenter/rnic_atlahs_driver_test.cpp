@@ -243,16 +243,26 @@ TEST(RnicAtlahsDriverTest, SlingshotLikeManifestNamesOpenPhysicalModel) {
     EXPECT_NE(manifest.find("backpressure=pair-selective-physical"),
               std::string::npos);
     EXPECT_NE(manifest.find(
-                  "queue_bound=controlled-clos-analytical-envelope"),
+                  "pressure_domains="
+                  "every-leaf-spine-egress-plus-switch-shared"),
+              std::string::npos);
+    EXPECT_NE(manifest.find(
+                  "source_prbs_algorithm=galois-lfsr64-block64"),
+              std::string::npos);
+    EXPECT_NE(manifest.find(
+                  "queue_bound="
+                  "controlled-clos-per-domain-aggregate-envelope"),
               std::string::npos);
     EXPECT_NE(manifest.find(
                   "bound_forward_data_serialization=included"),
               std::string::npos);
-    EXPECT_NE(manifest.find("bound_bp_enable_fan_in=31"),
+    EXPECT_NE(manifest.find(
+                  "bound_bp_enable_fan_in="
+                  "maximum-physical-egress-endpoint-pairs"),
               std::string::npos);
     EXPECT_NE(manifest.find(
                   "bound_bp_enable_serialization="
-                  "destination-source-serializer"),
+                  "maximum-physical-control-serializer"),
               std::string::npos);
 }
 

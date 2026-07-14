@@ -406,7 +406,17 @@ std::string renderRnicAtlahsModelManifest(
             << " state_trace_rate_oracle=false"
             << " state_trace_rate_before_bp=access-link"
             << " state_trace_rate_during_bp="
-               "delta-cumulative-credit-over-physical-arrival-interval"
+               "min-domain-delta-cumulative-credit-over-physical-arrival-interval"
+            << '\n';
+        manifest
+            << "[RNIC manifest] source_prbs_algorithm="
+            << RnicPrbsPacer::kAlgorithmName
+            << " source_prbs_version="
+            << RnicPrbsPacer::kAlgorithmVersion
+            << " source_prbs_seed=routing-seed-domain-separated"
+            << " source_data_admission="
+               "one-future-head-per-physical-access-serializer"
+            << " sack_window_is_injection_burst=false"
             << '\n';
         manifest
             << "[RNIC manifest] pair_tracking=endpoint-pair-outstanding"
@@ -424,6 +434,10 @@ std::string renderRnicAtlahsModelManifest(
             << '\n';
         manifest
             << "[RNIC manifest] backpressure=pair-selective-physical"
+            << " pressure_domains="
+               "every-leaf-spine-egress-plus-switch-shared"
+            << " sender_credit_gate=intersection-of-active-domains"
+            << " shared_domain_initial_credit=0"
             << " credit=service-driven-cumulative"
             << " control_priority=strict-nonpreemptive"
             << " q_hi_bytes=" << options.slingshot.q_hi_bytes
@@ -437,15 +451,16 @@ std::string renderRnicAtlahsModelManifest(
             << '\n';
         manifest
             << "[RNIC manifest] queue_bound="
-               "controlled-clos-analytical-envelope"
+               "controlled-clos-per-domain-aggregate-envelope"
             << " bound_forward_data_serialization=included"
             << " bound_bp_enable_fan_in="
-            << (goal_layout.physical_node_count == 0
-                    ? 0 : goal_layout.physical_node_count - 1)
+               "maximum-physical-egress-endpoint-pairs"
             << " bound_bp_enable_serialization="
-               "destination-source-serializer"
+               "maximum-physical-control-serializer"
             << " bound_reverse_blocking="
                "one-max-data-per-nonpreemptive-serializer"
+            << " bound_shared_pair_phase="
+               "one-max-data-per-switch-local-directed-pair"
             << '\n';
     } else {
         manifest

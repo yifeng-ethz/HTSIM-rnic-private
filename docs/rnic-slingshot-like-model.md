@@ -56,6 +56,12 @@ No sender reads a remote queue or global flow table.
 5. Backpressure enable/disable and packet credits are also physical, serialized
    control packets.  They receive strict non-preemptive priority but cannot
    interrupt a DATA packet already on a link.
+6. Each source RNIC admits at most one DATA head per physical access-link
+   opportunity.  A node-scoped `galois-lfsr64-block64` PRBS lottery selects
+   among eligible endpoint pairs and advances by the exact selected wire
+   extent.  The source checks the real serializer before admission, so a SACK
+   window is a recovery ledger rather than an instantaneous burst placed in
+   front of the wire.
 
 In the two-tier Clos every spine path is minimal, so the path-length term is
 zero.  Adaptive routing can avoid an intermediate hot path but cannot route
@@ -63,14 +69,24 @@ around the destination RNIC bottleneck.
 
 ## Pair-selective backpressure
 
-`ns-rosetta` attributes destination-egress queued and in-flight bytes to
-`(source, destination, traffic class)`.  When total backlog crosses `Q_hi`, it
-captures the contributing pairs and physically sends `BP_ENABLE(epoch)` only
-to those sources.  A sender in backpressure mode may transmit only against
-returned packet credits.  The destination returns service-driven credits in
-deficit-round-robin order across live contributing pairs; fair share therefore
-emerges from bottleneck service rather than an `nflow` oracle.  `Q_lo < Q_hi`
-disables backpressure with hysteresis after the queue drains.
+`ns-rosetta` attributes every leaf and spine egress's queued and in-flight
+bytes to `(source, destination, traffic class)`.  When an egress crosses
+`Q_hi`, that physical egress captures only its switch-local resident pairs and
+sends `BP_ENABLE(domain, epoch)` to those sources.  Each switch also has an
+independent shared-buffer pressure domain.  Its high threshold is placed below
+capacity by the checked aggregate reaction envelope and its enables start with
+zero credit.  This guard covers the case where several individually acceptable
+egresses jointly consume the switch-owned buffer.
+
+A sender keeps a separate cumulative-credit gate for every physical domain it
+has actually heard from.  DATA must have credit in all active gates and
+consumes all of them; a delayed disable from one leaf or spine can therefore
+never release another bottleneck.  Service completion at the exact egress
+returns cumulative credits.  A pair is disabled independently when it leaves
+that congestion point, including a flush of a partial credit quantum, so a
+one-to-three-packet tail cannot deadlock behind a four-packet quantum.  Fair
+share emerges from switch arbitration and observed service rather than an
+`nflow` oracle.  No observer scans the runtime's global pair table.
 
 Every endpoint pair also has an outstanding-packet window.  The implementation
 computes an analytical controlled-Clos loop envelope, adds one maximum DATA
@@ -98,41 +114,55 @@ packet.
 The checked envelope is specific to the controlled two-tier Clos implemented
 here.  Let `D` be the maximum one-way propagation/switch latency, `H=4` the
 cross-leaf serializer count (one endpoint serializer plus three `ns-rosetta`
-egresses), `F=N-1` the maximum contributor fan-in, and `s_D` and `s_C` the
-ceil-rounded serialization times of one maximum DATA and one control envelope.
-The implementation calculates
+egresses), `F_e` the maximum directed endpoint-pair contributors to one
+physical egress, and `s_D` and `s_C` the ceil-rounded serialization times of
+one maximum DATA and one control envelope.  In the canonical 8-by-8 Clos,
+`F_e=8*56=448`; this is deliberately larger than the 63 sources of one simple
+incast.  The implementation calculates
 
 ```
 tau_forward = D + H * s_D
-tau_last_bp = D + H * s_D + (F + H - 1) * s_C
+tau_last_bp = D + H * s_D + (F_e + H - 1) * s_C
 tau_bound   = tau_forward + tau_last_bp
 ```
 
-`tau_forward` deliberately includes the complete DATA path even though the
-threshold is observed at the destination egress, so forward in-flight DATA is
-not omitted.  `tau_last_bp` allows one non-preemptive maximum-DATA blocker at
-each reverse serializer.  All `F` `BP_ENABLE` packets originate at the
-destination endpoint serializer, so the last contributor also includes the
-entire serialized control burst there; its own control serialization is then
-counted at the remaining `H-1` stages.
+`tau_forward` deliberately includes the complete DATA path.  `tau_last_bp`
+allows one non-preemptive maximum-DATA blocker at each reverse serializer and
+the largest control fan-in on any physical serializer.  Controls conservatively
+traverse the complete reverse endpoint route even when the detecting point is
+an intermediate spine.
 
-For aggregate arrival rate `R`, destination service `C`, maximum envelope `M`,
-and remaining outstanding windows `W_i`, the runtime checks the analytical
-controlled-model envelope
+For a switch with `I` physical ingresses, maximum DATA envelope `M`, initial
+credit `G`, and `F_e` possible egress contributors, the per-egress reaction and
+peak bounds are
 
 ```
-Q_peak <= Q_detect + min(sum_i W_i,
-                         ceil(max(R - C, 0) * tau_bound / 8)
-                         + sum_i M_i)
+B_excess = ceil((I - 1) * C * tau_bound / 8)
+B_egress = B_excess + F_e * (M + G) + 2 * F_e * control_bytes
+Q_egress_peak <= Q_hi + B_egress
 ```
 
-in bytes.  A run is invalid when the configured shared buffer is smaller than
-this envelope for its declared fan-in/window contract.  The manifest emits all
-three time components, maximum fan-in, rounded window, and resulting byte
-envelope so the calculation is auditable.  This sizing rule is not asserted as
-a proof for arbitrary topologies, link rates, priority schedulers, or
-proprietary Slingshot hardware.  Queue plots use `q/C` in microseconds so
-thresholds remain comparable across link rates.
+For switch-wide pressure, let `P_s` be the number of directed endpoint pairs
+that can physically use the switch.  The aggregate reaction headroom is
+
+```
+B_shared = max(B_egress,
+               B_excess + P_s * M + 2 * P_s * control_bytes)
+Q_shared_hi = min(E * Q_hi, shared_capacity - B_shared)
+```
+
+where `E` is the physical egress count.  The one-packet term per possible pair
+covers phase-quantized packets already distributed across upstream paths when
+the switch-wide observation occurs.  A run is invalid if the per-egress peak
+exceeds the shared buffer, if the aggregate headroom cannot fit, or if the
+derived shared hysteresis collapses.  With the canonical four-packet credit
+quantum, 16 MiB is rejected and 32 MiB is accepted.  The manifest emits the
+port/pair counts, both reaction bounds, derived shared thresholds, observed
+high watermark, leaf/spine pressure events, and maximum simultaneous sender
+domains.  This sizing rule is not asserted as a proof for arbitrary topologies,
+link rates, priority schedulers, or proprietary Slingshot hardware.  Queue
+plots use `q/C` in microseconds so thresholds remain comparable across link
+rates.
 
 The hysteresis gap is not public.  The default is selected from the physical
 feedback/service time, then reported with a mandatory sweep:
@@ -177,7 +207,7 @@ The join/exit experiment can request the common sparse ATLAHS state schema
 with `-rnic_ss_state_trace_csv FILE`.  The trace is buffered and atomically
 installed only after physical quiescence.  Its effective sender rate is a
 local observation: access-link rate outside backpressure, zero before the
-first returned CREDIT in a new epoch, then cumulative service credit divided
-by its physical arrival interval from the epoch.  This state is write-only
+first returned CREDIT in a new epoch, then the minimum cumulative service-rate
+observation across active physical domains.  This state is write-only
 instrumentation; it is never consumed by routing, credit, SACK, or forwarding
 logic and introduces no oracle or global state.
