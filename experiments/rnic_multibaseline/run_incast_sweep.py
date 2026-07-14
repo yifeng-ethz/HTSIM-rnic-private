@@ -198,6 +198,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--bytes", type=generate_incast_goal.positive_int, default=generate_incast_goal.DEFAULT_PAYLOAD_BYTES)
     parser.add_argument("--seeds", type=runner.parse_seed_selection, default=(1,))
     parser.add_argument("--schemes", type=lambda value: runner.parse_name_selection(value, runner.SCHEMES, "scheme"), default=runner.SCHEMES)
+    parser.add_argument(
+        "--cn-margin-ppm",
+        type=runner.positive_int,
+        default=runner.ExperimentParameters().cn_margin_ppm,
+    )
+    parser.add_argument(
+        "--cn-retransmission-rto-ps",
+        type=runner.positive_int,
+        default=runner.ExperimentParameters().cn_retransmission_rto_ps,
+    )
+    parser.add_argument(
+        "--dcqcn-egress-buffer-bytes",
+        type=runner.positive_int,
+        default=runner.ExperimentParameters().dcqcn_egress_buffer_bytes,
+    )
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--timeout", type=float)
     args = parser.parse_args(argv)
@@ -216,7 +231,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.bytes,
             args.seeds,
             args.schemes,
-            runner.ExperimentParameters(),
+            runner.ExperimentParameters(
+                cn_margin_ppm=args.cn_margin_ppm,
+                cn_retransmission_rto_ps=args.cn_retransmission_rto_ps,
+                dcqcn_egress_buffer_bytes=args.dcqcn_egress_buffer_bytes,
+            ),
             args.force,
             args.timeout,
         )

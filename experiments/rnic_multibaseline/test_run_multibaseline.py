@@ -80,9 +80,69 @@ class CommandBuilderTest(unittest.TestCase):
         self.assertEqual(command[command.index("-ecn_kmax_bytes") + 1], "655360")
         self.assertEqual(command[command.index("-ecn_pmax_ppm") + 1], "250000")
         self.assertEqual(
+            command[command.index("-shared_buffer_bytes") + 1], "67108864"
+        )
+        self.assertEqual(
+            command[command.index("-egress_buffer_bytes") + 1], "4194304"
+        )
+        self.assertEqual(
             command[command.index("-dcqcn_min_rate_bps") + 1], "100000000"
         )
         self.assertNotIn("-ecn_threshold_bytes", command)
+
+    def test_dcqcn_egress_domain_bounds_ecn_not_ingress_pfc(self) -> None:
+        with self.assertRaisesRegex(
+            runner.OrchestrationError, "per-egress"
+        ):
+            runner.ExperimentParameters(
+                dcqcn_egress_buffer_bytes=655_360
+            ).validate()
+        with self.assertRaisesRegex(
+            runner.OrchestrationError, "per-egress"
+        ):
+            runner.ExperimentParameters(
+                dcqcn_egress_buffer_bytes=(64 << 20) + 1
+            ).validate()
+
+        # PFC meters a physical ingress and may therefore have a threshold
+        # above the independent per-egress admission cap.
+        runner.ExperimentParameters(
+            dcqcn_egress_buffer_bytes=2 << 20,
+            dcqcn_pfc_low_bytes=3 << 20,
+            dcqcn_pfc_high_bytes=4 << 20,
+        ).validate()
+
+        with self.assertRaisesRegex(
+            runner.OrchestrationError, "per-ingress"
+        ):
+            runner.ExperimentParameters(
+                dcqcn_pfc_low_bytes=32 << 20,
+                dcqcn_pfc_high_bytes=64 << 20,
+            ).validate()
+
+    def test_cn_margin_is_a_fraction_of_link_capacity(self) -> None:
+        with self.assertRaisesRegex(
+            runner.OrchestrationError, "cn_margin_ppm"
+        ):
+            runner.ExperimentParameters(cn_margin_ppm=1_000_001).validate()
+
+    def test_study_cli_records_explicit_dcqcn_egress_domain(self) -> None:
+        parser = runner.build_parser(Path("/repo"))
+        args = parser.parse_args(
+            [
+                "--output-root",
+                "/results",
+                "--dcqcn-egress-buffer-bytes",
+                "2097152",
+                "--cn-margin-ppm",
+                "850000",
+                "--cn-retransmission-rto-ps",
+                "25000000000",
+            ]
+        )
+        self.assertEqual(args.dcqcn_egress_buffer_bytes, 2 << 20)
+        self.assertEqual(args.cn_margin_ppm, 850_000)
+        self.assertEqual(args.cn_retransmission_rto_ps, 25_000_000_000)
 
     def test_rnic_profiles_receive_only_applicable_flags(self) -> None:
         common = (
@@ -101,7 +161,11 @@ class CommandBuilderTest(unittest.TestCase):
         )
         self.assertIn("-rnic_cn_prbs_seed", cn)
         self.assertEqual(
-            cn[cn.index("-rnic_cn_max_repair_retries") + 1], "8"
+            cn[cn.index("-rnic_cn_max_retransmissions") + 1], "8"
+        )
+        self.assertEqual(
+            cn[cn.index("-rnic_cn_retransmission_rto_ps") + 1],
+            "50000000000",
         )
         self.assertNotIn("-rnic_ss_routing_seed", cn)
         self.assertIn("-rnic_ss_routing_seed", ss)

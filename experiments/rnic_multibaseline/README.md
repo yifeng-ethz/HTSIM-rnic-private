@@ -27,9 +27,11 @@ cmake --build /path/to/htsim-build --target htsim_goal_txt2bin
   -o /tmp/allreduce-flat-seed1.bin
 ```
 
-Use identical seeds, payloads, topology, link rates, propagation, packet extent,
-and buffer parameters across all baselines.  A seed changes only the logical-rank
-to physical-node permutation and each protocol's explicitly seeded stochastic
+Use identical seeds, payloads, topology, link rates, propagation, packet
+extent, and switch-wide physical-pool capacity across physical baselines.
+Record any model-specific congestion-domain admission cap separately rather
+than calling it the physical pool.  A seed changes only the logical-rank to
+physical-node permutation and each protocol's explicitly seeded stochastic
 components.
 
 ## Join / finite-byte exit dynamics
@@ -73,8 +75,21 @@ python3 experiments/rnic_multibaseline/run_incast_sweep.py \
   --build-dir /path/to/htsim-build \
   --output-root /path/to/incast-results \
   --seeds 1-8 \
-  --schemes dcqcn,rnic-cn
+  --schemes dcqcn,rnic-cn \
+  --dcqcn-egress-buffer-bytes 4194304
 ```
+
+The canonical DCQCN stress keeps the `ns-tm3` switch-wide shared pool at
+64 MiB and separately caps queued VoQ occupancy mapped to any one physical
+egress at 4 MiB.  The packet in egress serialization is not buffer-resident.
+Admission requires space in both domains, and the simulator reports which
+domain caused every drop.  The 4 MiB value is a declared behavioral-model
+parameter, not a claim about Tomahawk 3 hardware and not a relabeling of the
+64 MiB switch-wide pool.  Both values are recorded in the run command,
+signature, and manifests.  A seed-1 calibration over 1, 2, 4, and 8 MiB
+selected 4 MiB because 1--2 MiB dropped before modest fan-in had converged,
+whereas 8 MiB produced no loss through 64 flows; this is an experiment stress
+choice, not a hardware-sizing inference.
 
 ## Statistical plot contract
 
@@ -223,8 +238,16 @@ The pinned 400-Gbit/s DCQCN comparator uses seeded linear RED
 `520,000/720,000 B`, and a 100-Mbit/s minimum per-flow rate.  The RED and rate
 floor values preserve the earlier repository study's 400G scaling, while the
 RP/NP equations and 50/55-us timers remain the SIGCOMM'15 algorithm.  All of
-these values are emitted in each run manifest; the older deterministic
+these values, the 64 MiB switch-wide shared pool, and the 4 MiB per-egress
+admission domain are emitted in each run manifest; the older deterministic
 single-threshold ECN mode is not the canonical comparison.
+
+These occupancies are distinct physical domains. RED and the admission/drop
+cap observe queued VoQ bytes at one physical egress. PFC XON/XOFF observes
+admitted low-priority bytes at one physical ingress, while the 64 MiB pool is
+switch-wide. The experiment keeps the numerical PFC thresholds below the
+4 MiB egress cap as a pinned stress choice, but validation does not pretend
+that ingress PFC and egress RED are one ordered occupancy axis.
 
 ```sh
 python3 experiments/rnic_multibaseline/run_multibaseline.py \

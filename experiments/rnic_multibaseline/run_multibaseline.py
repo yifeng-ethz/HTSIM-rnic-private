@@ -103,7 +103,8 @@ class ExperimentParameters:
     cn_ring_window_ps: int = 4_096_000
     cn_ring_tick_ps: int = 16_000
     cn_ring_capacity_bytes: int = 1 << 20
-    cn_maximum_repair_retries: int = 8
+    cn_maximum_retransmissions: int = 8
+    cn_retransmission_rto_ps: int = 50_000_000_000
     ss_control_wire_bytes: int = 64
     ss_q_hi_bytes: int = 4 << 20
     ss_q_lo_bytes: int = 2 << 20
@@ -121,6 +122,7 @@ class ExperimentParameters:
     dcqcn_ecn_pmax_ppm: int = 250_000
     dcqcn_pfc_low_bytes: int = 520_000
     dcqcn_pfc_high_bytes: int = 720_000
+    dcqcn_egress_buffer_bytes: int = 4 << 20
     dcqcn_min_rate_bps: int = 100_000_000
     dcqcn_silent_rto_us: int = 50_000
 
@@ -139,6 +141,8 @@ class ExperimentParameters:
                 raise OrchestrationError(f"{name} must be a positive integer")
         if self.node_count != 64:
             raise OrchestrationError("this experiment contract requires 64 nodes")
+        if self.cn_margin_ppm > 1_000_000:
+            raise OrchestrationError("cn_margin_ppm must be in 1..1000000")
         if self.data_header_bytes >= self.max_wire_packet_bytes:
             raise OrchestrationError("DATA header must be smaller than wire packet")
         if not 0 <= self.ss_q_lo_bytes < self.ss_q_hi_bytes:
@@ -148,13 +152,15 @@ class ExperimentParameters:
         if not (
             0 <= self.dcqcn_ecn_kmin_bytes
             < self.dcqcn_ecn_kmax_bytes
-            < self.dcqcn_pfc_high_bytes
-            < self.physical_buffer_bytes
+            < self.dcqcn_egress_buffer_bytes
+            <= self.physical_buffer_bytes
             and 0 < self.dcqcn_pfc_low_bytes < self.dcqcn_pfc_high_bytes
+            < self.physical_buffer_bytes
         ):
             raise OrchestrationError(
-                "DCQCN thresholds must satisfy 0 <= Kmin < Kmax < "
-                "PFC-high < buffer and 0 < PFC-low < PFC-high"
+                "DCQCN thresholds must satisfy per-egress "
+                "0 <= Kmin < Kmax < egress-buffer <= shared-buffer and "
+                "per-ingress 0 < PFC-low < PFC-high < shared-buffer"
             )
         if not 0 < self.dcqcn_ecn_pmax_ppm <= 1_000_000:
             raise OrchestrationError("DCQCN RED Pmax must be in 1..1000000 ppm")
@@ -266,6 +272,16 @@ def parse_seed_selection(text: str) -> tuple[int, ...]:
     if max(seeds) > (1 << 64) - 1:
         raise argparse.ArgumentTypeError("seed exceeds uint64_t")
     return tuple(sorted(seeds))
+
+
+def positive_int(text: str) -> int:
+    try:
+        value = int(text, 10)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("expected a positive integer") from exc
+    if value <= 0:
+        raise argparse.ArgumentTypeError("expected a positive integer")
+    return value
 
 
 def parse_name_selection(
@@ -396,6 +412,7 @@ def build_dcqcn_command(
         "-max_wire_packet_bytes", str(parameters.max_wire_packet_bytes),
         "-data_header_bytes", str(parameters.data_header_bytes),
         "-shared_buffer_bytes", str(parameters.physical_buffer_bytes),
+        "-egress_buffer_bytes", str(parameters.dcqcn_egress_buffer_bytes),
         "-ecn_kmin_bytes", str(parameters.dcqcn_ecn_kmin_bytes),
         "-ecn_kmax_bytes", str(parameters.dcqcn_ecn_kmax_bytes),
         "-ecn_pmax_ppm", str(parameters.dcqcn_ecn_pmax_ppm),
@@ -445,7 +462,10 @@ def build_rnic_command(
             "-rnic_cn_ring_window_ps", str(parameters.cn_ring_window_ps),
             "-rnic_cn_ring_tick_ps", str(parameters.cn_ring_tick_ps),
             "-rnic_cn_ring_capacity_bytes", str(parameters.cn_ring_capacity_bytes),
-            "-rnic_cn_max_repair_retries", str(parameters.cn_maximum_repair_retries),
+            "-rnic_cn_max_retransmissions",
+            str(parameters.cn_maximum_retransmissions),
+            "-rnic_cn_retransmission_rto_ps",
+            str(parameters.cn_retransmission_rto_ps),
             "-rnic_cn_ns_tm3_buffer_bytes", str(parameters.physical_buffer_bytes),
         ]
         if state_trace_csv is not None:
@@ -1221,6 +1241,33 @@ def build_parser(repo_root: Path) -> argparse.ArgumentParser:
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--timeout-seconds", type=float, default=0.0)
     parser.add_argument("--ss-routing", choices=("ordered", "unordered"), default="ordered")
+    parser.add_argument(
+        "--cn-margin-ppm",
+        type=positive_int,
+        default=ExperimentParameters().cn_margin_ppm,
+        help=(
+            "rnic-cn receiver grant ceiling in ppm of the access link; "
+            "the paper default is 900000"
+        ),
+    )
+    parser.add_argument(
+        "--cn-retransmission-rto-ps",
+        type=positive_int,
+        default=ExperimentParameters().cn_retransmission_rto_ps,
+        help=(
+            "bounded rnic-cn sender watchdog measured from the physical "
+            "end of retry serialization"
+        ),
+    )
+    parser.add_argument(
+        "--dcqcn-egress-buffer-bytes",
+        type=positive_int,
+        default=ExperimentParameters().dcqcn_egress_buffer_bytes,
+        help=(
+            "ns-tm3 queued-VoQ admission cap for each physical egress; "
+            "the switch-wide shared pool remains physical_buffer_bytes"
+        ),
+    )
     return parser
 
 
@@ -1236,7 +1283,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         rnic_simulator=(args.rnic_bin or build_dir / "datacenter/htsim_rnic").resolve(),
         dcqcn_simulator=(args.dcqcn_bin or build_dir / "datacenter/htsim_dcqcn_atlahs").resolve(),
     )
-    parameters = ExperimentParameters(ss_routing=args.ss_routing)
+    parameters = ExperimentParameters(
+        ss_routing=args.ss_routing,
+        cn_margin_ppm=args.cn_margin_ppm,
+        cn_retransmission_rto_ps=args.cn_retransmission_rto_ps,
+        dcqcn_egress_buffer_bytes=args.dcqcn_egress_buffer_bytes,
+    )
     try:
         orchestrate(
             repo_root=repo_root,
