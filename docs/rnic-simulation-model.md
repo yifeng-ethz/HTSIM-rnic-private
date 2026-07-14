@@ -28,28 +28,32 @@ model invalidates an old result.
 | Profile | Traffic | Fabric | Allocation and feedback | Sender scheduling |
 | --- | --- | --- | --- | --- |
 | `rnic-cn` | packets | `ns-tm3` two-tier Clos with VoQ | receiver-observed, in-band collective-network grants | node-wide PRBS packet pacer |
+| `rnic-ss` | packets | `ns-rosetta` two-tier Clos with input-buffered request/grant switching | local load telemetry, endpoint-pair tracking, contributor-selective backpressure, and SACK/selective repeat | bounded outstanding-window credits with physical node-access serialization |
 | `rnic-nn` | packets | topology-free NN manifold with fixed propagation | instantaneous centralized packetized max-min | centrally feasible packet slots; PRBS may randomize ties |
 | `rnic-nn-fluid` | fluid bytes | topology-free NN manifold with fixed propagation | instantaneous centralized fluid max-min | continuous service; no packet pacer |
 
 CN always means **collective network**. Do not use `cc` as a profile or mode
 name because it is conventionally read as congestion control. The canonical
-simulator identifier for the modeled switch is `ns-tm3`; use it in CLI values,
-manifests, experiment labels, and prose about the simulator. Use Tomahawk 3
-only when discussing the real hardware family or source provenance.
+simulator identifiers are `ns-tm3` for `rnic-cn` and `ns-rosetta` for
+Slingshot-like `rnic-ss`; use them in manifests, experiment labels, and prose
+about each simulator. Use Tomahawk 3 or Rosetta only when discussing the real
+hardware family or source provenance.
 
 The implementation keeps the following dimensions independent internally:
 
-- `RnicFabricModel`: `NsTm3Clos` or `TopologyFreeManifold`;
+- `RnicFabricModel`: `NsTm3Clos`, `NsRosettaClos`, or `TopologyFreeManifold`;
 - `RnicTrafficModel`: `Packetized` or `Fluid`;
-- `RnicControlModel`: `InBandCollective` or `CentralOracle`;
-- `RnicPacerModel`: `Prbs`, `CentralPacketSlots`, or `None`.
+- `RnicControlModel`: `InBandCollective`, `PairSelectiveBackpressure`, or
+  `CentralOracle`;
+- `RnicPacerModel`: `Prbs`, `OutstandingWindowCredits`,
+  `CentralPacketSlots`, or `None`.
 
 The profile resolver is the only place that combines them. Initially it rejects
 unvalidated combinations rather than exposing a matrix of accidental modes.
 
 ## Standalone ATLAHS driver
 
-The `htsim_rnic` executable is the single GOAL/ATLAHS entry point for all three
+The `htsim_rnic` executable is the single GOAL/ATLAHS entry point for all four
 profiles. Build and invoke it directly with:
 
 ```sh
@@ -69,12 +73,13 @@ layout once, and freezes that layout for the run. `-goal_rank_mapping` may be
 optional assertion against the derived physical-node count, not a second source
 of topology truth.
 
-With no `-topo` file, `rnic-cn` generates a two-tier Clos only when the resolved
-node count has the form `K^2/2` for an even `K`. A supplied topology file must
-have exactly the derived physical-node count. The NN profiles construct no
-physical fabric. Every successful run prints a line-oriented model manifest and
-finishes only after application completion and any required physical RETIRE
-tail have drained; the last line records `physical_quiescence=verified`.
+With no `-topo` file, `rnic-cn` and `rnic-ss` generate a two-tier Clos only when
+the resolved node count has the form `K^2/2` for an even `K`. A supplied
+topology file must have exactly the derived physical-node count. The NN
+profiles construct no physical fabric. Every successful run prints a
+line-oriented model manifest and finishes only after application completion
+and any required physical tail have drained; the last line records
+`physical_quiescence=verified`.
 
 Use `htsim_rnic --help` for profile-specific parameters. Cross-profile flags
 are rejected so a command cannot silently describe a different model from the
@@ -509,10 +514,12 @@ tests never merge these causes.
 
 ## `ns-tm3` Clos model
 
-Every Clos profile uses the `ns-tm3` switch model at leaf and spine tiers until
-explicitly overridden by a future model. This is a behavioral
-traffic-manager contract motivated by the Tomahawk 3 hardware family, not a
-cycle-accurate claim about a particular ASIC revision.
+`rnic-cn` uses the `ns-tm3` switch model at leaf and spine tiers. This is a
+behavioral traffic-manager contract motivated by the Tomahawk 3 hardware
+family, not a cycle-accurate claim about a particular ASIC revision.
+`rnic-ss` instead uses the separate `ns-rosetta` contract documented in
+`rnic-slingshot-like-model.md`; topology-free profiles instantiate neither
+switch model.
 
 The switch reuses the existing Clos FIB and path selection, then enqueues by
 `(physical ingress port, physical egress port)` into VoQs. Within each strict
