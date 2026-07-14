@@ -6,6 +6,7 @@
 
 #include "fat_tree_switch_factory.h"
 #include "fat_tree_topology.h"
+#include "ns_rosetta_switch.h"
 #include "ns_tm3_switch.h"
 
 namespace {
@@ -48,13 +49,21 @@ TEST(FatTreeSwitchModelTest, HasStableManifestNames) {
               "default");
     EXPECT_EQ(fat_tree_switch_model_name(FatTreeSwitchModel::NsTm3),
               "ns-tm3");
+    EXPECT_EQ(fat_tree_switch_model_name(FatTreeSwitchModel::NsRosetta),
+              "ns-rosetta");
     EXPECT_EQ(fat_tree_switch_model_from_string("default"),
               FatTreeSwitchModel::Default);
     EXPECT_EQ(fat_tree_switch_model_from_string("ns-tm3"),
               FatTreeSwitchModel::NsTm3);
+    EXPECT_EQ(fat_tree_switch_model_from_string("ns-rosetta"),
+              FatTreeSwitchModel::NsRosetta);
     EXPECT_THROW(fat_tree_switch_model_from_string("tm3"),
                  std::invalid_argument);
     EXPECT_THROW(fat_tree_switch_model_from_string("tomahawk3"),
+                 std::invalid_argument);
+    EXPECT_THROW(fat_tree_switch_model_from_string("rosetta"),
+                 std::invalid_argument);
+    EXPECT_THROW(fat_tree_switch_model_from_string("slingshot"),
                  std::invalid_argument);
 }
 
@@ -80,6 +89,18 @@ TEST(FatTreeSwitchFactoryTest, ConstructsNsTm3) {
     auto* ns_tm3 = dynamic_cast<NsTm3Switch*>(switch_instance.get());
     ASSERT_NE(ns_tm3, nullptr);
     EXPECT_EQ(ns_tm3->shared_buffer_capacity(), 32768);
+}
+
+TEST(FatTreeSwitchFactoryTest, ConstructsNsRosetta) {
+    EventList& eventlist = EventList::getTheEventList();
+
+    auto switch_instance = FatTreeSwitchFactory::create(
+        FatTreeSwitchModel::NsRosetta, eventlist, "ns-rosetta-switch",
+        FatTreeSwitch::TOR, 0, 0, nullptr, 65536);
+
+    auto* ns_rosetta = dynamic_cast<NsRosetta*>(switch_instance.get());
+    ASSERT_NE(ns_rosetta, nullptr);
+    EXPECT_EQ(ns_rosetta->shared_buffer_capacity(), 65536);
 }
 
 }  // namespace

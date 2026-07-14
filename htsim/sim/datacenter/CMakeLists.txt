@@ -18,6 +18,7 @@ set(LIB_SOURCES
     fat_tree_switch_factory.cpp
     fat_tree_switch_model.cpp
     ns_tm3_switch.cpp
+    ns_rosetta_switch.cpp
     dragon_fly_topology.cpp
     slimfly_topology.cpp
     slimfly_switch.cpp
@@ -99,6 +100,14 @@ if ( ENABLE_TESTS )
     add_executable(ns_tm3_switch_test ns_tm3_switch_test.cpp)
     target_link_libraries(ns_tm3_switch_test PRIVATE htsim_dc htsim gtest_main)
     gtest_discover_tests(ns_tm3_switch_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
+    add_executable(ns_rosetta_switch_test ns_rosetta_switch_test.cpp)
+    target_link_libraries(
+        ns_rosetta_switch_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(ns_rosetta_switch_test
         PROPERTIES LABELS "unit"
         PROPERTIES TIMEOUT 60
     )

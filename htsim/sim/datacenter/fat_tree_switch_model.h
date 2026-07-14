@@ -7,6 +7,7 @@
 enum class FatTreeSwitchModel {
     Default,
     NsTm3,
+    NsRosetta,
 };
 
 std::string_view fat_tree_switch_model_name(FatTreeSwitchModel model);

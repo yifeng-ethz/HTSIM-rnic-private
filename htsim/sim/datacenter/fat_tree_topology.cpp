@@ -9,6 +9,7 @@
 #include "queue.h"
 #include "fat_tree_switch.h"
 #include "fat_tree_switch_factory.h"
+#include "ns_rosetta_switch.h"
 #include "ns_tm3_switch.h"
 #include "compositequeue.h"
 #include "aeolusqueue.h"
@@ -66,7 +67,9 @@ std::ostream &operator<<(std::ostream &os, FatTreeTopologyCfg const &m) {
         << " diameter=" << m._diameter
         << " switch_model=" << fat_tree_switch_model_name(m._switch_model)
         << " ns_tm3_shared_buffer_capacity="
-        << m._ns_tm3_shared_buffer_capacity;
+        << m._ns_tm3_shared_buffer_capacity
+        << " ns_rosetta_shared_buffer_capacity="
+        << m._ns_rosetta_shared_buffer_capacity;
     
     for (uint32_t tier = 0; tier < m._tiers; tier++) {
         cout << " tier=" << tier
@@ -94,6 +97,7 @@ FatTreeTopologyCfg::FatTreeTopologyCfg(queue_type q, queue_type snd):
                         _sender_qt(snd),
                         _switch_model(FatTreeSwitchModel::Default),
                         _ns_tm3_shared_buffer_capacity(0),
+                        _ns_rosetta_shared_buffer_capacity(0),
                         NCORE(0), 
                         NAGG(0), 
                         NTOR(0), 
@@ -149,6 +153,49 @@ mem_b FatTreeTopologyCfg::ns_tm3_shared_buffer_capacity(int tier) const {
         capacity = std::max(capacity, _queue_up[tier]);
     }
     return capacity;
+}
+
+void FatTreeTopologyCfg::set_ns_rosetta_shared_buffer_capacity(
+    mem_b capacity) {
+    if (capacity <= 0) {
+        throw std::invalid_argument(
+            "ns-rosetta shared-buffer capacity must be positive");
+    }
+    _ns_rosetta_shared_buffer_capacity = capacity;
+}
+
+mem_b FatTreeTopologyCfg::ns_rosetta_shared_buffer_capacity(int tier) const {
+    if (tier < TOR_TIER || tier >= static_cast<int>(_tiers)) {
+        throw std::out_of_range("invalid ns-rosetta switch tier");
+    }
+    if (_ns_rosetta_shared_buffer_capacity > 0) {
+        return _ns_rosetta_shared_buffer_capacity;
+    }
+
+    mem_b capacity = _queue_down[tier];
+    if (tier + 1 < static_cast<int>(_tiers)) {
+        capacity = std::max(capacity, _queue_up[tier]);
+    }
+    return capacity;
+}
+
+mem_b FatTreeTopologyCfg::selected_switch_shared_buffer_capacity(
+    int tier) const {
+    switch (_switch_model) {
+    case FatTreeSwitchModel::NsTm3:
+        return ns_tm3_shared_buffer_capacity(tier);
+    case FatTreeSwitchModel::NsRosetta:
+        return ns_rosetta_shared_buffer_capacity(tier);
+    case FatTreeSwitchModel::Default:
+        // The legacy model owns buffers in its output queues.  This factory
+        // argument is ignored, but returning the configured queue capacity
+        // keeps switch construction uniform.
+        if (tier < TOR_TIER || tier >= static_cast<int>(_tiers)) {
+            throw std::out_of_range("invalid default switch tier");
+        }
+        return _queue_down[tier];
+    }
+    throw std::invalid_argument("unknown fat-tree switch model");
 }
 
 linkspeed_bps FatTreeTopologyCfg::downlink_speed(int tier) const {
@@ -831,10 +878,12 @@ FatTreeTopology::FatTreeTopology(const FatTreeTopologyCfg* cfg,
                                 _ff(fit),
                                 _cfg(cfg)
                                 {
-    if (_cfg->_switch_model == FatTreeSwitchModel::NsTm3 &&
+    if ((_cfg->_switch_model == FatTreeSwitchModel::NsTm3 ||
+         _cfg->_switch_model == FatTreeSwitchModel::NsRosetta) &&
         _cfg->uses_pause_flow_control()) {
         throw std::invalid_argument(
-            "ns-tm3 does not support PAUSE/PFC queue modes; choose a "
+            std::string(fat_tree_switch_model_name(_cfg->_switch_model)) +
+            " does not support PAUSE/PFC queue modes; choose a "
             "non-lossless queue_type");
     }
     // Only build topology after verifying that things are in order.
@@ -887,21 +936,21 @@ FatTreeTopology::FatTreeTopology(const FatTreeTopologyCfg* cfg,
         switches_lp[j] = FatTreeSwitchFactory::create(
             _cfg->_switch_model, *_eventlist, "Switch_LowerPod_" + ntoa(j),
             FatTreeSwitch::TOR, j, switch_latency, this,
-            _cfg->ns_tm3_shared_buffer_capacity(TOR_TIER)).release();
+            _cfg->selected_switch_shared_buffer_capacity(TOR_TIER)).release();
     }
     for (uint32_t j=0;j<_cfg->NAGG;j++){
         simtime_picosec switch_latency = (_cfg->_switch_latencies[AGG_TIER] > 0) ? _cfg->_switch_latencies[AGG_TIER] : _cfg->_switch_latency;
         switches_up[j] = FatTreeSwitchFactory::create(
             _cfg->_switch_model, *_eventlist, "Switch_UpperPod_" + ntoa(j),
             FatTreeSwitch::AGG, j, switch_latency, this,
-            _cfg->ns_tm3_shared_buffer_capacity(AGG_TIER)).release();
+            _cfg->selected_switch_shared_buffer_capacity(AGG_TIER)).release();
     }
     for (uint32_t j=0;j<_cfg->NCORE;j++){
         simtime_picosec switch_latency = (_cfg->_switch_latencies[CORE_TIER] > 0) ? _cfg->_switch_latencies[CORE_TIER] : _cfg->_switch_latency;
         switches_c[j] = FatTreeSwitchFactory::create(
             _cfg->_switch_model, *_eventlist, "Switch_Core_" + ntoa(j),
             FatTreeSwitch::CORE, j, switch_latency, this,
-            _cfg->ns_tm3_shared_buffer_capacity(CORE_TIER)).release();
+            _cfg->selected_switch_shared_buffer_capacity(CORE_TIER)).release();
     }
       
     // links from lower layer pod switch to server
@@ -1267,6 +1316,10 @@ FatTreeTopology::alloc_queue(QueueLogger* queueLogger, linkspeed_bps speed, cons
 
     if (_cfg->_switch_model == FatTreeSwitchModel::NsTm3) {
         return new NsTm3EgressSerializer(speed, *_eventlist, queueLogger);
+    }
+    if (_cfg->_switch_model == FatTreeSwitchModel::NsRosetta) {
+        return new NsRosettaEgressSerializer(speed, *_eventlist,
+                                             queueLogger);
     }
 
     switch (_cfg->_qt) {

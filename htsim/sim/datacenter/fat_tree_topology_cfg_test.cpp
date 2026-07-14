@@ -89,4 +89,20 @@ TEST(FatTreeTopologyCfgTest, RejectsInvalidDownlinkTier) {
         std::out_of_range);
 }
 
+TEST(FatTreeTopologyCfgTest, RosettaSharedBufferHasFallbackAndOverride) {
+    std::istringstream input(kTopologyWithPerTierQueues);
+    FatTreeTopologyCfg cfg(input, 0, COMPOSITE, FAIR_PRIO);
+    cfg.set_switch_model(FatTreeSwitchModel::NsRosetta);
+
+    EXPECT_EQ(cfg.ns_rosetta_shared_buffer_capacity(TOR_TIER), 1002);
+    EXPECT_EQ(cfg.ns_rosetta_shared_buffer_capacity(AGG_TIER), 2001);
+    EXPECT_EQ(cfg.selected_switch_shared_buffer_capacity(TOR_TIER), 1002);
+
+    cfg.set_ns_rosetta_shared_buffer_capacity(65536);
+    EXPECT_EQ(cfg.ns_rosetta_shared_buffer_capacity(TOR_TIER), 65536);
+    EXPECT_EQ(cfg.ns_rosetta_shared_buffer_capacity(AGG_TIER), 65536);
+    EXPECT_THROW(cfg.set_ns_rosetta_shared_buffer_capacity(0),
+                 std::invalid_argument);
+}
+
 }  // namespace

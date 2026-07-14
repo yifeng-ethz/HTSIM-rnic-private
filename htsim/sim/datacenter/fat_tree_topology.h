@@ -97,6 +97,9 @@ public:
     FatTreeSwitchModel switch_model() const { return _switch_model; }
     void set_ns_tm3_shared_buffer_capacity(mem_b capacity);
     mem_b ns_tm3_shared_buffer_capacity(int tier) const;
+    void set_ns_rosetta_shared_buffer_capacity(mem_b capacity);
+    mem_b ns_rosetta_shared_buffer_capacity(int tier) const;
+    mem_b selected_switch_shared_buffer_capacity(int tier) const;
 
     bool uses_lossless_input_queues() const {
         return _qt == LOSSLESS_INPUT || _qt == LOSSLESS_INPUT_ECN;
@@ -106,7 +109,8 @@ public:
     }
     bool routes_through_switch() const {
         return uses_lossless_input_queues() ||
-               _switch_model == FatTreeSwitchModel::NsTm3;
+               _switch_model == FatTreeSwitchModel::NsTm3 ||
+               _switch_model == FatTreeSwitchModel::NsRosetta;
     }
 
     void set_params(uint32_t no_of_nodes);
@@ -196,6 +200,7 @@ private:
     queue_type _sender_qt;
     FatTreeSwitchModel _switch_model;
     mem_b _ns_tm3_shared_buffer_capacity;
+    mem_b _ns_rosetta_shared_buffer_capacity;
 
     uint32_t NCORE, NAGG, NTOR, NSRV, NPOD;
     uint32_t _tor_switches_per_pod, _agg_switches_per_pod;
