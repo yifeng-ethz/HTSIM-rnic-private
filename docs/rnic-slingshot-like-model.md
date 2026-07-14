@@ -45,11 +45,13 @@ SACK/selective repeat rather than RoCE go-back-N.
 
 No sender reads a remote queue or global flow table.
 
-1. A source leaf samples its own request depth and chooses four of the eight
-   spine candidates deterministically from `(seed, pair, packet sequence)`.
-2. It chooses the lowest-cost candidate from local depth plus the most recent
-   physically returned remote-load estimate.  Stable hashing and hysteresis
-   break ties and prevent route flapping.
+1. A source leaf chooses four of the eight spine candidates deterministically
+   from `(seed, pair, packet sequence)` and evaluates its own switch-local
+   egress state.
+2. It chooses the lowest-cost candidate from source-leaf backlog delay plus
+   the most recent physically returned remote-load estimate. Equal costs keep
+   the deterministic hashed candidate order; hysteresis prevents route
+   flapping.
 3. DATA accumulates path-load metadata as it crosses `ns-rosetta` queues.
 4. The receiver returns that sample in a physical ACK/SACK.  Only ACK arrival
    updates the source estimate; its age is recorded.
@@ -62,6 +64,11 @@ No sender reads a remote queue or global flow table.
    extent.  The source checks the real serializer before admission, so a SACK
    window is a recovery ledger rather than an instantaneous burst placed in
    front of the wire.
+7. An ordered endpoint-pair binding reserves one maximum DATA envelope on the
+   selected source-leaf egress until that pair's first low-priority DATA
+   arrives. The reservation contributes only to switch-local path scoring; it
+   is not buffered DATA, consumes no shared-buffer bytes, and cannot be
+   consumed by reverse-flow ACK/SACK, credit, or backpressure traffic.
 
 In the two-tier Clos every spine path is minimal, so the path-length term is
 zero.  Adaptive routing can avoid an intermediate hot path but cannot route

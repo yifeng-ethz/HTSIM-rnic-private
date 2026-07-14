@@ -426,29 +426,57 @@ proves such a bound.
 Adding a random fraction of a deterministic inter-packet gap is not PRBS
 pacing: it changes the mean rate and is prohibited.
 
-### Selective late repair uses granted PRBS service
+### Deterministic retransmission uses granted PRBS service
 
-A packet at or beyond `eta + Delta` is still rejected by the Ring-CAM.  The
-receiver reports that exact logical packet with an in-band gap NACK; it does
-not admit the late copy or widen `Delta`.  At the sender, a queued repair
-becomes the affected flow's head in the same node-wide PRBS lottery used by
-fresh DATA.  There is one candidate per flow at its current effective wire-rate
-grant.  A selected repair therefore consumes one ordinary PRBS opportunity and
-substitutes for fresh granted service; it is never a second, unpaced DATA
-class.  Other flows remain eligible in the lottery while that repair is
-pending.  Control frames, including the gap NACK, retain strict non-preemptive
-priority on the shared physical serializer and do not consume a DATA draw.
+The Ring-CAM admits a packet whose observed age is exactly `Delta`; only an age
+strictly greater than `Delta` is late. An observed late packet is conclusive,
+and the receiver reports that exact logical packet with an in-band gap NACK. A
+real fabric drop has no receiver-visible lifecycle or rejected ETA. A middle
+drop is therefore exposed when a later packet crosses the post-resequencing
+interface. RETIRE carries the maximum original release deadline over the whole
+original PSN sequence, so a dropped tail is exposed at that published deadline
+without waiting through another `Delta`. At either a successor release or the
+RETIRE audit, all receiver admissions and releases due at the timestamp are
+processed before the gap decision. Thus the decision uses `epsilon = 0`: it
+adds neither a second `Delta` nor a residual hardware tick. The NACK carries
+only the exact logical range and requested transmission attempt.
 
-Each repair is stamped with a new `eta` at its actual source-serializer
+At the sender, a queued retransmission becomes the affected flow's head in the
+same node-wide PRBS lottery used by fresh DATA.  There is one candidate per
+flow at its current effective wire-rate grant.  A selected retransmission
+therefore consumes one ordinary PRBS opportunity and substitutes for fresh
+granted service; it is never a second, unpaced DATA class.  Other flows remain
+eligible in the lottery while that retransmission is pending.  Control frames,
+including the gap NACK, retain strict non-preemptive priority on the shared
+physical serializer and do not consume a DATA draw.
+
+Each retransmission is stamped with a new `eta` at its actual source-serializer
 completion plus packet-specific calibrated transit.  It does not advance the
 original source payload, packet-index, or final-flow ledger.  The receiver
 grant and TX flow state remain live after the final original packet until the
-exact RX ledger closes and retirement commits, so a final-tail repair still
-has granted service.  Duplicate NACKs and DATA are idempotent; the retry limit
-is a terminal diagnostic guard, not extra rate or permission to change the
-fixed `Delta = 4.096 us` and `margin = 0.9` operating point.
+exact RX ledger closes and retirement commits, so a final-tail retransmission
+still has granted service.  Duplicate NACKs and DATA are idempotent; the
+retransmission limit is a terminal diagnostic guard, not extra rate or
+permission to change the fixed `Delta = 4.096 us` and `margin = 0.9` operating
+point.
 
-Consequently, fresh plus repair DATA remains inside the same sustainable
+When a NACKed range later crosses the post-resequencing boundary, the receiver
+sends a physical `GAP_RESOLVED` control carrying that range and the highest
+successful attempt. Sender retry state is closed only when this routed control
+arrives; receiver state never directly erases a sender queue or timer. A stale
+NACK that arrives after the closure is absorbed by a retained sender tombstone.
+
+Each physically serialized retry also arms a bounded sender watchdog, by
+default `50,000,000,000 ps`, starting at the retry's serializer end boundary.
+If neither a later physical NACK nor `GAP_RESOLVED` arrives before expiry, the
+watchdog authorizes the next deterministic attempt, subject to the configured
+attempt limit. This is a fallback for dropped DATA or absent receiver closure,
+not normal-path loss inference. The `ns-tm3` fabric can physically drop
+high-priority controls, but this runtime treats every such drop—including
+DECLARE, ACCEPT/UPDATE, GAP_NACK, GAP_RESOLVED, and RETIRE—as fatal. The DATA
+watchdog therefore does not claim control reliability.
+
+Consequently, fresh plus retransmitted DATA remains inside the same sustainable
 aggregate grant ceiling `sum r_i <= margin * C`; recovery cannot add a second
 line-rate load on top of that ceiling.  As above, PRBS supplies no hard finite
 `sigma`, so this is a stable rate-accounting invariant rather than a proof that
@@ -465,20 +493,33 @@ two-tier path has two leaf-spine serializations at the inter-switch link
 rate plus one leaf-to-RNIC serialization. The physical HTSIM route starts at
 the source-serializer boundary, so adding transit at source dispatch start
 would incorrectly omit source serialization. Calibrating every packet as a
-maximum-size packet would instead make short tails appear early. At a receiver,
-a packet is admitted only while its timestamp is in the active window and is
-released independently when the lower window edge reaches it. Conceptually:
+maximum-size packet would instead make short tails appear early.
+
+Fresh per-flow eligibility ticks are nondecreasing by PSN. If an exact short
+tail would regress below its predecessor's quantized tick, the sender consumes
+virtual PRBS opportunities while the physical wire remains idle until the tail
+can preserve that ordering. Its ETA is still actual serializer completion plus
+its exact packet-specific calibrated transit; it is never clamped or restamped
+to a synthetic future time. Transit calibration is cached exactly once for
+each fresh head, including the short tail.
+
+At a receiver, a packet is admitted only while its timestamp is in the active
+window and is released independently when the lower window edge reaches it.
+Conceptually:
 
 ```text
 q = t_arrival - eta
-admit when 0 <= q < Delta
+admit when 0 <= q <= Delta
 release at delta * ceil((eta + Delta) / delta)
 ```
 
 Thus an arrival at exactly `eta` is valid, while one at exactly `eta + Delta`
-is late. When release and admission share a simulation timestamp, releases are
-processed first. Finite-width timestamps use modular age comparisons; ordinary
-unsigned ordering is invalid across counter wraparound.
+is also in-window; only `q > Delta` is late. When release and admission share a
+simulation timestamp, already-admitted releases are processed first, then the
+new equality admission is released in the same-timestamp fixed point. All due
+releases precede any successor or RETIRE gap decision, so the recovery
+decision has `epsilon = 0`. Finite-width timestamps use modular age
+comparisons; ordinary unsigned ordering is invalid across counter wraparound.
 
 The implementation uses one node-wide timestamp-ordered store. It does not sort
 or barrier by flow or timestamp bucket, and a missing or late packet cannot
