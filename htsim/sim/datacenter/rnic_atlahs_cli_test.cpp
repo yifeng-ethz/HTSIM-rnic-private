@@ -22,15 +22,8 @@ RnicAtlahsCliOptions parse(std::vector<std::string> arguments) {
 }
 
 std::vector<std::string> baseArguments(const std::string& profile) {
-    return {"htsim_rnic",
-            "-goal",
-            "workload.goal",
-            "-nodes",
-            "32",
-            "-linkspeed_bps",
-            "100000000000",
-            "-rnic_profile",
-            profile};
+    return {"htsim_rnic",     "-goal",        "workload.goal", "-nodes", "32",
+            "-linkspeed_bps", "100000000000", "-rnic_profile", profile};
 }
 
 void append(std::vector<std::string>& arguments,
@@ -44,11 +37,8 @@ TEST(RnicAtlahsCliTest, ResolvesCollectiveDefaultsInConstructorUnits) {
     const RnicAtlahsCliOptions options = parse(baseArguments("rnic-cn"));
 
     EXPECT_EQ(options.goal_file, "workload.goal");
-    EXPECT_EQ(options.goal_rank_mapping,
-              RnicAtlahsGoalRankMapping::Auto);
-    EXPECT_EQ(std::string(rnicAtlahsGoalRankMappingName(
-                  options.goal_rank_mapping)),
-              "auto");
+    EXPECT_EQ(options.goal_rank_mapping, RnicAtlahsGoalRankMapping::Auto);
+    EXPECT_EQ(std::string(rnicAtlahsGoalRankMappingName(options.goal_rank_mapping)), "auto");
     EXPECT_FALSE(options.explicitly_supplied.goal_rank_mapping);
     EXPECT_EQ(options.node_count, 32U);
     EXPECT_TRUE(options.explicitly_supplied.node_count);
@@ -59,20 +49,17 @@ TEST(RnicAtlahsCliTest, ResolvesCollectiveDefaultsInConstructorUnits) {
     EXPECT_FALSE(options.collective.topology_file.has_value());
     EXPECT_EQ(options.collective.hop_latency_ps, 1000000U);
     EXPECT_EQ(options.collective.switch_latency_ps, 0U);
-    EXPECT_EQ(options.collective.global_prbs_seed,
-              UINT64_C(0x123456789abcdef0));
+    EXPECT_EQ(options.collective.global_prbs_seed, UINT64_C(0x123456789abcdef0));
     EXPECT_EQ(options.collective.control_deadline_ps, 10000000U);
     EXPECT_EQ(options.collective.margin_ppm, 900000U);
     EXPECT_EQ(options.collective.control_wire_bytes, 64U);
     EXPECT_EQ(options.collective.ring_delay_window_ps, 4096000U);
     EXPECT_EQ(options.collective.ring_release_tick_ps, 16000U);
     EXPECT_EQ(options.collective.ring_wire_capacity_bytes, UINT64_C(1) << 20);
-    EXPECT_EQ(options.collective.ns_tm3_shared_buffer_bytes,
-              UINT64_C(1) << 20);
+    EXPECT_EQ(options.collective.ns_tm3_shared_buffer_bytes, UINT64_C(1) << 20);
     EXPECT_EQ(options.collective.maximum_repair_retries, 8U);
 
-    const RnicAtlahsExplicitCliOptions& supplied =
-        options.explicitly_supplied;
+    const RnicAtlahsExplicitCliOptions& supplied = options.explicitly_supplied;
     EXPECT_FALSE(supplied.max_wire_packet_bytes);
     EXPECT_FALSE(supplied.data_header_bytes);
     EXPECT_FALSE(supplied.topology_file);
@@ -121,8 +108,7 @@ TEST(RnicAtlahsCliTest, RecordsExplicitGeneratedCollectiveOverrides) {
     EXPECT_EQ(options.collective.ns_tm3_shared_buffer_bytes, 4194304U);
     EXPECT_EQ(options.collective.maximum_repair_retries, 12U);
 
-    const RnicAtlahsExplicitCliOptions& supplied =
-        options.explicitly_supplied;
+    const RnicAtlahsExplicitCliOptions& supplied = options.explicitly_supplied;
     EXPECT_TRUE(supplied.max_wire_packet_bytes);
     EXPECT_TRUE(supplied.data_header_bytes);
     EXPECT_FALSE(supplied.topology_file);
@@ -254,8 +240,7 @@ TEST(RnicAtlahsCliTest, OmitsNodeOverrideForGoalLayoutDiscovery) {
 }
 
 TEST(RnicAtlahsCliTest, AcceptsProtocolNeutralCompletionCsv) {
-    for (const std::string& profile :
-         {"rnic-cn", "rnic-ss", "rnic-nn", "rnic-nn-fluid"}) {
+    for (const std::string& profile : {"rnic-cn", "rnic-ss", "rnic-nn", "rnic-nn-fluid"}) {
         std::vector<std::string> arguments = baseArguments(profile);
         append(arguments, "-completion_csv", "results/fct.csv");
         const RnicAtlahsCliOptions options = parse(std::move(arguments));
@@ -276,24 +261,20 @@ TEST(RnicAtlahsCliTest, AcceptsOnlyExactGoalRankMappingNames) {
         const RnicAtlahsCliOptions options = parse(std::move(arguments));
         EXPECT_EQ(options.goal_rank_mapping, item.second);
         EXPECT_TRUE(options.explicitly_supplied.goal_rank_mapping);
-        EXPECT_EQ(std::string(rnicAtlahsGoalRankMappingName(item.second)),
-                  item.first);
+        EXPECT_EQ(std::string(rnicAtlahsGoalRankMappingName(item.second)), item.first);
     }
 
-    for (const std::string& invalid :
-         {"gpu_rank", "unique_nic", "GPU-RANK", "infer", "v1", "v2"}) {
+    for (const std::string& invalid : {"gpu_rank", "unique_nic", "GPU-RANK", "infer", "v1", "v2"}) {
         std::vector<std::string> arguments = baseArguments("rnic-cn");
         append(arguments, "-goal_rank_mapping", invalid);
-        EXPECT_THROW(parse(std::move(arguments)), std::invalid_argument)
-            << invalid;
+        EXPECT_THROW(parse(std::move(arguments)), std::invalid_argument) << invalid;
     }
 }
 
 TEST(RnicAtlahsCliTest, RejectsEveryNonPublicProfileName) {
     for (const std::string& alias :
          {"rnic-cc", "rnic-null", "tm3", "collective-network", "RNIC-CN"}) {
-        EXPECT_THROW(parse(baseArguments(alias)), std::invalid_argument)
-            << alias;
+        EXPECT_THROW(parse(baseArguments(alias)), std::invalid_argument) << alias;
     }
 }
 
@@ -312,23 +293,19 @@ TEST(RnicAtlahsCliTest, RejectsMissingRequiredOptionsAndValues) {
     EXPECT_THROW(parse(std::move(missing_goal)), std::invalid_argument);
 
     std::vector<std::string> missing_speed = baseArguments("rnic-cn");
-    missing_speed.erase(missing_speed.begin() + 5,
-                        missing_speed.begin() + 7);
+    missing_speed.erase(missing_speed.begin() + 5, missing_speed.begin() + 7);
     EXPECT_THROW(parse(std::move(missing_speed)), std::invalid_argument);
 
     std::vector<std::string> missing_profile = baseArguments("rnic-cn");
-    missing_profile.erase(missing_profile.begin() + 7,
-                          missing_profile.begin() + 9);
+    missing_profile.erase(missing_profile.begin() + 7, missing_profile.begin() + 9);
     EXPECT_THROW(parse(std::move(missing_profile)), std::invalid_argument);
 }
 
 TEST(RnicAtlahsCliTest, RejectsMalformedNegativeOverflowAndHexNumerics) {
-    for (const std::string& bad :
-         {"-1", "1.5", "12x", "+12", "0x10", "18446744073709551616"}) {
+    for (const std::string& bad : {"-1", "1.5", "12x", "+12", "0x10", "18446744073709551616"}) {
         std::vector<std::string> arguments = baseArguments("rnic-nn");
         arguments[6] = bad;
-        EXPECT_THROW(parse(std::move(arguments)), std::invalid_argument)
-            << bad;
+        EXPECT_THROW(parse(std::move(arguments)), std::invalid_argument) << bad;
     }
 
     std::vector<std::string> nodes = baseArguments("rnic-nn");
@@ -352,8 +329,7 @@ TEST(RnicAtlahsCliTest, RecognizesOnlyGeneratedTwoTierClosNodeCounts) {
     for (const std::uint32_t valid : {2U, 8U, 18U, 32U, 50U, 72U, 128U}) {
         EXPECT_TRUE(isRnicGeneratedTwoTierClosNodeCount(valid)) << valid;
     }
-    for (const std::uint32_t invalid :
-         {0U, 1U, 3U, 7U, 31U, 33U, 127U}) {
+    for (const std::uint32_t invalid : {0U, 1U, 3U, 7U, 31U, 33U, 127U}) {
         EXPECT_FALSE(isRnicGeneratedTwoTierClosNodeCount(invalid)) << invalid;
     }
 }
@@ -373,8 +349,7 @@ TEST(RnicAtlahsCliTest, RejectsDuplicateAndUnknownOptions) {
 }
 
 TEST(RnicAtlahsCliTest, RejectsCrossProfileOptions) {
-    std::vector<std::string> fluid_packet =
-        baseArguments("rnic-nn-fluid");
+    std::vector<std::string> fluid_packet = baseArguments("rnic-nn-fluid");
     append(fluid_packet, "-rnic_max_wire_bytes", "1000");
     EXPECT_THROW(parse(std::move(fluid_packet)), std::invalid_argument);
 
@@ -386,8 +361,7 @@ TEST(RnicAtlahsCliTest, RejectsCrossProfileOptions) {
     append(nn_topology, "-topo", "clos.topo");
     EXPECT_THROW(parse(std::move(nn_topology)), std::invalid_argument);
 
-    std::vector<std::string> fluid_control =
-        baseArguments("rnic-nn-fluid");
+    std::vector<std::string> fluid_control = baseArguments("rnic-nn-fluid");
     append(fluid_control, "-rnic_cn_margin_ppm", "900000");
     EXPECT_THROW(parse(std::move(fluid_control)), std::invalid_argument);
 
@@ -424,8 +398,7 @@ TEST(RnicAtlahsCliTest, ChecksPacketizationAndSimulatorResolution) {
     append(collapsed_slot, "-rnic_data_header_bytes", "0");
     EXPECT_THROW(parse(std::move(collapsed_slot)), std::invalid_argument);
 
-    std::vector<std::string> fluid_no_packet_clock =
-        baseArguments("rnic-nn-fluid");
+    std::vector<std::string> fluid_no_packet_clock = baseArguments("rnic-nn-fluid");
     fluid_no_packet_clock[6] = "18446744073709551615";
     EXPECT_NO_THROW(parse(std::move(fluid_no_packet_clock)));
 }
@@ -440,8 +413,7 @@ TEST(RnicAtlahsCliTest, ChecksCollectiveTopologyAndRuntimeBounds) {
     append(file_shape, "-topo", "checked-later.topo");
     const RnicAtlahsCliOptions file_options = parse(std::move(file_shape));
     ASSERT_TRUE(file_options.collective.topology_file.has_value());
-    EXPECT_EQ(*file_options.collective.topology_file,
-              "checked-later.topo");
+    EXPECT_EQ(*file_options.collective.topology_file, "checked-later.topo");
     EXPECT_TRUE(file_options.explicitly_supplied.topology_file);
 
     std::vector<std::string> too_fast = baseArguments("rnic-cn");
@@ -487,15 +459,11 @@ TEST(RnicAtlahsCliTest, ChecksCollectiveTopologyAndRuntimeBounds) {
     EXPECT_THROW(parse(std::move(zero_repair)), std::invalid_argument);
 
     std::vector<std::string> huge_buffer = baseArguments("rnic-cn");
-    append(huge_buffer,
-           "-rnic_cn_ns_tm3_buffer_bytes",
-           "9223372036854775808");
+    append(huge_buffer, "-rnic_cn_ns_tm3_buffer_bytes", "9223372036854775808");
     EXPECT_THROW(parse(std::move(huge_buffer)), std::invalid_argument);
 
     std::vector<std::string> diameter_overflow = baseArguments("rnic-cn");
-    append(diameter_overflow,
-           "-rnic_hop_latency_ps",
-           "18446744073709551615");
+    append(diameter_overflow, "-rnic_hop_latency_ps", "18446744073709551615");
     EXPECT_THROW(parse(std::move(diameter_overflow)), std::invalid_argument);
 
     std::vector<std::string> file_and_latency = baseArguments("rnic-cn");
@@ -506,31 +474,20 @@ TEST(RnicAtlahsCliTest, ChecksCollectiveTopologyAndRuntimeBounds) {
 
 TEST(RnicAtlahsCliTest, UsageNamesOnlyCanonicalProfilesAndExactUnits) {
     const std::string usage = rnicAtlahsCliUsage("htsim_rnic");
-    EXPECT_NE(usage.find("rnic-cn|rnic-ss|rnic-nn|rnic-nn-fluid"),
-              std::string::npos);
+    EXPECT_NE(usage.find("rnic-cn|rnic-ss|rnic-nn|rnic-nn-fluid"), std::string::npos);
     EXPECT_NE(usage.find("-linkspeed_bps"), std::string::npos);
     EXPECT_NE(usage.find("-completion_csv FILE"), std::string::npos);
-    EXPECT_NE(usage.find("-rnic_cn_max_repair_retries N"),
-              std::string::npos);
-    EXPECT_NE(usage.find(
-                  "-goal_rank_mapping auto|gpu-rank|unique-nic"),
-              std::string::npos);
+    EXPECT_NE(usage.find("-rnic_cn_max_repair_retries N"), std::string::npos);
+    EXPECT_NE(usage.find("-goal_rank_mapping auto|gpu-rank|unique-nic"), std::string::npos);
     EXPECT_NE(usage.find("-rnic_hop_latency_ps"), std::string::npos);
     EXPECT_NE(usage.find("-topo FILE"), std::string::npos);
-    EXPECT_NE(usage.find("-rnic_cn_ns_tm3_buffer_bytes"),
-              std::string::npos);
-    EXPECT_NE(usage.find("-rnic_cn_queue_trace_csv FILE"),
-              std::string::npos);
-    EXPECT_NE(usage.find("-rnic_cn_state_trace_csv FILE"),
-              std::string::npos);
-    EXPECT_NE(usage.find("-rnic_ss_ns_rosetta_buffer_bytes"),
-              std::string::npos);
-    EXPECT_NE(usage.find("-rnic_ss_state_trace_csv FILE"),
-              std::string::npos);
-    EXPECT_NE(usage.find("-rnic_ss_routing unordered|ordered"),
-              std::string::npos);
-    EXPECT_EQ(usage.find("-rnic_cn_tomahawk3_buffer_bytes"),
-              std::string::npos);
+    EXPECT_NE(usage.find("-rnic_cn_ns_tm3_buffer_bytes"), std::string::npos);
+    EXPECT_NE(usage.find("-rnic_cn_queue_trace_csv FILE"), std::string::npos);
+    EXPECT_NE(usage.find("-rnic_cn_state_trace_csv FILE"), std::string::npos);
+    EXPECT_NE(usage.find("-rnic_ss_ns_rosetta_buffer_bytes"), std::string::npos);
+    EXPECT_NE(usage.find("-rnic_ss_state_trace_csv FILE"), std::string::npos);
+    EXPECT_NE(usage.find("-rnic_ss_routing unordered|ordered"), std::string::npos);
+    EXPECT_EQ(usage.find("-rnic_cn_tomahawk3_buffer_bytes"), std::string::npos);
     EXPECT_EQ(usage.find("rnic-cc"), std::string::npos);
     EXPECT_EQ(usage.find("rnic-null"), std::string::npos);
 }

@@ -23,10 +23,7 @@ class RnicCollectiveNetworkRuntimeTestPeer;
 
 struct RnicCollectiveNetworkConfig {
     using TransitCalibration =
-        std::function<std::uint64_t(
-            std::uint32_t,
-            std::uint32_t,
-            const RnicPacketExtent&)>;
+        std::function<std::uint64_t(std::uint32_t, std::uint32_t, const RnicPacketExtent&)>;
 
     std::uint64_t access_wire_capacity_bps;
     RnicDataPacketizationConfig packetization;
@@ -93,22 +90,17 @@ struct RnicCollectiveFlowSnapshot {
 // node-wide PRBS TX port, traverses explicit routes through a two-tier
 // ns-tm3 Clos, and enters one shared Ring-CAM/RX serializer. Receiver
 // membership is changed only by in-band DECLARE/ACCEPT/UPDATE/RETIRE waves.
-class RnicCollectiveNetworkRuntime final : public AtlahsFlowRuntime,
-                                           private EventSource {
+class RnicCollectiveNetworkRuntime final : public AtlahsFlowRuntime, private EventSource {
 public:
-    RnicCollectiveNetworkRuntime(
-        EventList& event_list,
-        FatTreeTopology& topology,
-        RnicCollectiveNetworkConfig config);
+    RnicCollectiveNetworkRuntime(EventList& event_list,
+                                 FatTreeTopology& topology,
+                                 RnicCollectiveNetworkConfig config);
     ~RnicCollectiveNetworkRuntime() override;
 
-    RnicCollectiveNetworkRuntime(
-        const RnicCollectiveNetworkRuntime&) = delete;
-    RnicCollectiveNetworkRuntime& operator=(
-        const RnicCollectiveNetworkRuntime&) = delete;
+    RnicCollectiveNetworkRuntime(const RnicCollectiveNetworkRuntime&) = delete;
+    RnicCollectiveNetworkRuntime& operator=(const RnicCollectiveNetworkRuntime&) = delete;
 
-    void setup(std::uint32_t node_count,
-               CompletionHandler complete_flow) override;
+    void setup(std::uint32_t node_count, CompletionHandler complete_flow) override;
     void send(const AtlahsFlowRequest& request) override;
 
     bool isSetup() const noexcept;

@@ -90,14 +90,12 @@ struct NsRosettaBacklogObservation {
 class NsRosettaBacklogObserver {
 public:
     virtual ~NsRosettaBacklogObserver() = default;
-    virtual void observe(
-        const NsRosettaBacklogObservation& observation) noexcept = 0;
+    virtual void observe(const NsRosettaBacklogObservation& observation) noexcept = 0;
 };
 
 class NsRosettaIngressPort : public PacketSink {
 public:
-    NsRosettaIngressPort(NsRosetta& owner, uint32_t ingress_id,
-                         std::string name);
+    NsRosettaIngressPort(NsRosetta& owner, uint32_t ingress_id, std::string name);
 
     void receivePacket(Packet& pkt) override;
     const string& nodename() override { return _name; }
@@ -113,8 +111,7 @@ private:
 // buffered queue.  Waiting packets remain in switch-owned input VoQs.
 class NsRosettaEgressSerializer : public BaseQueue {
 public:
-    NsRosettaEgressSerializer(linkspeed_bps bitrate, EventList& eventlist,
-                              QueueLogger* logger);
+    NsRosettaEgressSerializer(linkspeed_bps bitrate, EventList& eventlist, QueueLogger* logger);
 
     void bind(NsRosetta& owner, uint32_t egress_id);
     void receivePacket(Packet& pkt) override;
@@ -147,9 +144,13 @@ private:
 
 class NsRosetta : public FatTreeSwitch {
 public:
-    NsRosetta(EventList& eventlist, const string& name, switch_type type,
-              uint32_t id, simtime_picosec switch_delay,
-              FatTreeTopology* topology, mem_b shared_buffer_capacity);
+    NsRosetta(EventList& eventlist,
+              const string& name,
+              switch_type type,
+              uint32_t id,
+              simtime_picosec switch_delay,
+              FatTreeTopology* topology,
+              mem_b shared_buffer_capacity);
     ~NsRosetta() override = default;
 
     int addPort(BaseQueue* queue) override;
@@ -159,37 +160,30 @@ public:
     void receive_from_physical_ingress(Packet& pkt, uint32_t ingress_id);
     void egress_serialization_complete(uint32_t egress_id);
 
-    void set_backlog_observer(
-        std::shared_ptr<NsRosettaBacklogObserver> observer) {
+    void set_backlog_observer(std::shared_ptr<NsRosettaBacklogObserver> observer) {
         _backlog_observer = std::move(observer);
     }
 
     mem_b shared_buffer_capacity() const { return _shared_buffer_capacity; }
     mem_b shared_buffer_occupancy() const { return _shared_buffer_occupancy; }
-    mem_b shared_buffer_high_watermark() const {
-        return _shared_buffer_high_watermark;
-    }
-    const NsRosettaBufferCounters& buffer_counters() const {
-        return _buffer_counters;
-    }
+    mem_b shared_buffer_high_watermark() const { return _shared_buffer_high_watermark; }
+    const NsRosettaBufferCounters& buffer_counters() const { return _buffer_counters; }
 
     size_t physical_ingress_count() const { return _ingresses.size(); }
     size_t physical_egress_count() const { return _egresses.size(); }
 
-    mem_b voq_buffered_bytes(uint32_t ingress_id, uint32_t egress_id,
+    mem_b voq_buffered_bytes(uint32_t ingress_id,
+                             uint32_t egress_id,
                              Packet::PktPriority priority) const;
     mem_b ingress_buffered_bytes(uint32_t ingress_id) const;
     mem_b ingress_backlog_bytes(uint32_t ingress_id) const;
     mem_b egress_buffered_bytes(uint32_t egress_id) const;
     mem_b egress_backlog_bytes(uint32_t egress_id) const;
-    mem_b egress_pair_buffered_bytes(
-        uint32_t egress_id, const NsRosettaEndpointPair& pair) const;
-    mem_b egress_pair_backlog_bytes(
-        uint32_t egress_id, const NsRosettaEndpointPair& pair) const;
+    mem_b egress_pair_buffered_bytes(uint32_t egress_id, const NsRosettaEndpointPair& pair) const;
+    mem_b egress_pair_backlog_bytes(uint32_t egress_id, const NsRosettaEndpointPair& pair) const;
     mem_b pair_buffered_bytes(const NsRosettaEndpointPair& pair) const;
     mem_b pair_backlog_bytes(const NsRosettaEndpointPair& pair) const;
-    NsRosettaRequestDepth request_depth(
-        uint32_t egress_id, Packet::PktPriority priority) const;
+    NsRosettaRequestDepth request_depth(uint32_t egress_id, Packet::PktPriority priority) const;
     NsRosettaPathLoad sample_path_load(uint32_t egress_id) const;
 
 private:
@@ -245,21 +239,18 @@ private:
     };
 
     static size_t traffic_class(Packet::PktPriority priority);
-    static PacketSummary summarize(Packet& pkt, uint32_t ingress_id,
+    static PacketSummary summarize(Packet& pkt,
+                                   uint32_t ingress_id,
                                    uint32_t egress_id,
                                    size_t traffic_class);
     NsRosettaEgressSerializer& resolve_selected_egress(Packet& pkt);
-    void enqueue(Packet& pkt, uint32_t ingress_id,
-                 NsRosettaEgressSerializer& egress);
+    void enqueue(Packet& pkt, uint32_t ingress_id, NsRosettaEgressSerializer& egress);
     void run_arbitration();
-    std::optional<Grant> select_egress_grant(
-        uint32_t egress_id,
-        const std::vector<bool>& ingress_matched) const;
-    Grant accept_input_grant(uint32_t ingress_id,
-                             const std::vector<Grant>& grants) const;
+    std::optional<Grant> select_egress_grant(uint32_t egress_id,
+                                             const std::vector<bool>& ingress_matched) const;
+    Grant accept_input_grant(uint32_t ingress_id, const std::vector<Grant>& grants) const;
     void dispatch_grant(const Grant& grant);
-    void emit_transition(NsRosettaQueueTransition transition,
-                         const PacketSummary& packet);
+    void emit_transition(NsRosettaQueueTransition transition, const PacketSummary& packet);
     void validate_ingress(uint32_t ingress_id) const;
     IngressState& ingress_state(uint32_t ingress_id);
     const IngressState& ingress_state(uint32_t ingress_id) const;

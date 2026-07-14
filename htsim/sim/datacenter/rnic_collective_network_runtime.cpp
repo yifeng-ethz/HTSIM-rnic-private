@@ -24,8 +24,7 @@ namespace {
 
 using Wide = unsigned __int128;
 
-std::uint64_t checkedAdd(
-        std::uint64_t lhs, std::uint64_t rhs, const char* message) {
+std::uint64_t checkedAdd(std::uint64_t lhs, std::uint64_t rhs, const char* message) {
     if (rhs > std::numeric_limits<std::uint64_t>::max() - lhs) {
         throw std::overflow_error(message);
     }
@@ -34,94 +33,81 @@ std::uint64_t checkedAdd(
 
 bool ledgersEqual(const RnicCollectiveFinalLedger& lhs,
                   const RnicCollectiveFinalLedger& rhs) noexcept {
-    return lhs.total_payload_bytes == rhs.total_payload_bytes
-           && lhs.total_wire_bytes == rhs.total_wire_bytes
-           && lhs.total_data_packets == rhs.total_data_packets;
+    return lhs.total_payload_bytes == rhs.total_payload_bytes &&
+           lhs.total_wire_bytes == rhs.total_wire_bytes &&
+           lhs.total_data_packets == rhs.total_data_packets;
 }
 
-bool extentsEqual(const RnicPacketExtent& lhs,
-                  const RnicPacketExtent& rhs) noexcept {
-    return lhs.payloadBytes() == rhs.payloadBytes()
-           && lhs.wireBytes() == rhs.wireBytes();
+bool extentsEqual(const RnicPacketExtent& lhs, const RnicPacketExtent& rhs) noexcept {
+    return lhs.payloadBytes() == rhs.payloadBytes() && lhs.wireBytes() == rhs.wireBytes();
 }
 
 bool logicalDataEqual(const RnicCollectiveDataMetadata& lhs,
                       const RnicCollectiveDataMetadata& rhs) noexcept {
-    return lhs.packet_index == rhs.packet_index
-           && lhs.payload_byte_offset == rhs.payload_byte_offset
-           && extentsEqual(lhs.extent, rhs.extent)
-           && ledgersEqual(lhs.final_ledger, rhs.final_ledger);
+    return lhs.packet_index == rhs.packet_index &&
+           lhs.payload_byte_offset == rhs.payload_byte_offset &&
+           extentsEqual(lhs.extent, rhs.extent) && ledgersEqual(lhs.final_ledger, rhs.final_ledger);
 }
 
-std::uint64_t nextStrictTick(
-        std::uint64_t now_ps, std::uint64_t tick_ps) {
+std::uint64_t nextStrictTick(std::uint64_t now_ps, std::uint64_t tick_ps) {
     const std::uint64_t remainder = now_ps % tick_ps;
-    const std::uint64_t advance =
-        remainder == 0 ? tick_ps : tick_ps - remainder;
-    return checkedAdd(
-        now_ps, advance, "rnic-cn gap-NACK decision time overflow");
+    const std::uint64_t advance = remainder == 0 ? tick_ps : tick_ps - remainder;
+    return checkedAdd(now_ps, advance, "rnic-cn gap-NACK decision time overflow");
 }
 
-RnicCollectiveFinalLedger packetLedger(
-        std::uint64_t payload_bytes,
-        const RnicDataPacketizationConfig& packetization) {
+RnicCollectiveFinalLedger packetLedger(std::uint64_t payload_bytes,
+                                       const RnicDataPacketizationConfig& packetization) {
     if (payload_bytes == 0) {
         return {0, 0, 0};
     }
     const std::uint64_t payload_quantum = packetization.maxPayloadBytes();
-    const std::uint64_t packet_count =
-        (payload_bytes - 1) / payload_quantum + 1;
-    const Wide total_wire = static_cast<Wide>(payload_bytes)
-                            + static_cast<Wide>(packet_count)
-                                  * packetization.dataHeaderBytes();
+    const std::uint64_t packet_count = (payload_bytes - 1) / payload_quantum + 1;
+    const Wide total_wire = static_cast<Wide>(payload_bytes) +
+                            static_cast<Wide>(packet_count) * packetization.dataHeaderBytes();
     if (total_wire > std::numeric_limits<std::uint64_t>::max()) {
-        throw std::overflow_error(
-            "rnic-cn final wire-byte ledger overflow");
+        throw std::overflow_error("rnic-cn final wire-byte ledger overflow");
     }
-    return {payload_bytes,
-            static_cast<std::uint64_t>(total_wire),
-            packet_count};
+    return {payload_bytes, static_cast<std::uint64_t>(total_wire), packet_count};
 }
 
 const char* admissionName(RnicRingCamAdmission admission) noexcept {
     switch (admission) {
-    case RnicRingCamAdmission::Early:
-        return "early";
-    case RnicRingCamAdmission::Admitted:
-        return "admitted";
-    case RnicRingCamAdmission::Late:
-        return "late";
-    case RnicRingCamAdmission::Overflow:
-        return "overflow";
+        case RnicRingCamAdmission::Early:
+            return "early";
+        case RnicRingCamAdmission::Admitted:
+            return "admitted";
+        case RnicRingCamAdmission::Late:
+            return "late";
+        case RnicRingCamAdmission::Overflow:
+            return "overflow";
     }
     return "invalid";
 }
 
 const char* studyTierName(uint32_t switch_type) noexcept {
     switch (static_cast<FatTreeSwitch::switch_type>(switch_type)) {
-    case FatTreeSwitch::NONE:
-        return "none";
-    case FatTreeSwitch::TOR:
-        return "leaf";
-    case FatTreeSwitch::AGG:
-        return "spine";
-    case FatTreeSwitch::CORE:
-        return "core";
+        case FatTreeSwitch::NONE:
+            return "none";
+        case FatTreeSwitch::TOR:
+            return "leaf";
+        case FatTreeSwitch::AGG:
+            return "spine";
+        case FatTreeSwitch::CORE:
+            return "core";
     }
     return "unknown";
 }
 
-const char* queueTransitionName(
-        NsTm3QueueTransition transition) noexcept {
+const char* queueTransitionName(NsTm3QueueTransition transition) noexcept {
     switch (transition) {
-    case NsTm3QueueTransition::Enqueued:
-        return "enqueue";
-    case NsTm3QueueTransition::Dequeued:
-        return "dequeue";
-    case NsTm3QueueTransition::Dropped:
-        return "drop";
-    case NsTm3QueueTransition::SerializationCompleted:
-        return "serialization-complete";
+        case NsTm3QueueTransition::Enqueued:
+            return "enqueue";
+        case NsTm3QueueTransition::Dequeued:
+            return "dequeue";
+        case NsTm3QueueTransition::Dropped:
+            return "drop";
+        case NsTm3QueueTransition::SerializationCompleted:
+            return "serialization-complete";
     }
     return "unknown";
 }
@@ -131,46 +117,33 @@ public:
     explicit NsTm3QueueCsvObserver(const std::string& path)
         : _output(path, std::ios::out | std::ios::trunc) {
         if (!_output.is_open()) {
-            throw std::invalid_argument(
-                "cannot open rnic-cn queue trace CSV '" + path + "'");
+            throw std::invalid_argument("cannot open rnic-cn queue trace CSV '" + path + "'");
         }
-        _output
-            << "time_ps,tier,switch_id,ingress_id,egress_id,transition,"
-               "priority,flow_id,packet_id,packet_bytes,"
-               "egress_buffered_bytes,egress_in_service_bytes,"
-               "egress_backlog_bytes,shared_buffer_occupancy_bytes\n";
+        _output << "time_ps,tier,switch_id,ingress_id,egress_id,transition,"
+                   "priority,flow_id,packet_id,packet_bytes,"
+                   "egress_buffered_bytes,egress_in_service_bytes,"
+                   "egress_backlog_bytes,shared_buffer_occupancy_bytes\n";
         if (!_output) {
-            throw std::runtime_error(
-                "cannot write rnic-cn queue trace CSV header");
+            throw std::runtime_error("cannot write rnic-cn queue trace CSV header");
         }
     }
 
-    void observe(
-            const NsTm3QueueObservation& observation) noexcept override {
+    void observe(const NsTm3QueueObservation& observation) noexcept override {
         if (_write_failed) {
             return;
         }
-        _output
-            << observation.time_ps << ','
-            << studyTierName(observation.switch_type) << ','
-            << observation.switch_id << ','
-            << observation.ingress_id << ','
-            << observation.egress_id << ','
-            << queueTransitionName(observation.transition) << ','
-            << static_cast<unsigned>(observation.priority) << ','
-            << observation.flow_id << ','
-            << observation.packet_id << ','
-            << observation.packet_bytes << ','
-            << observation.egress_buffered_bytes << ','
-            << observation.egress_in_service_bytes << ','
-            << observation.egress_backlog_bytes << ','
-            << observation.shared_buffer_occupancy_bytes << '\n';
+        _output << observation.time_ps << ',' << studyTierName(observation.switch_type) << ','
+                << observation.switch_id << ',' << observation.ingress_id << ','
+                << observation.egress_id << ',' << queueTransitionName(observation.transition)
+                << ',' << static_cast<unsigned>(observation.priority) << ',' << observation.flow_id
+                << ',' << observation.packet_id << ',' << observation.packet_bytes << ','
+                << observation.egress_buffered_bytes << ',' << observation.egress_in_service_bytes
+                << ',' << observation.egress_backlog_bytes << ','
+                << observation.shared_buffer_occupancy_bytes << '\n';
         _write_failed = !_output.good();
     }
 
-    bool good() const noexcept {
-        return !_write_failed && _output.good();
-    }
+    bool good() const noexcept { return !_write_failed && _output.good(); }
 
     void flush() noexcept {
         _output.flush();
@@ -199,26 +172,20 @@ std::string renderNsTm3QueueDiagnostic(const FatTreeTopology& topology) {
             if (sw == nullptr) {
                 continue;
             }
-            for (uint32_t egress_id = 0;
-                 egress_id < sw->physical_egress_count(); ++egress_id) {
-                PortSample sample{sw,
-                                  egress_id,
-                                  sw->egress_backlog_bytes(egress_id),
+            for (uint32_t egress_id = 0; egress_id < sw->physical_egress_count(); ++egress_id) {
+                PortSample sample{sw, egress_id, sw->egress_backlog_bytes(egress_id),
                                   sw->egress_statistics(egress_id)};
-                if (!largest_wait.has_value()
-                    || sample.statistics.max_queue_wait_ps
-                           > largest_wait->statistics.max_queue_wait_ps) {
+                if (!largest_wait.has_value() || sample.statistics.max_queue_wait_ps >
+                                                     largest_wait->statistics.max_queue_wait_ps) {
                     largest_wait = sample;
                 }
-                if (!largest_buffer.has_value()
-                    || sample.statistics.buffered_high_watermark
-                           > largest_buffer->statistics
-                                 .buffered_high_watermark) {
+                if (!largest_buffer.has_value() ||
+                    sample.statistics.buffered_high_watermark >
+                        largest_buffer->statistics.buffered_high_watermark) {
                     largest_buffer = sample;
                 }
-                if (!largest_current.has_value()
-                    || sample.current_backlog
-                           > largest_current->current_backlog) {
+                if (!largest_current.has_value() ||
+                    sample.current_backlog > largest_current->current_backlog) {
                     largest_current = sample;
                 }
             }
@@ -230,38 +197,27 @@ std::string renderNsTm3QueueDiagnostic(const FatTreeTopology& topology) {
 
     const auto portName = [](const PortSample& sample) {
         std::ostringstream name;
-        name << studyTierName(sample.sw->getType()) << ':'
-             << sample.sw->getID() << ":egress:" << sample.egress_id;
+        name << studyTierName(sample.sw->getType()) << ':' << sample.sw->getID()
+             << ":egress:" << sample.egress_id;
         return name.str();
     };
     std::ostringstream diagnostic;
     if (largest_wait.has_value()) {
-        diagnostic
-            << " max_wait_port=" << portName(*largest_wait)
-            << " max_wait_ps="
-            << largest_wait->statistics.max_queue_wait_ps
-            << " max_wait_at_ps="
-            << largest_wait->statistics.max_queue_wait_observed_ps
-            << " max_wait_ingress="
-            << largest_wait->statistics.max_queue_wait_ingress_id
-            << " max_wait_flow_id="
-            << largest_wait->statistics.max_queue_wait_flow_id
-            << " max_wait_packet_id="
-            << largest_wait->statistics.max_queue_wait_packet_id;
+        diagnostic << " max_wait_port=" << portName(*largest_wait)
+                   << " max_wait_ps=" << largest_wait->statistics.max_queue_wait_ps
+                   << " max_wait_at_ps=" << largest_wait->statistics.max_queue_wait_observed_ps
+                   << " max_wait_ingress=" << largest_wait->statistics.max_queue_wait_ingress_id
+                   << " max_wait_flow_id=" << largest_wait->statistics.max_queue_wait_flow_id
+                   << " max_wait_packet_id=" << largest_wait->statistics.max_queue_wait_packet_id;
     }
     if (largest_buffer.has_value()) {
-        diagnostic
-            << " max_buffer_port=" << portName(*largest_buffer)
-            << " max_buffered_bytes="
-            << largest_buffer->statistics.buffered_high_watermark
-            << " max_backlog_bytes="
-            << largest_buffer->statistics.backlog_high_watermark;
+        diagnostic << " max_buffer_port=" << portName(*largest_buffer)
+                   << " max_buffered_bytes=" << largest_buffer->statistics.buffered_high_watermark
+                   << " max_backlog_bytes=" << largest_buffer->statistics.backlog_high_watermark;
     }
     if (largest_current.has_value()) {
-        diagnostic
-            << " current_max_port=" << portName(*largest_current)
-            << " current_backlog_bytes="
-            << largest_current->current_backlog;
+        diagnostic << " current_max_port=" << portName(*largest_current)
+                   << " current_backlog_bytes=" << largest_current->current_backlog;
     }
     return diagnostic.str();
 }
@@ -296,8 +252,7 @@ struct RnicCollectiveNetworkRuntime::Impl {
     };
 
     struct FlowState {
-        FlowState(const AtlahsFlowRequest& flow_request,
-                  RnicCollectiveFinalLedger ledger)
+        FlowState(const AtlahsFlowRequest& flow_request, RnicCollectiveFinalLedger ledger)
             : request(flow_request),
               final_ledger(ledger),
               packet_flow(nullptr),
@@ -414,9 +369,7 @@ struct RnicCollectiveNetworkRuntime::Impl {
     };
 
     struct NodeState {
-        NodeState(Impl& owner,
-                  std::uint32_t node_id,
-                  const RnicCollectiveNetworkConfig& config)
+        NodeState(Impl& owner, std::uint32_t node_id, const RnicCollectiveNetworkConfig& config)
             : endpoint(owner, node_id),
               node(node_id,
                    config.access_wire_capacity_bps,
@@ -436,14 +389,11 @@ struct RnicCollectiveNetworkRuntime::Impl {
         std::optional<OutstandingWave> outstanding_wave;
     };
 
-    class PacketObserver final
-        : public RnicCollectivePacketLifecycleObserver {
+    class PacketObserver final : public RnicCollectivePacketLifecycleObserver {
     public:
         explicit PacketObserver(Impl& owner) : _owner(&owner) {}
 
-        void observe(
-                const RnicCollectivePacketObservation& observation) noexcept
-                override {
+        void observe(const RnicCollectivePacketObservation& observation) noexcept override {
             if (_owner != nullptr) {
                 _owner->observeLifecycle(observation);
             }
@@ -468,11 +418,9 @@ struct RnicCollectiveNetworkRuntime::Impl {
         const std::uint32_t count = topology.cfg().no_of_servers();
         nodes.reserve(count);
         for (std::uint32_t node_id = 0; node_id < count; ++node_id) {
-            nodes.push_back(
-                std::make_unique<NodeState>(*this, node_id, config));
+            nodes.push_back(std::make_unique<NodeState>(*this, node_id, config));
         }
-        route_provider =
-            std::make_unique<RnicCollectiveRouteProvider>(topology);
+        route_provider = std::make_unique<RnicCollectiveRouteProvider>(topology);
         packet_observer = std::make_shared<PacketObserver>(*this);
         configureQueueTrace();
     }
@@ -492,23 +440,18 @@ struct RnicCollectiveNetworkRuntime::Impl {
     const NodeState& requireNode(std::uint32_t node_id) const;
 
     void stageEndpointArrival(std::uint32_t node_id, Packet& packet);
-    void observeLifecycle(
-        const RnicCollectivePacketObservation& observation) noexcept;
+    void observeLifecycle(const RnicCollectivePacketObservation& observation) noexcept;
     void wakeAt(TimePs when);
     void wakeAtNoexcept(TimePs when) noexcept;
     void fail(std::exception_ptr error) noexcept;
     void throwDeferredFailure();
 
-    const Route& selectRoute(std::uint32_t source,
-                             std::uint32_t destination);
+    const Route& selectRoute(std::uint32_t source, std::uint32_t destination);
     packetid_t takePacketId();
     void launchDueFrames(TimePs now_ps);
     void launchFrame(const SerializedFrame& frame);
-    void processEndpointArrivals(
-        TimePs now_ps, std::vector<AtlahsFlowId>& completions);
-    void processDataArrival(
-        const EndpointArrival& arrival,
-        std::vector<AtlahsFlowId>& completions);
+    void processEndpointArrivals(TimePs now_ps, std::vector<AtlahsFlowId>& completions);
+    void processDataArrival(const EndpointArrival& arrival, std::vector<AtlahsFlowId>& completions);
     void processGapNackArrival(const EndpointArrival& arrival);
     void scheduleGapNack(FlowState& flow,
                          const EndpointArrival& arrival,
@@ -516,20 +459,15 @@ struct RnicCollectiveNetworkRuntime::Impl {
     void queueDueGapNacks(TimePs now_ps);
     void duplicateCurrentGapNackForTesting(AtlahsFlowId flow_id);
     void duplicateCurrentRepairForTesting(AtlahsFlowId flow_id);
-    bool queuedRepairIsCurrent(
-        const FlowState& flow,
-        const RnicCollectiveDataMetadata& repair) const;
+    bool queuedRepairIsCurrent(const FlowState& flow,
+                               const RnicCollectiveDataMetadata& repair) const;
     void pruneStaleQueuedRepairs(FlowState& flow);
-    void settleReceivePorts(
-        TimePs now_ps, std::vector<AtlahsFlowId>& completions);
-    void processRxCompletions(
-        const std::vector<RnicRxPacketCompletion>& completed,
-        std::vector<AtlahsFlowId>& completions);
-    void processRxCompletion(
-        const RnicRxPacketCompletion& completion,
-        std::vector<AtlahsFlowId>& completions);
-    void drainReadyPackets(
-        FlowState& flow, std::vector<AtlahsFlowId>& completions);
+    void settleReceivePorts(TimePs now_ps, std::vector<AtlahsFlowId>& completions);
+    void processRxCompletions(const std::vector<RnicRxPacketCompletion>& completed,
+                              std::vector<AtlahsFlowId>& completions);
+    void processRxCompletion(const RnicRxPacketCompletion& completion,
+                             std::vector<AtlahsFlowId>& completions);
+    void drainReadyPackets(FlowState& flow, std::vector<AtlahsFlowId>& completions);
     void maybeQueueRetirement(FlowState& flow, TimePs now_ps);
     void queueRetireControl(FlowState& flow,
                             TimePs eligible_time_ps,
@@ -541,11 +479,9 @@ struct RnicCollectiveNetworkRuntime::Impl {
     void beginMembershipWave(NodeState& receiver,
                              TimePs observation_time_ps,
                              MembershipBatch batch);
-    void queueGrantFrames(const RnicCollectiveGrantWave& wave,
-                          std::uint32_t receiver_node);
+    void queueGrantFrames(const RnicCollectiveGrantWave& wave, std::uint32_t receiver_node);
 
-    std::exception_ptr notifyCompletions(
-        const std::vector<AtlahsFlowId>& completions);
+    std::exception_ptr notifyCompletions(const std::vector<AtlahsFlowId>& completions);
     bool dispatchControls(TimePs now_ps);
     bool dispatchData(TimePs now_ps);
     std::optional<TimePs> nextEventTime(TimePs now_ps) const;
@@ -576,8 +512,7 @@ struct RnicCollectiveNetworkRuntime::Impl {
     std::multimap<TimePs, GapDecision> pending_gap_decisions;
     std::map<std::uint64_t, DestinationData> destination_data;
     std::vector<EndpointArrival> endpoint_arrivals;
-    std::map<std::pair<std::uint32_t, std::uint32_t>, std::size_t>
-        route_cursors;
+    std::map<std::pair<std::uint32_t, std::uint32_t>, std::size_t> route_cursors;
     std::set<std::uint64_t> live_packet_lifecycles;
     std::optional<RnicCollectivePacketObservation> fatal_drop;
     std::exception_ptr deferred_failure;
@@ -592,28 +527,17 @@ struct RnicCollectiveNetworkRuntime::Impl {
     AtlahsStateTrace state_trace;
 };
 
-void RnicCollectiveNetworkRuntime::Impl::traceFlow(
-        const FlowState& flow, const char* event) {
+void RnicCollectiveNetworkRuntime::Impl::traceFlow(const FlowState& flow, const char* event) {
     if (!state_trace.enabled()) {
         return;
     }
     const std::uint64_t rate = flow.sender_gate.currentWireRateBps();
     const bool has_unsent_data =
-        flow.source_data_packets_dispatched
-        < flow.final_ledger.total_data_packets;
-    state_trace.append(
-        {EventList::now(),
-         flow.request.flow_id,
-         flow.request.source,
-         flow.request.destination,
-         event,
-         has_unsent_data ? rate : UINT64_C(0),
-         rate,
-         std::nullopt,
-         std::nullopt,
-         flow.source_data_packets_dispatched,
-         flow.recovery.selective_retransmissions,
-         flow.delivered_data_packets});
+        flow.source_data_packets_dispatched < flow.final_ledger.total_data_packets;
+    state_trace.append({EventList::now(), flow.request.flow_id, flow.request.source,
+                        flow.request.destination, event, has_unsent_data ? rate : UINT64_C(0), rate,
+                        std::nullopt, std::nullopt, flow.source_data_packets_dispatched,
+                        flow.recovery.selective_retransmissions, flow.delivered_data_packets});
 }
 
 void RnicCollectiveNetworkRuntime::Impl::configureQueueTrace() {
@@ -621,8 +545,7 @@ void RnicCollectiveNetworkRuntime::Impl::configureQueueTrace() {
         return;
     }
     if (config.queue_trace_csv->empty()) {
-        throw std::invalid_argument(
-            "rnic-cn queue trace CSV path must be nonempty");
+        throw std::invalid_argument("rnic-cn queue trace CSV path must be nonempty");
     }
 
     std::vector<NsTm3Switch*> switches;
@@ -630,8 +553,7 @@ void RnicCollectiveNetworkRuntime::Impl::configureQueueTrace() {
         for (Switch* base : tier) {
             auto* ns_tm3 = dynamic_cast<NsTm3Switch*>(base);
             if (ns_tm3 == nullptr) {
-                throw std::logic_error(
-                    "rnic-cn queue trace found a non-ns-tm3 Clos switch");
+                throw std::logic_error("rnic-cn queue trace found a non-ns-tm3 Clos switch");
             }
             switches.push_back(ns_tm3);
         }
@@ -640,8 +562,7 @@ void RnicCollectiveNetworkRuntime::Impl::configureQueueTrace() {
     collect(topology.switches_up);
     collect(topology.switches_c);
 
-    auto observer = std::make_shared<NsTm3QueueCsvObserver>(
-        *config.queue_trace_csv);
+    auto observer = std::make_shared<NsTm3QueueCsvObserver>(*config.queue_trace_csv);
     for (NsTm3Switch* sw : switches) {
         sw->set_queue_observer(observer);
     }
@@ -652,86 +573,62 @@ void RnicCollectiveNetworkRuntime::Impl::configureQueueTrace() {
 void RnicCollectiveNetworkRuntime::Impl::validateConfiguration() const {
     const FatTreeTopologyCfg& clos = topology.cfg();
     if (clos.get_tiers() != 2) {
-        throw std::invalid_argument(
-            "rnic-cn runtime requires a two-tier Clos");
+        throw std::invalid_argument("rnic-cn runtime requires a two-tier Clos");
     }
     if (clos.switch_model() != FatTreeSwitchModel::NsTm3) {
-        throw std::invalid_argument(
-            "rnic-cn runtime requires ns-tm3 switches");
+        throw std::invalid_argument("rnic-cn runtime requires ns-tm3 switches");
     }
     if (clos.uses_pause_flow_control()) {
-        throw std::invalid_argument(
-            "rnic-cn runtime does not permit PFC/lossless input queues");
+        throw std::invalid_argument("rnic-cn runtime does not permit PFC/lossless input queues");
     }
     if (clos.no_of_servers() == 0) {
-        throw std::invalid_argument(
-            "rnic-cn runtime requires at least one Clos node");
+        throw std::invalid_argument("rnic-cn runtime requires at least one Clos node");
     }
     if (config.access_wire_capacity_bps == 0) {
-        throw std::invalid_argument(
-            "rnic-cn access wire capacity must be nonzero");
+        throw std::invalid_argument("rnic-cn access wire capacity must be nonzero");
     }
-    constexpr std::uint64_t htsim_one_byte_per_ps_bps =
-        UINT64_C(8000000000000);
-    if (config.access_wire_capacity_bps
-        > htsim_one_byte_per_ps_bps) {
-        throw std::invalid_argument(
-            "rnic-cn access capacity exceeds HTSIM's physical queue clock");
+    constexpr std::uint64_t htsim_one_byte_per_ps_bps = UINT64_C(8000000000000);
+    if (config.access_wire_capacity_bps > htsim_one_byte_per_ps_bps) {
+        throw std::invalid_argument("rnic-cn access capacity exceeds HTSIM's physical queue clock");
     }
-    if (clos.downlink_speed(TOR_TIER)
-        != config.access_wire_capacity_bps) {
-        throw std::invalid_argument(
-            "rnic-cn endpoint capacity must equal the physical host link");
+    if (clos.downlink_speed(TOR_TIER) != config.access_wire_capacity_bps) {
+        throw std::invalid_argument("rnic-cn endpoint capacity must equal the physical host link");
     }
     if (config.control_deadline_ps == 0) {
-        throw std::invalid_argument(
-            "rnic-cn homogeneous control deadline must be nonzero");
+        throw std::invalid_argument("rnic-cn homogeneous control deadline must be nonzero");
     }
     if (!config.calibrated_transit_ps) {
         throw std::invalid_argument(
             "rnic-cn requires packet-specific no-queue transit calibration");
     }
-    if (config.control_wire_bytes == 0
-        || config.control_wire_bytes
-               > std::numeric_limits<std::uint16_t>::max()) {
-        throw std::invalid_argument(
-            "rnic-cn control extent must fit exactly in uint16_t");
+    if (config.control_wire_bytes == 0 ||
+        config.control_wire_bytes > std::numeric_limits<std::uint16_t>::max()) {
+        throw std::invalid_argument("rnic-cn control extent must fit exactly in uint16_t");
     }
     if (config.maximum_repair_retries == 0) {
-        throw std::invalid_argument(
-            "rnic-cn maximum repair retries must be positive");
+        throw std::invalid_argument("rnic-cn maximum repair retries must be positive");
     }
-    if (config.packetization.maxWirePacketBytes()
-        > std::numeric_limits<std::uint16_t>::max()) {
-        throw std::invalid_argument(
-            "rnic-cn DATA extent must fit exactly in uint16_t");
+    if (config.packetization.maxWirePacketBytes() > std::numeric_limits<std::uint16_t>::max()) {
+        throw std::invalid_argument("rnic-cn DATA extent must fit exactly in uint16_t");
     }
 
     // Distinct full-envelope boundaries must not collapse onto one simulator
     // tick. Short controls/final tails may share a published ceiling and are
     // handled as explicit same-time microphases.
     const Wide full_packet_ps =
-        static_cast<Wide>(config.packetization.maxWirePacketBytes())
-        * 8 * 1000000000000ULL;
+        static_cast<Wide>(config.packetization.maxWirePacketBytes()) * 8 * 1000000000000ULL;
     if (full_packet_ps < config.access_wire_capacity_bps) {
-        throw std::invalid_argument(
-            "rnic-cn full DATA envelope is shorter than one picosecond");
+        throw std::invalid_argument("rnic-cn full DATA envelope is shorter than one picosecond");
     }
 
     const Wide window_numerator =
-        static_cast<Wide>(config.access_wire_capacity_bps)
-        * config.ring_cam.delay_window_ps;
-    constexpr Wide byte_denominator =
-        static_cast<Wide>(8) * 1000000000000ULL;
-    const Wide window_bytes =
-        (window_numerator + byte_denominator - 1) / byte_denominator;
-    const Wide required_capacity =
-        window_bytes + config.packetization.maxWirePacketBytes();
-    if (required_capacity > std::numeric_limits<std::uint64_t>::max()
-        || config.ring_cam.wire_byte_capacity
-               < static_cast<std::uint64_t>(required_capacity)) {
-        throw std::invalid_argument(
-            "rnic-cn Ring-CAM violates W >= ceil(C*Delta/8) + M");
+        static_cast<Wide>(config.access_wire_capacity_bps) * config.ring_cam.delay_window_ps;
+    constexpr Wide byte_denominator = static_cast<Wide>(8) * 1000000000000ULL;
+    const Wide window_bytes = (window_numerator + byte_denominator - 1) / byte_denominator;
+    const Wide required_capacity = window_bytes + config.packetization.maxWirePacketBytes();
+    if (required_capacity > std::numeric_limits<std::uint64_t>::max() ||
+        config.ring_cam.wire_byte_capacity < static_cast<std::uint64_t>(required_capacity)) {
+        throw std::invalid_argument("rnic-cn Ring-CAM violates W >= ceil(C*Delta/8) + M");
     }
 }
 
@@ -755,8 +652,7 @@ void RnicCollectiveNetworkRuntime::Impl::shutdown() noexcept {
     // would turn a later fabric event into UAF. During exception unwinding the
     // EventList itself is also being torn down; do not mask the causal
     // exception with std::terminate in that one diagnostic path.
-    if (!live_packet_lifecycles.empty()
-        && std::uncaught_exceptions() == 0) {
+    if (!live_packet_lifecycles.empty() && std::uncaught_exceptions() == 0) {
         std::terminate();
     }
     if (event_list_registered) {
@@ -767,23 +663,19 @@ void RnicCollectiveNetworkRuntime::Impl::shutdown() noexcept {
     }
 }
 
-void RnicCollectiveNetworkRuntime::Impl::setup(
-        std::uint32_t node_count,
-        CompletionHandler completion_handler) {
+void RnicCollectiveNetworkRuntime::Impl::setup(std::uint32_t node_count,
+                                               CompletionHandler completion_handler) {
     if (is_setup) {
         throw std::logic_error("rnic-cn runtime is already set up");
     }
     if (node_count != nodes.size()) {
-        throw std::invalid_argument(
-            "rnic-cn ATLAHS node count does not match the Clos");
+        throw std::invalid_argument("rnic-cn ATLAHS node count does not match the Clos");
     }
     if (!completion_handler) {
-        throw std::invalid_argument(
-            "rnic-cn runtime requires a completion handler");
+        throw std::invalid_argument("rnic-cn runtime requires a completion handler");
     }
     if (!active_collective_network_event_lists.insert(&events).second) {
-        throw std::logic_error(
-            "only one active rnic-cn runtime is permitted per EventList");
+        throw std::logic_error("only one active rnic-cn runtime is permitted per EventList");
     }
     event_list_registered = true;
     setup_node_count = node_count;
@@ -791,8 +683,7 @@ void RnicCollectiveNetworkRuntime::Impl::setup(
     is_setup = true;
 }
 
-void RnicCollectiveNetworkRuntime::Impl::send(
-        const AtlahsFlowRequest& request) {
+void RnicCollectiveNetworkRuntime::Impl::send(const AtlahsFlowRequest& request) {
     if (!is_setup) {
         throw std::logic_error("rnic-cn runtime has not been set up");
     }
@@ -800,17 +691,13 @@ void RnicCollectiveNetworkRuntime::Impl::send(
         throw std::logic_error("rnic-cn runtime is in a terminal failure state");
     }
     if (request.start_time_ps != EventList::now()) {
-        throw std::invalid_argument(
-            "rnic-cn flow start time must equal event-list time");
+        throw std::invalid_argument("rnic-cn flow start time must equal event-list time");
     }
-    if (request.source >= setup_node_count
-        || request.destination >= setup_node_count) {
-        throw std::out_of_range(
-            "rnic-cn flow node is outside the configured Clos");
+    if (request.source >= setup_node_count || request.destination >= setup_node_count) {
+        throw std::out_of_range("rnic-cn flow node is outside the configured Clos");
     }
     if (request.source == request.destination) {
-        throw std::invalid_argument(
-            "rnic-cn physical flow requires distinct endpoint nodes");
+        throw std::invalid_argument("rnic-cn physical flow requires distinct endpoint nodes");
     }
     if (flows.count(request.flow_id) != 0) {
         throw std::invalid_argument("duplicate rnic-cn ATLAHS flow id");
@@ -825,8 +712,7 @@ void RnicCollectiveNetworkRuntime::Impl::send(
         request.source,
         request.destination,
         config.control_wire_bytes,
-        RnicCollectiveDeclareMetadata{
-            1, {std::nullopt, std::nullopt}},
+        RnicCollectiveDeclareMetadata{1, {std::nullopt, std::nullopt}},
         std::nullopt,
         std::nullopt,
         EventList::now(),
@@ -847,12 +733,9 @@ void RnicCollectiveNetworkRuntime::Impl::send(
         const RnicCollectiveNetworkConfig::TransitCalibration calibration =
             config.calibrated_transit_ps;
         source.node.txPort().addFlow(
-            request.flow_id,
-            request.payload_bytes,
-            [calibration,
-             source_id = request.source,
-             destination_id = request.destination](
-                    const RnicPacketExtent& extent) {
+            request.flow_id, request.payload_bytes,
+            [calibration, source_id = request.source,
+             destination_id = request.destination](const RnicPacketExtent& extent) {
                 return calibration(source_id, destination_id, extent);
             });
     } catch (...) {
@@ -864,8 +747,8 @@ void RnicCollectiveNetworkRuntime::Impl::send(
     wakeAt(EventList::now());
 }
 
-RnicCollectiveNetworkRuntime::Impl::FlowState&
-RnicCollectiveNetworkRuntime::Impl::requireFlow(AtlahsFlowId flow_id) {
+RnicCollectiveNetworkRuntime::Impl::FlowState& RnicCollectiveNetworkRuntime::Impl::requireFlow(
+    AtlahsFlowId flow_id) {
     const auto flow = flows.find(flow_id);
     if (flow == flows.end()) {
         throw std::out_of_range("unknown rnic-cn flow id");
@@ -874,8 +757,7 @@ RnicCollectiveNetworkRuntime::Impl::requireFlow(AtlahsFlowId flow_id) {
 }
 
 const RnicCollectiveNetworkRuntime::Impl::FlowState&
-RnicCollectiveNetworkRuntime::Impl::requireFlow(
-        AtlahsFlowId flow_id) const {
+RnicCollectiveNetworkRuntime::Impl::requireFlow(AtlahsFlowId flow_id) const {
     const auto flow = flows.find(flow_id);
     if (flow == flows.end()) {
         throw std::out_of_range("unknown rnic-cn flow id");
@@ -883,8 +765,8 @@ RnicCollectiveNetworkRuntime::Impl::requireFlow(
     return *flow->second;
 }
 
-RnicCollectiveNetworkRuntime::Impl::NodeState&
-RnicCollectiveNetworkRuntime::Impl::requireNode(std::uint32_t node_id) {
+RnicCollectiveNetworkRuntime::Impl::NodeState& RnicCollectiveNetworkRuntime::Impl::requireNode(
+    std::uint32_t node_id) {
     if (node_id >= nodes.size()) {
         throw std::out_of_range("unknown rnic-cn node id");
     }
@@ -892,60 +774,51 @@ RnicCollectiveNetworkRuntime::Impl::requireNode(std::uint32_t node_id) {
 }
 
 const RnicCollectiveNetworkRuntime::Impl::NodeState&
-RnicCollectiveNetworkRuntime::Impl::requireNode(
-        std::uint32_t node_id) const {
+RnicCollectiveNetworkRuntime::Impl::requireNode(std::uint32_t node_id) const {
     if (node_id >= nodes.size()) {
         throw std::out_of_range("unknown rnic-cn node id");
     }
     return *nodes[node_id];
 }
 
-void RnicCollectiveNetworkRuntime::Impl::stageEndpointArrival(
-        std::uint32_t node_id, Packet& packet) {
+void RnicCollectiveNetworkRuntime::Impl::stageEndpointArrival(std::uint32_t node_id,
+                                                              Packet& packet) {
     if (failed) {
-        throw std::logic_error(
-            "rnic-cn endpoint received a packet after terminal failure");
+        throw std::logic_error("rnic-cn endpoint received a packet after terminal failure");
     }
     auto* collective = dynamic_cast<RnicCollectivePacket*>(&packet);
     if (collective == nullptr) {
-        throw std::invalid_argument(
-            "rnic-cn endpoint received a foreign packet type");
+        throw std::invalid_argument("rnic-cn endpoint received a foreign packet type");
     }
     if (collective->destination() != node_id) {
-        throw std::invalid_argument(
-            "rnic-cn packet reached the wrong node endpoint");
+        throw std::invalid_argument("rnic-cn packet reached the wrong node endpoint");
     }
 
     EndpointArrival arrival{
-        EventList::now(),
-        collective->lifecycleId(),
-        collective->kind(),
-        collective->atlahsFlowId(),
-        collective->source(),
-        collective->destination(),
-        std::nullopt,
-        std::nullopt,
-        std::nullopt,
-        std::nullopt,
+        EventList::now(),     collective->lifecycleId(),
+        collective->kind(),   collective->atlahsFlowId(),
+        collective->source(), collective->destination(),
+        std::nullopt,         std::nullopt,
+        std::nullopt,         std::nullopt,
     };
     switch (collective->kind()) {
-    case RnicCollectivePacketKind::DATA:
-        arrival.data = collective->data();
-        arrival.final_ledger = collective->finalLedger();
-        break;
-    case RnicCollectivePacketKind::ACCEPT:
-    case RnicCollectivePacketKind::GRANT_UPDATE:
-        arrival.grant = collective->grant();
-        break;
-    case RnicCollectivePacketKind::GAP_NACK:
-        arrival.gap_nack = collective->gapNack();
-        break;
-    case RnicCollectivePacketKind::RETIRE:
-        arrival.final_ledger = collective->finalLedger();
-        break;
-    case RnicCollectivePacketKind::DECLARE:
-        arrival.declaration = collective->declaration();
-        break;
+        case RnicCollectivePacketKind::DATA:
+            arrival.data = collective->data();
+            arrival.final_ledger = collective->finalLedger();
+            break;
+        case RnicCollectivePacketKind::ACCEPT:
+        case RnicCollectivePacketKind::GRANT_UPDATE:
+            arrival.grant = collective->grant();
+            break;
+        case RnicCollectivePacketKind::GAP_NACK:
+            arrival.gap_nack = collective->gapNack();
+            break;
+        case RnicCollectivePacketKind::RETIRE:
+            arrival.final_ledger = collective->finalLedger();
+            break;
+        case RnicCollectivePacketKind::DECLARE:
+            arrival.declaration = collective->declaration();
+            break;
     }
 
     endpoint_arrivals.push_back(arrival);
@@ -959,27 +832,24 @@ void RnicCollectiveNetworkRuntime::Impl::stageEndpointArrival(
 }
 
 void RnicCollectiveNetworkRuntime::Impl::observeLifecycle(
-        const RnicCollectivePacketObservation& observation) noexcept {
+    const RnicCollectivePacketObservation& observation) noexcept {
     try {
-        if (observation.lifecycle
-            == RnicCollectivePacketLifecycle::CREATED) {
-            if (!live_packet_lifecycles.insert(observation.lifecycle_id)
-                     .second) {
-                fail(std::make_exception_ptr(std::logic_error(
-                    "duplicate rnic-cn packet lifecycle creation")));
+        if (observation.lifecycle == RnicCollectivePacketLifecycle::CREATED) {
+            if (!live_packet_lifecycles.insert(observation.lifecycle_id).second) {
+                fail(std::make_exception_ptr(
+                    std::logic_error("duplicate rnic-cn packet lifecycle creation")));
                 wakeAtNoexcept(EventList::now());
             }
             return;
         }
 
         if (live_packet_lifecycles.erase(observation.lifecycle_id) != 1) {
-            fail(std::make_exception_ptr(std::logic_error(
-                "unknown rnic-cn terminal packet lifecycle")));
+            fail(std::make_exception_ptr(
+                std::logic_error("unknown rnic-cn terminal packet lifecycle")));
             wakeAtNoexcept(EventList::now());
             return;
         }
-        if (observation.lifecycle
-            == RnicCollectivePacketLifecycle::FABRIC_DROP) {
+        if (observation.lifecycle == RnicCollectivePacketLifecycle::FABRIC_DROP) {
             if (!fatal_drop.has_value()) {
                 fatal_drop = observation;
             }
@@ -994,8 +864,7 @@ void RnicCollectiveNetworkRuntime::Impl::observeLifecycle(
 
 void RnicCollectiveNetworkRuntime::Impl::wakeAt(TimePs when) {
     if (failed) {
-        throw std::logic_error(
-            "cannot schedule a failed rnic-cn runtime");
+        throw std::logic_error("cannot schedule a failed rnic-cn runtime");
     }
     if (when < EventList::now()) {
         throw std::logic_error("rnic-cn runtime event is in the past");
@@ -1008,11 +877,9 @@ void RnicCollectiveNetworkRuntime::Impl::wakeAt(TimePs when) {
         EventList::cancelPendingSourceByHandle(owner, *event_handle);
         event_handle.reset();
     }
-    const EventList::Handle handle =
-        EventList::sourceIsPendingGetHandle(owner, when);
+    const EventList::Handle handle = EventList::sourceIsPendingGetHandle(owner, when);
     if (handle == EventList::nullHandle()) {
-        throw std::runtime_error(
-            "rnic-cn runtime event lies outside the EventList horizon");
+        throw std::runtime_error("rnic-cn runtime event lies outside the EventList horizon");
     }
     event_handle = handle;
 }
@@ -1025,8 +892,7 @@ void RnicCollectiveNetworkRuntime::Impl::wakeAtNoexcept(TimePs when) noexcept {
     }
 }
 
-void RnicCollectiveNetworkRuntime::Impl::fail(
-        std::exception_ptr error) noexcept {
+void RnicCollectiveNetworkRuntime::Impl::fail(std::exception_ptr error) noexcept {
     if (!deferred_failure) {
         deferred_failure = std::move(error);
     }
@@ -1037,18 +903,16 @@ void RnicCollectiveNetworkRuntime::Impl::throwDeferredFailure() {
         std::rethrow_exception(deferred_failure);
     }
     if (fatal_drop.has_value()) {
-        throw std::runtime_error(
-            "rnic-cn fabric dropped lifecycle "
-            + std::to_string(fatal_drop->lifecycle_id)
-            + " for flow " + std::to_string(fatal_drop->flow_id));
+        throw std::runtime_error("rnic-cn fabric dropped lifecycle " +
+                                 std::to_string(fatal_drop->lifecycle_id) + " for flow " +
+                                 std::to_string(fatal_drop->flow_id));
     }
 }
 
-const Route& RnicCollectiveNetworkRuntime::Impl::selectRoute(
-        std::uint32_t source, std::uint32_t destination) {
+const Route& RnicCollectiveNetworkRuntime::Impl::selectRoute(std::uint32_t source,
+                                                             std::uint32_t destination) {
     NodeState& receiver = requireNode(destination);
-    const auto& routes = route_provider->routes(
-        source, destination, receiver.endpoint);
+    const auto& routes = route_provider->routes(source, destination, receiver.endpoint);
     if (routes.empty()) {
         throw std::logic_error("rnic-cn route provider returned no paths");
     }
@@ -1066,8 +930,7 @@ const Route& RnicCollectiveNetworkRuntime::Impl::selectRoute(
 }
 
 packetid_t RnicCollectiveNetworkRuntime::Impl::takePacketId() {
-    if (next_htsim_packet_id
-        > std::numeric_limits<packetid_t>::max()) {
+    if (next_htsim_packet_id > std::numeric_limits<packetid_t>::max()) {
         throw std::overflow_error("rnic-cn exhausted HTSIM packet IDs");
     }
     return static_cast<packetid_t>(next_htsim_packet_id++);
@@ -1079,17 +942,14 @@ void RnicCollectiveNetworkRuntime::Impl::launchDueFrames(TimePs now_ps) {
         return;
     }
     if (pending_launches.begin()->first != now_ps) {
-        throw std::logic_error(
-            "rnic-cn source serialization completed in the past");
+        throw std::logic_error("rnic-cn source serialization completed in the past");
     }
 
     std::vector<SerializedFrame> due;
-    due.reserve(static_cast<std::size_t>(
-        std::distance(pending_launches.begin(), due_end)));
+    due.reserve(static_cast<std::size_t>(std::distance(pending_launches.begin(), due_end)));
     for (auto item = pending_launches.begin(); item != due_end; ++item) {
         if (item->first != now_ps) {
-            throw std::logic_error(
-                "rnic-cn launch batch spans multiple timestamps");
+            throw std::logic_error("rnic-cn launch batch spans multiple timestamps");
         }
         due.push_back(item->second);
     }
@@ -1099,116 +959,73 @@ void RnicCollectiveNetworkRuntime::Impl::launchDueFrames(TimePs now_ps) {
     }
 }
 
-void RnicCollectiveNetworkRuntime::Impl::launchFrame(
-        const SerializedFrame& frame) {
+void RnicCollectiveNetworkRuntime::Impl::launchFrame(const SerializedFrame& frame) {
     FlowState& flow = requireFlow(frame.flow_id);
     const Route& route = selectRoute(frame.source, frame.destination);
     const packetid_t packet_id = takePacketId();
     RnicCollectivePacket* packet = nullptr;
 
     switch (frame.kind) {
-    case RnicCollectivePacketKind::DATA:
-        if (!frame.data.has_value()) {
-            throw std::logic_error("rnic-cn DATA launch lost its metadata");
-        }
-        packet = RnicCollectivePacket::newData(
-            flow.packet_flow,
-            route,
-            packet_id,
-            frame.flow_id,
-            frame.source,
-            frame.destination,
-            *frame.data,
-            packet_observer);
-        break;
-    case RnicCollectivePacketKind::DECLARE:
-        if (!frame.declaration.has_value()) {
-            throw std::logic_error(
-                "rnic-cn DECLARE launch lost its nflow metadata");
-        }
-        if (flow.declaration_dispatched) {
-            throw std::logic_error("rnic-cn dispatched DECLARE twice");
-        }
-        flow.sender_gate.declarationDispatched();
-        flow.declaration_dispatched = true;
-        traceFlow(flow, "declare-dispatch");
-        packet = RnicCollectivePacket::newDeclare(
-            flow.packet_flow,
-            route,
-            packet_id,
-            frame.flow_id,
-            frame.source,
-            frame.destination,
-            frame.wire_bytes,
-            *frame.declaration,
-            packet_observer);
-        break;
-    case RnicCollectivePacketKind::ACCEPT:
-        if (!frame.grant.has_value()) {
-            throw std::logic_error("rnic-cn ACCEPT launch lost its grant");
-        }
-        packet = RnicCollectivePacket::newAccept(
-            flow.packet_flow,
-            route,
-            packet_id,
-            frame.source,
-            frame.destination,
-            frame.wire_bytes,
-            *frame.grant,
-            packet_observer);
-        break;
-    case RnicCollectivePacketKind::GRANT_UPDATE:
-        if (!frame.grant.has_value()) {
-            throw std::logic_error(
-                "rnic-cn UPDATE launch lost its grant");
-        }
-        packet = RnicCollectivePacket::newGrantUpdate(
-            flow.packet_flow,
-            route,
-            packet_id,
-            frame.source,
-            frame.destination,
-            frame.wire_bytes,
-            *frame.grant,
-            packet_observer);
-        break;
-    case RnicCollectivePacketKind::GAP_NACK:
-        if (!frame.gap_nack.has_value()) {
-            throw std::logic_error(
-                "rnic-cn GAP_NACK launch lost its packet range");
-        }
-        packet = RnicCollectivePacket::newGapNack(
-            flow.packet_flow,
-            route,
-            packet_id,
-            frame.flow_id,
-            frame.source,
-            frame.destination,
-            frame.wire_bytes,
-            *frame.gap_nack,
-            packet_observer);
-        ++flow.recovery.gap_nacks_dispatched;
-        ++recovery_statistics.gap_nacks_dispatched;
-        break;
-    case RnicCollectivePacketKind::RETIRE:
-        if (!frame.final_ledger.has_value()) {
-            throw std::logic_error("rnic-cn RETIRE launch lost its ledger");
-        }
-        if (flow.retire_dispatched) {
-            throw std::logic_error("rnic-cn dispatched RETIRE twice");
-        }
-        flow.retire_dispatched = true;
-        packet = RnicCollectivePacket::newRetire(
-            flow.packet_flow,
-            route,
-            packet_id,
-            frame.flow_id,
-            frame.source,
-            frame.destination,
-            frame.wire_bytes,
-            *frame.final_ledger,
-            packet_observer);
-        break;
+        case RnicCollectivePacketKind::DATA:
+            if (!frame.data.has_value()) {
+                throw std::logic_error("rnic-cn DATA launch lost its metadata");
+            }
+            packet = RnicCollectivePacket::newData(flow.packet_flow, route, packet_id,
+                                                   frame.flow_id, frame.source, frame.destination,
+                                                   *frame.data, packet_observer);
+            break;
+        case RnicCollectivePacketKind::DECLARE:
+            if (!frame.declaration.has_value()) {
+                throw std::logic_error("rnic-cn DECLARE launch lost its nflow metadata");
+            }
+            if (flow.declaration_dispatched) {
+                throw std::logic_error("rnic-cn dispatched DECLARE twice");
+            }
+            flow.sender_gate.declarationDispatched();
+            flow.declaration_dispatched = true;
+            traceFlow(flow, "declare-dispatch");
+            packet = RnicCollectivePacket::newDeclare(
+                flow.packet_flow, route, packet_id, frame.flow_id, frame.source, frame.destination,
+                frame.wire_bytes, *frame.declaration, packet_observer);
+            break;
+        case RnicCollectivePacketKind::ACCEPT:
+            if (!frame.grant.has_value()) {
+                throw std::logic_error("rnic-cn ACCEPT launch lost its grant");
+            }
+            packet = RnicCollectivePacket::newAccept(
+                flow.packet_flow, route, packet_id, frame.source, frame.destination,
+                frame.wire_bytes, *frame.grant, packet_observer);
+            break;
+        case RnicCollectivePacketKind::GRANT_UPDATE:
+            if (!frame.grant.has_value()) {
+                throw std::logic_error("rnic-cn UPDATE launch lost its grant");
+            }
+            packet = RnicCollectivePacket::newGrantUpdate(
+                flow.packet_flow, route, packet_id, frame.source, frame.destination,
+                frame.wire_bytes, *frame.grant, packet_observer);
+            break;
+        case RnicCollectivePacketKind::GAP_NACK:
+            if (!frame.gap_nack.has_value()) {
+                throw std::logic_error("rnic-cn GAP_NACK launch lost its packet range");
+            }
+            packet = RnicCollectivePacket::newGapNack(
+                flow.packet_flow, route, packet_id, frame.flow_id, frame.source, frame.destination,
+                frame.wire_bytes, *frame.gap_nack, packet_observer);
+            ++flow.recovery.gap_nacks_dispatched;
+            ++recovery_statistics.gap_nacks_dispatched;
+            break;
+        case RnicCollectivePacketKind::RETIRE:
+            if (!frame.final_ledger.has_value()) {
+                throw std::logic_error("rnic-cn RETIRE launch lost its ledger");
+            }
+            if (flow.retire_dispatched) {
+                throw std::logic_error("rnic-cn dispatched RETIRE twice");
+            }
+            flow.retire_dispatched = true;
+            packet = RnicCollectivePacket::newRetire(
+                flow.packet_flow, route, packet_id, frame.flow_id, frame.source, frame.destination,
+                frame.wire_bytes, *frame.final_ledger, packet_observer);
+            break;
     }
 
     if (route.path_id() < 0) {
@@ -1218,247 +1035,196 @@ void RnicCollectiveNetworkRuntime::Impl::launchFrame(
     packet->set_pathid(static_cast<std::uint32_t>(route.path_id()));
     if (frame.kind == RnicCollectivePacketKind::DATA) {
         if (frame.selective_repair) {
-            const auto missing = flow.missing_packets.find(
-                frame.data->packet_index);
-            if (missing == flow.missing_packets.end()
-                || !missing->second.repair_outstanding
-                || frame.data->transmission_attempt
-                       != missing->second.last_repair_attempt_dispatched) {
+            const auto missing = flow.missing_packets.find(frame.data->packet_index);
+            if (missing == flow.missing_packets.end() || !missing->second.repair_outstanding ||
+                frame.data->transmission_attempt !=
+                    missing->second.last_repair_attempt_dispatched) {
                 packet->free();
-                throw std::logic_error(
-                    "rnic-cn selective repair launch lost its gap state");
+                throw std::logic_error("rnic-cn selective repair launch lost its gap state");
             }
             if (!first_repair_launch_diagnostic.has_value()) {
                 std::ostringstream diagnostic;
-                diagnostic
-                    << "flow_id=" << frame.flow_id
-                    << " packet_index=" << frame.data->packet_index
-                    << " attempt=" << frame.data->transmission_attempt
-                    << " lifecycle=" << packet->lifecycleId()
-                    << " htsim_packet_id=" << packet_id
-                    << " launch_ps=" << EventList::now()
-                    << " eta_ps=" << frame.data->eta_ps;
+                diagnostic << "flow_id=" << frame.flow_id
+                           << " packet_index=" << frame.data->packet_index
+                           << " attempt=" << frame.data->transmission_attempt
+                           << " lifecycle=" << packet->lifecycleId()
+                           << " htsim_packet_id=" << packet_id << " launch_ps=" << EventList::now()
+                           << " eta_ps=" << frame.data->eta_ps;
                 first_repair_launch_diagnostic = diagnostic.str();
             }
         }
-        const DestinationData metadata{
-            frame.flow_id, frame.destination, packet_id, *frame.data};
-        if (!destination_data.emplace(packet->lifecycleId(), metadata)
-                 .second) {
+        const DestinationData metadata{frame.flow_id, frame.destination, packet_id, *frame.data};
+        if (!destination_data.emplace(packet->lifecycleId(), metadata).second) {
             packet->free();
-            throw std::logic_error(
-                "duplicate rnic-cn destination lifecycle metadata");
+            throw std::logic_error("duplicate rnic-cn destination lifecycle metadata");
         }
     }
 
     packet->sendOn();
-    if (frame.kind == RnicCollectivePacketKind::DATA
-        && !frame.selective_repair
-        && frame.data->isFinalPacket()) {
+    if (frame.kind == RnicCollectivePacketKind::DATA && !frame.selective_repair &&
+        frame.data->isFinalPacket()) {
         queueRetireControl(flow, EventList::now(), true);
     }
 }
 
-void RnicCollectiveNetworkRuntime::Impl::enqueueControl(
-        NodeState& source, ControlFrame frame) {
+void RnicCollectiveNetworkRuntime::Impl::enqueueControl(NodeState& source, ControlFrame frame) {
     frame.begins_control_busy_period = source.control_queue.empty();
     source.control_queue.push_back(std::move(frame));
 }
 
 void RnicCollectiveNetworkRuntime::Impl::queueRetireControl(
-        FlowState& flow,
-        TimePs eligible_time_ps,
-        bool inherits_exact_serializer_boundary) {
+    FlowState& flow,
+    TimePs eligible_time_ps,
+    bool inherits_exact_serializer_boundary) {
     if (flow.retire_control_queued) {
         throw std::logic_error("rnic-cn queued RETIRE twice");
     }
-    if (flow.source_payload_bytes_dispatched
-            != flow.final_ledger.total_payload_bytes
-        || flow.source_wire_bytes_dispatched
-               != flow.final_ledger.total_wire_bytes
-        || flow.source_data_packets_dispatched
-               != flow.final_ledger.total_data_packets) {
-        throw std::logic_error(
-            "rnic-cn RETIRE queued before exact source DATA closure");
+    if (flow.source_payload_bytes_dispatched != flow.final_ledger.total_payload_bytes ||
+        flow.source_wire_bytes_dispatched != flow.final_ledger.total_wire_bytes ||
+        flow.source_data_packets_dispatched != flow.final_ledger.total_data_packets) {
+        throw std::logic_error("rnic-cn RETIRE queued before exact source DATA closure");
     }
     NodeState& source = requireNode(flow.request.source);
     enqueueControl(
-        source,
-        {RnicCollectivePacketKind::RETIRE,
-         flow.request.flow_id,
-         flow.request.source,
-         flow.request.destination,
-         config.control_wire_bytes,
-         std::nullopt,
-         std::nullopt,
-         flow.final_ledger,
-         eligible_time_ps,
-         false,
-         inherits_exact_serializer_boundary});
+        source, {RnicCollectivePacketKind::RETIRE, flow.request.flow_id, flow.request.source,
+                 flow.request.destination, config.control_wire_bytes, std::nullopt, std::nullopt,
+                 flow.final_ledger, eligible_time_ps, false, inherits_exact_serializer_boundary});
     flow.retire_control_queued = true;
 }
 
 void RnicCollectiveNetworkRuntime::Impl::processEndpointArrivals(
-        TimePs now_ps, std::vector<AtlahsFlowId>& completions) {
+    TimePs now_ps,
+    std::vector<AtlahsFlowId>& completions) {
     std::vector<EndpointArrival> arrivals;
     arrivals.swap(endpoint_arrivals);
     for (const EndpointArrival& arrival : arrivals) {
         if (arrival.arrival_time_ps != now_ps) {
-            throw std::logic_error(
-                "rnic-cn endpoint arrival escaped its timestamp microphase");
+            throw std::logic_error("rnic-cn endpoint arrival escaped its timestamp microphase");
         }
         FlowState& flow = requireFlow(arrival.flow_id);
-        if (arrival.source != flow.request.source
-            || arrival.destination != flow.request.destination) {
-            const bool reverse_control =
-                arrival.kind == RnicCollectivePacketKind::ACCEPT
-                || arrival.kind
-                       == RnicCollectivePacketKind::GRANT_UPDATE
-                || arrival.kind == RnicCollectivePacketKind::GAP_NACK;
-            if (!reverse_control
-                || arrival.source != flow.request.destination
-                || arrival.destination != flow.request.source) {
+        if (arrival.source != flow.request.source ||
+            arrival.destination != flow.request.destination) {
+            const bool reverse_control = arrival.kind == RnicCollectivePacketKind::ACCEPT ||
+                                         arrival.kind == RnicCollectivePacketKind::GRANT_UPDATE ||
+                                         arrival.kind == RnicCollectivePacketKind::GAP_NACK;
+            if (!reverse_control || arrival.source != flow.request.destination ||
+                arrival.destination != flow.request.source) {
                 throw std::invalid_argument(
                     "rnic-cn packet endpoints do not match its ATLAHS flow");
             }
         }
 
         switch (arrival.kind) {
-        case RnicCollectivePacketKind::DATA:
-            processDataArrival(arrival, completions);
-            break;
-        case RnicCollectivePacketKind::DECLARE: {
-            if (!arrival.declaration.has_value()) {
-                throw std::logic_error(
-                    "rnic-cn receiver observed DECLARE without nflow");
-            }
-            // The current hard start declaration represents exactly one L4
-            // flow.  Debug collective identity and expected fan-in are
-            // deliberately not copied into MembershipBatch, so they are
-            // structurally unavailable to the RX CCA.
-            if (arrival.declaration->nflow != 1) {
-                throw std::invalid_argument(
-                    "rnic-cn startup DECLARE requires nflow=1");
-            }
-            if (flow.declaration_observed) {
-                throw std::logic_error(
-                    "rnic-cn receiver observed DECLARE twice");
-            }
-            NodeState& receiver = requireNode(flow.request.destination);
-            MembershipBatch& batch =
-                receiver.membership_batches[now_ps];
-            if (!batch.declared_nflow_by_flow.emplace(
-                     flow.request.flow_id,
-                     arrival.declaration->nflow).second) {
-                throw std::logic_error(
-                    "rnic-cn membership batch duplicates DECLARE");
-            }
-            flow.declaration_observed = true;
-            traceFlow(flow, "declare-observed");
-            break;
-        }
-        case RnicCollectivePacketKind::ACCEPT:
-            if (!arrival.grant.has_value()
-                || !flow.sender_gate.receiveAccept(
-                    *arrival.grant, now_ps)) {
-                throw std::logic_error(
-                    "rnic-cn sender rejected a physical ACCEPT");
-            }
-            break;
-        case RnicCollectivePacketKind::GRANT_UPDATE:
-            if (!arrival.grant.has_value()
-                || !flow.sender_gate.receiveGrantUpdate(
-                    *arrival.grant, now_ps)) {
-                throw std::logic_error(
-                    "rnic-cn sender rejected a physical grant UPDATE");
-            }
-            break;
-        case RnicCollectivePacketKind::GAP_NACK:
-            processGapNackArrival(arrival);
-            break;
-        case RnicCollectivePacketKind::RETIRE:
-            if (!arrival.final_ledger.has_value()
-                || !ledgersEqual(
-                    *arrival.final_ledger, flow.final_ledger)) {
-                throw std::invalid_argument(
-                    "rnic-cn RETIRE final ledger is inconsistent");
-            }
-            if (flow.retire_received) {
-                throw std::logic_error(
-                    "rnic-cn receiver observed RETIRE twice");
-            }
-            flow.retire_received = true;
-            if (flow.final_ledger.total_data_packets == 0) {
-                if (flow.delivery_completion_time_ps.has_value()) {
-                    throw std::logic_error(
-                        "rnic-cn zero-DATA flow completed twice");
+            case RnicCollectivePacketKind::DATA:
+                processDataArrival(arrival, completions);
+                break;
+            case RnicCollectivePacketKind::DECLARE: {
+                if (!arrival.declaration.has_value()) {
+                    throw std::logic_error("rnic-cn receiver observed DECLARE without nflow");
                 }
-                flow.delivery_completion_time_ps = now_ps;
-                completions.push_back(flow.request.flow_id);
+                // The current hard start declaration represents exactly one L4
+                // flow.  Debug collective identity and expected fan-in are
+                // deliberately not copied into MembershipBatch, so they are
+                // structurally unavailable to the RX CCA.
+                if (arrival.declaration->nflow != 1) {
+                    throw std::invalid_argument("rnic-cn startup DECLARE requires nflow=1");
+                }
+                if (flow.declaration_observed) {
+                    throw std::logic_error("rnic-cn receiver observed DECLARE twice");
+                }
+                NodeState& receiver = requireNode(flow.request.destination);
+                MembershipBatch& batch = receiver.membership_batches[now_ps];
+                if (!batch.declared_nflow_by_flow
+                         .emplace(flow.request.flow_id, arrival.declaration->nflow)
+                         .second) {
+                    throw std::logic_error("rnic-cn membership batch duplicates DECLARE");
+                }
+                flow.declaration_observed = true;
+                traceFlow(flow, "declare-observed");
+                break;
             }
-            maybeQueueRetirement(flow, now_ps);
-            break;
+            case RnicCollectivePacketKind::ACCEPT:
+                if (!arrival.grant.has_value() ||
+                    !flow.sender_gate.receiveAccept(*arrival.grant, now_ps)) {
+                    throw std::logic_error("rnic-cn sender rejected a physical ACCEPT");
+                }
+                break;
+            case RnicCollectivePacketKind::GRANT_UPDATE:
+                if (!arrival.grant.has_value() ||
+                    !flow.sender_gate.receiveGrantUpdate(*arrival.grant, now_ps)) {
+                    throw std::logic_error("rnic-cn sender rejected a physical grant UPDATE");
+                }
+                break;
+            case RnicCollectivePacketKind::GAP_NACK:
+                processGapNackArrival(arrival);
+                break;
+            case RnicCollectivePacketKind::RETIRE:
+                if (!arrival.final_ledger.has_value() ||
+                    !ledgersEqual(*arrival.final_ledger, flow.final_ledger)) {
+                    throw std::invalid_argument("rnic-cn RETIRE final ledger is inconsistent");
+                }
+                if (flow.retire_received) {
+                    throw std::logic_error("rnic-cn receiver observed RETIRE twice");
+                }
+                flow.retire_received = true;
+                if (flow.final_ledger.total_data_packets == 0) {
+                    if (flow.delivery_completion_time_ps.has_value()) {
+                        throw std::logic_error("rnic-cn zero-DATA flow completed twice");
+                    }
+                    flow.delivery_completion_time_ps = now_ps;
+                    completions.push_back(flow.request.flow_id);
+                }
+                maybeQueueRetirement(flow, now_ps);
+                break;
         }
     }
 }
 
 void RnicCollectiveNetworkRuntime::Impl::processDataArrival(
-        const EndpointArrival& arrival,
-        std::vector<AtlahsFlowId>& completions) {
+    const EndpointArrival& arrival,
+    std::vector<AtlahsFlowId>& completions) {
     if (!arrival.data.has_value()) {
         throw std::logic_error("rnic-cn endpoint DATA lost its metadata");
     }
     const auto pending = destination_data.find(arrival.lifecycle_id);
     if (pending == destination_data.end()) {
-        throw std::logic_error(
-            "rnic-cn endpoint DATA has no lifecycle side-table entry");
+        throw std::logic_error("rnic-cn endpoint DATA has no lifecycle side-table entry");
     }
     const DestinationData& expected = pending->second;
     const packetid_t htsim_packet_id = expected.htsim_packet_id;
     const RnicCollectiveDataMetadata& received = *arrival.data;
     const RnicCollectiveDataMetadata& sent = expected.data;
-    if (expected.flow_id != arrival.flow_id
-        || expected.destination != arrival.destination
-        || received.packet_index != sent.packet_index
-        || received.payload_byte_offset != sent.payload_byte_offset
-        || received.eta_ps != sent.eta_ps
-        || received.transmission_attempt != sent.transmission_attempt
-        || received.repairs_lifecycle_id != sent.repairs_lifecycle_id
-        || !extentsEqual(received.extent, sent.extent)
-        || !ledgersEqual(received.final_ledger, sent.final_ledger)) {
-        throw std::invalid_argument(
-            "rnic-cn endpoint DATA changed in the fabric");
+    if (expected.flow_id != arrival.flow_id || expected.destination != arrival.destination ||
+        received.packet_index != sent.packet_index ||
+        received.payload_byte_offset != sent.payload_byte_offset ||
+        received.eta_ps != sent.eta_ps ||
+        received.transmission_attempt != sent.transmission_attempt ||
+        received.repairs_lifecycle_id != sent.repairs_lifecycle_id ||
+        !extentsEqual(received.extent, sent.extent) ||
+        !ledgersEqual(received.final_ledger, sent.final_ledger)) {
+        throw std::invalid_argument("rnic-cn endpoint DATA changed in the fabric");
     }
 
     FlowState& flow = requireFlow(arrival.flow_id);
     const auto missing = flow.missing_packets.find(received.packet_index);
-    const bool already_delivered =
-        received.packet_index < flow.delivered_data_packets;
-    const bool already_ready =
-        flow.ready_packets.count(received.packet_index) != 0;
+    const bool already_delivered = received.packet_index < flow.delivered_data_packets;
+    const bool already_ready = flow.ready_packets.count(received.packet_index) != 0;
     bool stale_attempt = false;
     bool accepted_attempt_already_present = false;
     if (missing != flow.missing_packets.end()) {
         if (!logicalDataEqual(missing->second.logical_data, received)) {
-            throw std::invalid_argument(
-                "rnic-cn duplicate DATA conflicts with its missing range");
+            throw std::invalid_argument("rnic-cn duplicate DATA conflicts with its missing range");
         }
-        stale_attempt =
-            received.transmission_attempt
-                <= missing->second.rejected_attempt;
-        accepted_attempt_already_present =
-            missing->second.accepted_repair_lifecycle.has_value();
-        if (!stale_attempt && !accepted_attempt_already_present
-            && received.transmission_attempt
-                   != missing->second.last_repair_attempt_dispatched) {
-            throw std::logic_error(
-                "rnic-cn DATA repair attempt escaped its NACK state");
+        stale_attempt = received.transmission_attempt <= missing->second.rejected_attempt;
+        accepted_attempt_already_present = missing->second.accepted_repair_lifecycle.has_value();
+        if (!stale_attempt && !accepted_attempt_already_present &&
+            received.transmission_attempt != missing->second.last_repair_attempt_dispatched) {
+            throw std::logic_error("rnic-cn DATA repair attempt escaped its NACK state");
         }
     } else if (received.transmission_attempt != 0) {
         stale_attempt = true;
     }
-    if (already_delivered || already_ready || stale_attempt
-        || accepted_attempt_already_present) {
+    if (already_delivered || already_ready || stale_attempt || accepted_attempt_already_present) {
         destination_data.erase(pending);
         ++flow.recovery.duplicate_data_packets_ignored;
         ++recovery_statistics.duplicate_data_packets_ignored;
@@ -1467,34 +1233,26 @@ void RnicCollectiveNetworkRuntime::Impl::processDataArrival(
 
     NodeState& receiver = requireNode(arrival.destination);
     const RnicRingCamPacket ring_packet{
-        arrival.lifecycle_id,
-        arrival.flow_id,
-        received.eta_ps,
-        arrival.arrival_time_ps,
-        received.extent,
+        arrival.lifecycle_id,    arrival.flow_id, received.eta_ps,
+        arrival.arrival_time_ps, received.extent,
     };
-    const RnicRxArrivalResult result =
-        receiver.node.rxPort().processArrival(ring_packet);
-    processRxCompletions(
-        result.packets_completed_through_arrival, completions);
+    const RnicRxArrivalResult result = receiver.node.rxPort().processArrival(ring_packet);
+    processRxCompletions(result.packets_completed_through_arrival, completions);
     if (result.admission != RnicRingCamAdmission::Admitted) {
         destination_data.erase(pending);
         if (result.admission == RnicRingCamAdmission::Late) {
             if (!first_late_data_diagnostic.has_value()) {
                 std::ostringstream diagnostic;
-                diagnostic
-                    << "flow_id=" << arrival.flow_id
-                    << " packet_index=" << received.packet_index
-                    << " attempt=" << received.transmission_attempt
-                    << " lifecycle=" << arrival.lifecycle_id
-                    << " htsim_packet_id=" << htsim_packet_id
-                    << " source=" << arrival.source
-                    << " destination=" << arrival.destination
-                    << " eta_ps=" << received.eta_ps
-                    << " arrival_ps=" << arrival.arrival_time_ps
-                    << " age_ps="
-                    << arrival.arrival_time_ps - received.eta_ps
-                    << renderNsTm3QueueDiagnostic(topology);
+                diagnostic << "flow_id=" << arrival.flow_id
+                           << " packet_index=" << received.packet_index
+                           << " attempt=" << received.transmission_attempt
+                           << " lifecycle=" << arrival.lifecycle_id
+                           << " htsim_packet_id=" << htsim_packet_id << " source=" << arrival.source
+                           << " destination=" << arrival.destination
+                           << " eta_ps=" << received.eta_ps
+                           << " arrival_ps=" << arrival.arrival_time_ps
+                           << " age_ps=" << arrival.arrival_time_ps - received.eta_ps
+                           << renderNsTm3QueueDiagnostic(topology);
                 first_late_data_diagnostic = diagnostic.str();
             }
             scheduleGapNack(flow, arrival, received);
@@ -1502,25 +1260,19 @@ void RnicCollectiveNetworkRuntime::Impl::processDataArrival(
             return;
         }
         std::ostringstream message;
-        message << "rnic-cn Ring-CAM rejected DATA as "
-                << admissionName(result.admission)
-                << " flow_id=" << arrival.flow_id
-                << " packet_index=" << received.packet_index
-                << " htsim_packet_id=" << htsim_packet_id
-                << " source=" << arrival.source
-                << " destination=" << arrival.destination
-                << " eta_ps=" << received.eta_ps
+        message << "rnic-cn Ring-CAM rejected DATA as " << admissionName(result.admission)
+                << " flow_id=" << arrival.flow_id << " packet_index=" << received.packet_index
+                << " htsim_packet_id=" << htsim_packet_id << " source=" << arrival.source
+                << " destination=" << arrival.destination << " eta_ps=" << received.eta_ps
                 << " arrival_ps=" << arrival.arrival_time_ps;
         if (arrival.arrival_time_ps >= received.eta_ps) {
-            message << " queueing_age_ps="
-                    << arrival.arrival_time_ps - received.eta_ps;
+            message << " queueing_age_ps=" << arrival.arrival_time_ps - received.eta_ps;
         }
         message << renderNsTm3QueueDiagnostic(topology);
         throw std::runtime_error(message.str());
     }
     if (!result.logical_release_ps.has_value()) {
-        throw std::logic_error(
-            "rnic-cn admitted DATA has no Ring-CAM release time");
+        throw std::logic_error("rnic-cn admitted DATA has no Ring-CAM release time");
     }
     if (missing != flow.missing_packets.end()) {
         missing->second.accepted_repair_lifecycle = arrival.lifecycle_id;
@@ -1528,32 +1280,25 @@ void RnicCollectiveNetworkRuntime::Impl::processDataArrival(
     }
 }
 
-void RnicCollectiveNetworkRuntime::Impl::scheduleGapNack(
-        FlowState& flow,
-        const EndpointArrival& arrival,
-        const RnicCollectiveDataMetadata& data) {
+void RnicCollectiveNetworkRuntime::Impl::scheduleGapNack(FlowState& flow,
+                                                         const EndpointArrival& arrival,
+                                                         const RnicCollectiveDataMetadata& data) {
     ++flow.recovery.late_data_packets;
     ++recovery_statistics.late_data_packets;
     ++late_data_by_attempt[data.transmission_attempt];
     if (data.transmission_attempt >= config.maximum_repair_retries) {
         std::ostringstream message;
-        message
-            << "rnic-cn selective repair exhausted maximum retries"
-            << " flow_id=" << flow.request.flow_id
-            << " packet_index=" << data.packet_index
-            << " attempt=" << data.transmission_attempt
-            << " maximum=" << config.maximum_repair_retries
-            << " rejected_lifecycle=" << arrival.lifecycle_id
-            << " eta_ps=" << data.eta_ps
-            << " arrival_ps=" << arrival.arrival_time_ps
-            << " late_data_packets="
-            << recovery_statistics.late_data_packets
-            << " gap_nacks_received="
-            << recovery_statistics.gap_nacks_received
-            << " selective_retransmissions="
-            << recovery_statistics.selective_retransmissions
-            << " selective_retransmission_wire_bytes="
-            << recovery_statistics.selective_retransmission_wire_bytes;
+        message << "rnic-cn selective repair exhausted maximum retries"
+                << " flow_id=" << flow.request.flow_id << " packet_index=" << data.packet_index
+                << " attempt=" << data.transmission_attempt
+                << " maximum=" << config.maximum_repair_retries
+                << " rejected_lifecycle=" << arrival.lifecycle_id << " eta_ps=" << data.eta_ps
+                << " arrival_ps=" << arrival.arrival_time_ps
+                << " late_data_packets=" << recovery_statistics.late_data_packets
+                << " gap_nacks_received=" << recovery_statistics.gap_nacks_received
+                << " selective_retransmissions=" << recovery_statistics.selective_retransmissions
+                << " selective_retransmission_wire_bytes="
+                << recovery_statistics.selective_retransmission_wire_bytes;
         message << " late_attempts={";
         bool first_attempt = true;
         for (const auto& [attempt, count] : late_data_by_attempt) {
@@ -1574,45 +1319,31 @@ void RnicCollectiveNetworkRuntime::Impl::scheduleGapNack(
         }
         message << '}';
         if (first_repair_dispatch_ps.has_value()) {
-            message << " first_repair_dispatch_ps="
-                    << *first_repair_dispatch_ps;
+            message << " first_repair_dispatch_ps=" << *first_repair_dispatch_ps;
         }
         if (first_late_data_diagnostic.has_value()) {
-            message << " first_late={"
-                    << *first_late_data_diagnostic << '}';
+            message << " first_late={" << *first_late_data_diagnostic << '}';
         }
         if (first_repair_launch_diagnostic.has_value()) {
-            message << " first_repair={"
-                    << *first_repair_launch_diagnostic << '}';
+            message << " first_repair={" << *first_repair_launch_diagnostic << '}';
         }
-        message
-            << renderNsTm3QueueDiagnostic(topology);
+        message << renderNsTm3QueueDiagnostic(topology);
         throw std::runtime_error(message.str());
     }
-    if (data.transmission_attempt
-        == std::numeric_limits<std::uint32_t>::max()) {
-        throw std::overflow_error(
-            "rnic-cn selective repair attempt overflow");
+    if (data.transmission_attempt == std::numeric_limits<std::uint32_t>::max()) {
+        throw std::overflow_error("rnic-cn selective repair attempt overflow");
     }
 
     auto missing = flow.missing_packets.find(data.packet_index);
     if (missing == flow.missing_packets.end()) {
-        MissingPacket state{
-            data,
-            arrival.lifecycle_id,
-            data.eta_ps,
-            data.transmission_attempt};
-        missing = flow.missing_packets.emplace(
-            data.packet_index, std::move(state)).first;
+        MissingPacket state{data, arrival.lifecycle_id, data.eta_ps, data.transmission_attempt};
+        missing = flow.missing_packets.emplace(data.packet_index, std::move(state)).first;
     } else {
         MissingPacket& state = missing->second;
-        if (!logicalDataEqual(state.logical_data, data)
-            || data.transmission_attempt
-                   != state.last_repair_attempt_dispatched
-            || state.decision_pending || state.nack_outstanding
-            || !state.repair_outstanding) {
-            throw std::logic_error(
-                "rnic-cn late repair conflicts with its missing packet");
+        if (!logicalDataEqual(state.logical_data, data) ||
+            data.transmission_attempt != state.last_repair_attempt_dispatched ||
+            state.decision_pending || state.nack_outstanding || !state.repair_outstanding) {
+            throw std::logic_error("rnic-cn late repair conflicts with its missing packet");
         }
         state.rejected_lifecycle_id = arrival.lifecycle_id;
         state.rejected_eta_ps = data.eta_ps;
@@ -1623,47 +1354,34 @@ void RnicCollectiveNetworkRuntime::Impl::scheduleGapNack(
 
     MissingPacket& state = missing->second;
     state.decision_pending = true;
-    const std::uint32_t requested_attempt =
-        data.transmission_attempt + 1;
-    const RnicCollectiveGapNackMetadata gap_nack{
-        data.packet_index,
-        data.payload_byte_offset,
-        data.extent,
-        data.eta_ps,
-        arrival.lifecycle_id,
-        requested_attempt};
+    const std::uint32_t requested_attempt = data.transmission_attempt + 1;
+    const RnicCollectiveGapNackMetadata gap_nack{data.packet_index,    data.payload_byte_offset,
+                                                 data.extent,          data.eta_ps,
+                                                 arrival.lifecycle_id, requested_attempt};
     pending_gap_decisions.emplace(
-        nextStrictTick(
-            arrival.arrival_time_ps, config.ring_cam.release_tick_ps),
+        nextStrictTick(arrival.arrival_time_ps, config.ring_cam.release_tick_ps),
         GapDecision{flow.request.flow_id, gap_nack});
 }
 
 void RnicCollectiveNetworkRuntime::Impl::queueDueGapNacks(TimePs now_ps) {
     const auto due_end = pending_gap_decisions.upper_bound(now_ps);
-    for (auto decision = pending_gap_decisions.begin();
-         decision != due_end;
-         ++decision) {
+    for (auto decision = pending_gap_decisions.begin(); decision != due_end; ++decision) {
         if (decision->first != now_ps) {
-            throw std::logic_error(
-                "rnic-cn gap-NACK decision escaped its tick boundary");
+            throw std::logic_error("rnic-cn gap-NACK decision escaped its tick boundary");
         }
         FlowState& flow = requireFlow(decision->second.flow_id);
-        auto missing = flow.missing_packets.find(
-            decision->second.gap_nack.packet_index);
+        auto missing = flow.missing_packets.find(decision->second.gap_nack.packet_index);
         if (missing == flow.missing_packets.end()) {
             ++flow.recovery.duplicate_gap_nacks_ignored;
             ++recovery_statistics.duplicate_gap_nacks_ignored;
             continue;
         }
         MissingPacket& state = missing->second;
-        const RnicCollectiveGapNackMetadata& gap_nack =
-            decision->second.gap_nack;
-        if (!state.decision_pending
-            || state.rejected_lifecycle_id
-                   != gap_nack.rejected_lifecycle_id
-            || state.rejected_eta_ps != gap_nack.rejected_eta_ps
-            || state.rejected_attempt + 1
-                   != gap_nack.requested_transmission_attempt) {
+        const RnicCollectiveGapNackMetadata& gap_nack = decision->second.gap_nack;
+        if (!state.decision_pending ||
+            state.rejected_lifecycle_id != gap_nack.rejected_lifecycle_id ||
+            state.rejected_eta_ps != gap_nack.rejected_eta_ps ||
+            state.rejected_attempt + 1 != gap_nack.requested_transmission_attempt) {
             ++flow.recovery.duplicate_gap_nacks_ignored;
             ++recovery_statistics.duplicate_gap_nacks_ignored;
             continue;
@@ -1671,29 +1389,17 @@ void RnicCollectiveNetworkRuntime::Impl::queueDueGapNacks(TimePs now_ps) {
         state.decision_pending = false;
         state.nack_outstanding = true;
         NodeState& receiver = requireNode(flow.request.destination);
-        enqueueControl(
-            receiver,
-            {RnicCollectivePacketKind::GAP_NACK,
-             flow.request.flow_id,
-             flow.request.destination,
-             flow.request.source,
-             config.control_wire_bytes,
-             std::nullopt,
-             std::nullopt,
-             std::nullopt,
-             now_ps,
-             false,
-             false,
-             gap_nack});
+        enqueueControl(receiver,
+                       {RnicCollectivePacketKind::GAP_NACK, flow.request.flow_id,
+                        flow.request.destination, flow.request.source, config.control_wire_bytes,
+                        std::nullopt, std::nullopt, std::nullopt, now_ps, false, false, gap_nack});
     }
     pending_gap_decisions.erase(pending_gap_decisions.begin(), due_end);
 }
 
-void RnicCollectiveNetworkRuntime::Impl::processGapNackArrival(
-        const EndpointArrival& arrival) {
+void RnicCollectiveNetworkRuntime::Impl::processGapNackArrival(const EndpointArrival& arrival) {
     if (!arrival.gap_nack.has_value()) {
-        throw std::logic_error(
-            "rnic-cn sender observed GAP_NACK without a packet range");
+        throw std::logic_error("rnic-cn sender observed GAP_NACK without a packet range");
     }
     FlowState& flow = requireFlow(arrival.flow_id);
     ++flow.recovery.gap_nacks_received;
@@ -1706,35 +1412,26 @@ void RnicCollectiveNetworkRuntime::Impl::processGapNackArrival(
         return;
     }
     MissingPacket& state = missing->second;
-    if (state.logical_data.payload_byte_offset
-            != gap_nack.payload_byte_offset
-        || !extentsEqual(state.logical_data.extent, gap_nack.extent)) {
-        throw std::invalid_argument(
-            "rnic-cn GAP_NACK changed its logical packet range");
+    if (state.logical_data.payload_byte_offset != gap_nack.payload_byte_offset ||
+        !extentsEqual(state.logical_data.extent, gap_nack.extent)) {
+        throw std::invalid_argument("rnic-cn GAP_NACK changed its logical packet range");
     }
-    if (state.rejected_lifecycle_id
-            != gap_nack.rejected_lifecycle_id
-        || state.rejected_eta_ps != gap_nack.rejected_eta_ps
-        || state.rejected_attempt + 1
-               != gap_nack.requested_transmission_attempt
-        || !state.nack_outstanding
-        || state.repair_outstanding
-        || state.last_repair_attempt_dispatched
-               >= gap_nack.requested_transmission_attempt) {
+    if (state.rejected_lifecycle_id != gap_nack.rejected_lifecycle_id ||
+        state.rejected_eta_ps != gap_nack.rejected_eta_ps ||
+        state.rejected_attempt + 1 != gap_nack.requested_transmission_attempt ||
+        !state.nack_outstanding || state.repair_outstanding ||
+        state.last_repair_attempt_dispatched >= gap_nack.requested_transmission_attempt) {
         ++flow.recovery.duplicate_gap_nacks_ignored;
         ++recovery_statistics.duplicate_gap_nacks_ignored;
         return;
     }
-    if (gap_nack.requested_transmission_attempt
-        > config.maximum_repair_retries) {
-        throw std::logic_error(
-            "rnic-cn GAP_NACK exceeds the maximum retry guard");
+    if (gap_nack.requested_transmission_attempt > config.maximum_repair_retries) {
+        throw std::logic_error("rnic-cn GAP_NACK exceeds the maximum retry guard");
     }
 
     RnicCollectiveDataMetadata repair = state.logical_data;
     repair.eta_ps = 0;
-    repair.transmission_attempt =
-        gap_nack.requested_transmission_attempt;
+    repair.transmission_attempt = gap_nack.requested_transmission_attempt;
     repair.repairs_lifecycle_id = gap_nack.rejected_lifecycle_id;
     NodeState& source = requireNode(flow.request.source);
     RnicTxPort& tx = source.node.txPort();
@@ -1746,73 +1443,47 @@ void RnicCollectiveNetworkRuntime::Impl::processGapNackArrival(
     tx.setSelectiveRepairPending(flow.request.flow_id, true);
     state.nack_outstanding = false;
     state.repair_outstanding = true;
-    state.last_repair_attempt_dispatched =
-        gap_nack.requested_transmission_attempt;
+    state.last_repair_attempt_dispatched = gap_nack.requested_transmission_attempt;
     traceFlow(flow, "gap-nack-received");
 }
 
-void RnicCollectiveNetworkRuntime::Impl::duplicateCurrentGapNackForTesting(
-        AtlahsFlowId flow_id) {
+void RnicCollectiveNetworkRuntime::Impl::duplicateCurrentGapNackForTesting(AtlahsFlowId flow_id) {
     FlowState& flow = requireFlow(flow_id);
     if (flow.missing_packets.size() != 1) {
-        throw std::logic_error(
-            "rnic-cn duplicate-NACK test seam requires one missing packet");
+        throw std::logic_error("rnic-cn duplicate-NACK test seam requires one missing packet");
     }
     MissingPacket& state = flow.missing_packets.begin()->second;
-    if (!state.nack_outstanding || state.decision_pending
-        || state.repair_outstanding) {
-        throw std::logic_error(
-            "rnic-cn duplicate-NACK test seam requires an in-flight NACK");
+    if (!state.nack_outstanding || state.decision_pending || state.repair_outstanding) {
+        throw std::logic_error("rnic-cn duplicate-NACK test seam requires an in-flight NACK");
     }
-    if (state.rejected_attempt
-        == std::numeric_limits<std::uint32_t>::max()) {
-        throw std::overflow_error(
-            "rnic-cn duplicate-NACK test seam attempt overflow");
+    if (state.rejected_attempt == std::numeric_limits<std::uint32_t>::max()) {
+        throw std::overflow_error("rnic-cn duplicate-NACK test seam attempt overflow");
     }
     const RnicCollectiveGapNackMetadata gap_nack{
-        state.logical_data.packet_index,
-        state.logical_data.payload_byte_offset,
-        state.logical_data.extent,
-        state.rejected_eta_ps,
-        state.rejected_lifecycle_id,
-        state.rejected_attempt + 1};
+        state.logical_data.packet_index, state.logical_data.payload_byte_offset,
+        state.logical_data.extent,       state.rejected_eta_ps,
+        state.rejected_lifecycle_id,     state.rejected_attempt + 1};
     NodeState& receiver = requireNode(flow.request.destination);
-    enqueueControl(
-        receiver,
-        {RnicCollectivePacketKind::GAP_NACK,
-         flow.request.flow_id,
-         flow.request.destination,
-         flow.request.source,
-         config.control_wire_bytes,
-         std::nullopt,
-         std::nullopt,
-         std::nullopt,
-         EventList::now(),
-         false,
-         false,
-         gap_nack});
+    enqueueControl(receiver, {RnicCollectivePacketKind::GAP_NACK, flow.request.flow_id,
+                              flow.request.destination, flow.request.source,
+                              config.control_wire_bytes, std::nullopt, std::nullopt, std::nullopt,
+                              EventList::now(), false, false, gap_nack});
     wakeAt(EventList::now());
 }
 
-void RnicCollectiveNetworkRuntime::Impl::duplicateCurrentRepairForTesting(
-        AtlahsFlowId flow_id) {
+void RnicCollectiveNetworkRuntime::Impl::duplicateCurrentRepairForTesting(AtlahsFlowId flow_id) {
     FlowState& flow = requireFlow(flow_id);
     if (flow.missing_packets.size() != 1) {
-        throw std::logic_error(
-            "rnic-cn duplicate-DATA test seam requires one missing packet");
+        throw std::logic_error("rnic-cn duplicate-DATA test seam requires one missing packet");
     }
     MissingPacket& state = flow.missing_packets.begin()->second;
-    if (!state.repair_outstanding || state.decision_pending
-        || state.nack_outstanding
-        || state.last_repair_attempt_dispatched == 0
-        || state.accepted_repair_lifecycle.has_value()) {
-        throw std::logic_error(
-            "rnic-cn duplicate-DATA test seam requires an in-flight repair");
+    if (!state.repair_outstanding || state.decision_pending || state.nack_outstanding ||
+        state.last_repair_attempt_dispatched == 0 || state.accepted_repair_lifecycle.has_value()) {
+        throw std::logic_error("rnic-cn duplicate-DATA test seam requires an in-flight repair");
     }
     RnicCollectiveDataMetadata repair = state.logical_data;
     repair.eta_ps = 0;
-    repair.transmission_attempt =
-        state.last_repair_attempt_dispatched;
+    repair.transmission_attempt = state.last_repair_attempt_dispatched;
     repair.repairs_lifecycle_id = state.rejected_lifecycle_id;
     NodeState& source = requireNode(flow.request.source);
     RnicTxPort& tx = source.node.txPort();
@@ -1826,19 +1497,16 @@ void RnicCollectiveNetworkRuntime::Impl::duplicateCurrentRepairForTesting(
 }
 
 bool RnicCollectiveNetworkRuntime::Impl::queuedRepairIsCurrent(
-        const FlowState& flow,
-        const RnicCollectiveDataMetadata& repair) const {
+    const FlowState& flow,
+    const RnicCollectiveDataMetadata& repair) const {
     const auto missing = flow.missing_packets.find(repair.packet_index);
-    return missing != flow.missing_packets.end()
-           && missing->second.repair_outstanding
-           && !missing->second.accepted_repair_lifecycle.has_value()
-           && missing->second.last_repair_attempt_dispatched
-                  == repair.transmission_attempt
-           && logicalDataEqual(missing->second.logical_data, repair);
+    return missing != flow.missing_packets.end() && missing->second.repair_outstanding &&
+           !missing->second.accepted_repair_lifecycle.has_value() &&
+           missing->second.last_repair_attempt_dispatched == repair.transmission_attempt &&
+           logicalDataEqual(missing->second.logical_data, repair);
 }
 
-void RnicCollectiveNetworkRuntime::Impl::pruneStaleQueuedRepairs(
-        FlowState& flow) {
+void RnicCollectiveNetworkRuntime::Impl::pruneStaleQueuedRepairs(FlowState& flow) {
     auto repair = flow.repair_queue.begin();
     while (repair != flow.repair_queue.end()) {
         if (queuedRepairIsCurrent(flow, *repair)) {
@@ -1861,134 +1529,110 @@ void RnicCollectiveNetworkRuntime::Impl::pruneStaleQueuedRepairs(
 }
 
 void RnicCollectiveNetworkRuntime::Impl::settleReceivePorts(
-        TimePs now_ps, std::vector<AtlahsFlowId>& completions) {
+    TimePs now_ps,
+    std::vector<AtlahsFlowId>& completions) {
     for (const auto& node_state : nodes) {
-        const std::optional<TimePs> next =
-            node_state->node.rxPort().nextEventTimePs();
+        const std::optional<TimePs> next = node_state->node.rxPort().nextEventTimePs();
         if (!next.has_value() || *next > now_ps) {
             continue;
         }
         if (*next < now_ps) {
-            throw std::logic_error(
-                "rnic-cn RX internal event was scheduled in the past");
+            throw std::logic_error("rnic-cn RX internal event was scheduled in the past");
         }
         const RnicRxAdvanceResult result =
             node_state->node.rxPort().advanceToWithCompletions(now_ps);
         processRxCompletions(result.packets_completed, completions);
-        const std::optional<TimePs> remaining =
-            node_state->node.rxPort().nextEventTimePs();
+        const std::optional<TimePs> remaining = node_state->node.rxPort().nextEventTimePs();
         if (remaining.has_value() && *remaining <= now_ps) {
-            throw std::logic_error(
-                "rnic-cn RX event did not advance past its boundary");
+            throw std::logic_error("rnic-cn RX event did not advance past its boundary");
         }
     }
 }
 
 void RnicCollectiveNetworkRuntime::Impl::processRxCompletions(
-        const std::vector<RnicRxPacketCompletion>& completed,
-        std::vector<AtlahsFlowId>& completions) {
+    const std::vector<RnicRxPacketCompletion>& completed,
+    std::vector<AtlahsFlowId>& completions) {
     for (const RnicRxPacketCompletion& completion : completed) {
         processRxCompletion(completion, completions);
     }
 }
 
 void RnicCollectiveNetworkRuntime::Impl::processRxCompletion(
-        const RnicRxPacketCompletion& completion,
-        std::vector<AtlahsFlowId>& completions) {
-    const auto pending =
-        destination_data.find(completion.packet.packet_id);
+    const RnicRxPacketCompletion& completion,
+    std::vector<AtlahsFlowId>& completions) {
+    const auto pending = destination_data.find(completion.packet.packet_id);
     if (pending == destination_data.end()) {
-        throw std::logic_error(
-            "rnic-cn RX completed unknown lifecycle metadata");
+        throw std::logic_error("rnic-cn RX completed unknown lifecycle metadata");
     }
     const DestinationData metadata = pending->second;
     FlowState& flow = requireFlow(metadata.flow_id);
-    if (metadata.destination != flow.request.destination
-        || completion.packet.flow_id != metadata.flow_id
-        || completion.packet.eta_ps != metadata.data.eta_ps
-        || !extentsEqual(
-            completion.packet.extent, metadata.data.extent)) {
-        throw std::invalid_argument(
-            "rnic-cn RX completion metadata is inconsistent");
+    if (metadata.destination != flow.request.destination ||
+        completion.packet.flow_id != metadata.flow_id ||
+        completion.packet.eta_ps != metadata.data.eta_ps ||
+        !extentsEqual(completion.packet.extent, metadata.data.extent)) {
+        throw std::invalid_argument("rnic-cn RX completion metadata is inconsistent");
     }
-    if (!ledgersEqual(
-            metadata.data.final_ledger, flow.final_ledger)) {
-        throw std::invalid_argument(
-            "rnic-cn DATA packet carries a conflicting final ledger");
+    if (!ledgersEqual(metadata.data.final_ledger, flow.final_ledger)) {
+        throw std::invalid_argument("rnic-cn DATA packet carries a conflicting final ledger");
     }
     destination_data.erase(pending);
 
-    if (metadata.data.packet_index < flow.delivered_data_packets
-        || flow.ready_packets.count(metadata.data.packet_index) != 0) {
+    if (metadata.data.packet_index < flow.delivered_data_packets ||
+        flow.ready_packets.count(metadata.data.packet_index) != 0) {
         ++flow.recovery.duplicate_data_packets_ignored;
         ++recovery_statistics.duplicate_data_packets_ignored;
         return;
     }
     if (metadata.data.transmission_attempt != 0) {
-        auto missing = flow.missing_packets.find(
-            metadata.data.packet_index);
+        auto missing = flow.missing_packets.find(metadata.data.packet_index);
         if (missing == flow.missing_packets.end()) {
             ++flow.recovery.duplicate_data_packets_ignored;
             ++recovery_statistics.duplicate_data_packets_ignored;
             return;
         }
-        if (!missing->second.accepted_repair_lifecycle.has_value()
-            || *missing->second.accepted_repair_lifecycle
-                   != completion.packet.packet_id
-            || metadata.data.transmission_attempt
-                   != missing->second.last_repair_attempt_dispatched) {
-            throw std::logic_error(
-                "rnic-cn repaired DATA completed outside its gap state");
+        if (!missing->second.accepted_repair_lifecycle.has_value() ||
+            *missing->second.accepted_repair_lifecycle != completion.packet.packet_id ||
+            metadata.data.transmission_attempt != missing->second.last_repair_attempt_dispatched) {
+            throw std::logic_error("rnic-cn repaired DATA completed outside its gap state");
         }
         flow.missing_packets.erase(missing);
     }
 
-    if (!flow.ready_packets.emplace(
-             metadata.data.packet_index,
-             ReadyPacket{completion.packet.packet_id,
-                         metadata.htsim_packet_id,
-                         metadata.data,
-                         completion.serializer_end_ps}).second) {
-        throw std::logic_error(
-            "rnic-cn RX ready ledger duplicates a logical packet");
+    if (!flow.ready_packets
+             .emplace(metadata.data.packet_index,
+                      ReadyPacket{completion.packet.packet_id, metadata.htsim_packet_id,
+                                  metadata.data, completion.serializer_end_ps})
+             .second) {
+        throw std::logic_error("rnic-cn RX ready ledger duplicates a logical packet");
     }
     drainReadyPackets(flow, completions);
 }
 
-void RnicCollectiveNetworkRuntime::Impl::drainReadyPackets(
-        FlowState& flow,
-        std::vector<AtlahsFlowId>& completions) {
+void RnicCollectiveNetworkRuntime::Impl::drainReadyPackets(FlowState& flow,
+                                                           std::vector<AtlahsFlowId>& completions) {
     while (true) {
         auto ready = flow.ready_packets.find(flow.delivered_data_packets);
         if (ready == flow.ready_packets.end()) {
             return;
         }
         const ReadyPacket packet = ready->second;
-        if (packet.data.payload_byte_offset
-                != flow.delivered_payload_bytes
-            || !ledgersEqual(
-                packet.data.final_ledger, flow.final_ledger)) {
-            throw std::logic_error(
-                "rnic-cn ready DATA conflicts with the exact RX ledger");
+        if (packet.data.payload_byte_offset != flow.delivered_payload_bytes ||
+            !ledgersEqual(packet.data.final_ledger, flow.final_ledger)) {
+            throw std::logic_error("rnic-cn ready DATA conflicts with the exact RX ledger");
         }
 
-        const std::uint64_t next_payload = checkedAdd(
-            flow.delivered_payload_bytes,
-            packet.data.extent.payloadBytes(),
-            "rnic-cn delivered payload ledger overflow");
-        const std::uint64_t next_wire = checkedAdd(
-            flow.delivered_wire_bytes,
-            packet.data.extent.wireBytes(),
-            "rnic-cn delivered wire ledger overflow");
-        const std::uint64_t next_packets = checkedAdd(
-            flow.delivered_data_packets,
-            1,
-            "rnic-cn delivered packet ledger overflow");
-        if (next_payload > flow.final_ledger.total_payload_bytes
-            || next_wire > flow.final_ledger.total_wire_bytes
-            || next_packets > flow.final_ledger.total_data_packets) {
-            throw std::logic_error(
-                "rnic-cn RX completion exceeded its final ledger");
+        const std::uint64_t next_payload =
+            checkedAdd(flow.delivered_payload_bytes, packet.data.extent.payloadBytes(),
+                       "rnic-cn delivered payload ledger overflow");
+        const std::uint64_t next_wire =
+            checkedAdd(flow.delivered_wire_bytes, packet.data.extent.wireBytes(),
+                       "rnic-cn delivered wire ledger overflow");
+        const std::uint64_t next_packets =
+            checkedAdd(flow.delivered_data_packets, 1, "rnic-cn delivered packet ledger overflow");
+        if (next_payload > flow.final_ledger.total_payload_bytes ||
+            next_wire > flow.final_ledger.total_wire_bytes ||
+            next_packets > flow.final_ledger.total_data_packets) {
+            throw std::logic_error("rnic-cn RX completion exceeded its final ledger");
         }
 
         flow.ready_packets.erase(ready);
@@ -1998,50 +1642,41 @@ void RnicCollectiveNetworkRuntime::Impl::drainReadyPackets(
         if (next_packets != flow.final_ledger.total_data_packets) {
             continue;
         }
-        if (next_payload != flow.final_ledger.total_payload_bytes
-            || next_wire != flow.final_ledger.total_wire_bytes
-            || flow.delivery_completion_time_ps.has_value()
-            || !flow.missing_packets.empty()
-            || !flow.ready_packets.empty()) {
-            throw std::logic_error(
-                "rnic-cn final RX ledger retains a gap or duplicate");
+        if (next_payload != flow.final_ledger.total_payload_bytes ||
+            next_wire != flow.final_ledger.total_wire_bytes ||
+            flow.delivery_completion_time_ps.has_value() || !flow.missing_packets.empty() ||
+            !flow.ready_packets.empty()) {
+            throw std::logic_error("rnic-cn final RX ledger retains a gap or duplicate");
         }
-        flow.delivery_completion_time_ps = std::max(
-            packet.serializer_end_ps,
-            static_cast<TimePs>(EventList::now()));
+        flow.delivery_completion_time_ps =
+            std::max(packet.serializer_end_ps, static_cast<TimePs>(EventList::now()));
         completions.push_back(flow.request.flow_id);
         maybeQueueRetirement(flow, *flow.delivery_completion_time_ps);
         return;
     }
 }
 
-void RnicCollectiveNetworkRuntime::Impl::maybeQueueRetirement(
-        FlowState& flow, TimePs now_ps) {
+void RnicCollectiveNetworkRuntime::Impl::maybeQueueRetirement(FlowState& flow, TimePs now_ps) {
     if (!flow.retire_received || flow.retirement_queued) {
         return;
     }
-    if (flow.delivered_payload_bytes
-            != flow.final_ledger.total_payload_bytes
-        || flow.delivered_wire_bytes
-               != flow.final_ledger.total_wire_bytes
-        || flow.delivered_data_packets
-               != flow.final_ledger.total_data_packets) {
+    if (flow.delivered_payload_bytes != flow.final_ledger.total_payload_bytes ||
+        flow.delivered_wire_bytes != flow.final_ledger.total_wire_bytes ||
+        flow.delivered_data_packets != flow.final_ledger.total_data_packets) {
         return;
     }
-    if (!flow.missing_packets.empty() || !flow.ready_packets.empty()
-        || !flow.repair_queue.empty()) {
+    if (!flow.missing_packets.empty() || !flow.ready_packets.empty() ||
+        !flow.repair_queue.empty()) {
         return;
     }
     if (!flow.declaration_observed) {
-        throw std::logic_error(
-            "rnic-cn RETIRE became ready before DECLARE observation");
+        throw std::logic_error("rnic-cn RETIRE became ready before DECLARE observation");
     }
 
     NodeState& receiver = requireNode(flow.request.destination);
     MembershipBatch& batch = receiver.membership_batches[now_ps];
     if (!batch.retired_flow_ids.insert(flow.request.flow_id).second) {
-        throw std::logic_error(
-            "rnic-cn membership batch duplicates RETIRE");
+        throw std::logic_error("rnic-cn membership batch duplicates RETIRE");
     }
     flow.retirement_queued = true;
 }
@@ -2057,8 +1692,7 @@ void RnicCollectiveNetworkRuntime::Impl::activateGrantWaves(TimePs now_ps) {
             continue;
         }
         if (outstanding.wave.effective_time_ps < now_ps) {
-            throw std::logic_error(
-                "rnic-cn grant wave missed its activation boundary");
+            throw std::logic_error("rnic-cn grant wave missed its activation boundary");
         }
 
         std::vector<RnicSenderGrantGate*> gates;
@@ -2066,32 +1700,27 @@ void RnicCollectiveNetworkRuntime::Impl::activateGrantWaves(TimePs now_ps) {
         for (const RnicCollectiveGrant& grant : outstanding.wave.grants) {
             gates.push_back(&requireFlow(grant.flow_id).sender_gate);
         }
-        RnicCollectiveGrantWaveBarrier::activate(
-            outstanding.wave, gates, receiver.controller, now_ps);
+        RnicCollectiveGrantWaveBarrier::activate(outstanding.wave, gates, receiver.controller,
+                                                 now_ps);
 
         for (const RnicCollectiveGrant& grant : outstanding.wave.grants) {
             FlowState& flow = requireFlow(grant.flow_id);
-            RnicTxPort& tx =
-                requireNode(flow.request.source).node.txPort();
+            RnicTxPort& tx = requireNode(flow.request.source).node.txPort();
             tx.setWireRateGrant(grant.flow_id, grant.wire_rate_bps);
             tx.setDataEligible(grant.flow_id, true);
             traceFlow(flow, "grant-rate-change");
-            if (flow.final_ledger.total_data_packets == 0
-                && !flow.retire_control_queued) {
+            if (flow.final_ledger.total_data_packets == 0 && !flow.retire_control_queued) {
                 queueRetireControl(flow, now_ps, false);
             }
         }
 
-        for (const AtlahsFlowId flow_id :
-             outstanding.delta.retired_flow_ids) {
+        for (const AtlahsFlowId flow_id : outstanding.delta.retired_flow_ids) {
             FlowState& flow = requireFlow(flow_id);
             if (flow.receiver_retired) {
-                throw std::logic_error(
-                    "rnic-cn receiver committed retirement twice");
+                throw std::logic_error("rnic-cn receiver committed retirement twice");
             }
             flow.sender_gate.receiverRetirementCommitted();
-            RnicTxPort& tx =
-                requireNode(flow.request.source).node.txPort();
+            RnicTxPort& tx = requireNode(flow.request.source).node.txPort();
             tx.setDataEligible(flow_id, false);
             tx.setWireRateGrant(flow_id, 0);
             tx.removeRetiredFlow(flow_id);
@@ -2103,12 +1732,10 @@ void RnicCollectiveNetworkRuntime::Impl::activateGrantWaves(TimePs now_ps) {
     }
 }
 
-void RnicCollectiveNetworkRuntime::Impl::beginMembershipWaves(
-        TimePs now_ps) {
+void RnicCollectiveNetworkRuntime::Impl::beginMembershipWaves(TimePs now_ps) {
     for (const auto& node_state : nodes) {
         NodeState& receiver = *node_state;
-        if (receiver.controller.waveOutstanding()
-            || receiver.outstanding_wave.has_value()) {
+        if (receiver.controller.waveOutstanding() || receiver.outstanding_wave.has_value()) {
             continue;
         }
 
@@ -2119,8 +1746,7 @@ void RnicCollectiveNetworkRuntime::Impl::beginMembershipWaves(
             }
             MembershipBatch batch = std::move(first->second);
             receiver.membership_batches.erase(first);
-            beginMembershipWave(
-                receiver, now_ps, std::move(batch));
+            beginMembershipWave(receiver, now_ps, std::move(batch));
             if (receiver.outstanding_wave.has_value()) {
                 break;
             }
@@ -2128,68 +1754,56 @@ void RnicCollectiveNetworkRuntime::Impl::beginMembershipWaves(
     }
 }
 
-void RnicCollectiveNetworkRuntime::Impl::beginMembershipWave(
-        NodeState& receiver,
-        TimePs observation_time_ps,
-        MembershipBatch batch) {
+void RnicCollectiveNetworkRuntime::Impl::beginMembershipWave(NodeState& receiver,
+                                                             TimePs observation_time_ps,
+                                                             MembershipBatch batch) {
     RnicCollectiveMembershipDelta delta;
     delta.declarations.reserve(batch.declared_nflow_by_flow.size());
     for (const auto& declaration : batch.declared_nflow_by_flow) {
-        delta.declarations.push_back(
-            {declaration.first, declaration.second});
+        delta.declarations.push_back({declaration.first, declaration.second});
     }
-    delta.retired_flow_ids.assign(
-        batch.retired_flow_ids.begin(), batch.retired_flow_ids.end());
-    if (delta.declarations.empty()
-        && delta.retired_flow_ids.empty()) {
+    delta.retired_flow_ids.assign(batch.retired_flow_ids.begin(), batch.retired_flow_ids.end());
+    if (delta.declarations.empty() && delta.retired_flow_ids.empty()) {
         throw std::logic_error("rnic-cn membership batch is empty");
     }
-    for (const RnicCollectiveMembershipDeclaration& declaration :
-         delta.declarations) {
+    for (const RnicCollectiveMembershipDeclaration& declaration : delta.declarations) {
         const AtlahsFlowId flow_id = declaration.flow_id;
         const FlowState& flow = requireFlow(flow_id);
-        if (&requireNode(flow.request.destination) != &receiver
-            || receiver.controller.contains(flow_id)) {
-            throw std::logic_error(
-                "rnic-cn DECLARE batch targets invalid receiver state");
+        if (&requireNode(flow.request.destination) != &receiver ||
+            receiver.controller.contains(flow_id)) {
+            throw std::logic_error("rnic-cn DECLARE batch targets invalid receiver state");
         }
         traceFlow(flow, "membership-join-wave");
     }
     for (const AtlahsFlowId flow_id : delta.retired_flow_ids) {
         const FlowState& flow = requireFlow(flow_id);
-        if (&requireNode(flow.request.destination) != &receiver
-            || !receiver.controller.contains(flow_id)) {
-            throw std::logic_error(
-                "rnic-cn RETIRE batch targets invalid receiver state");
+        if (&requireNode(flow.request.destination) != &receiver ||
+            !receiver.controller.contains(flow_id)) {
+            throw std::logic_error("rnic-cn RETIRE batch targets invalid receiver state");
         }
         traceFlow(flow, "membership-exit-wave");
     }
 
     const std::optional<RnicCollectiveGrantWave> wave =
-        receiver.controller.beginMembershipWave(
-            delta, observation_time_ps);
+        receiver.controller.beginMembershipWave(delta, observation_time_ps);
     if (!wave.has_value()) {
-        throw std::logic_error(
-            "rnic-cn physical membership event caused no transition");
+        throw std::logic_error("rnic-cn physical membership event caused no transition");
     }
     receiver.outstanding_wave = OutstandingWave{*wave, delta};
     const std::uint32_t receiver_node =
         delta.declarations.empty()
             ? requireFlow(delta.retired_flow_ids.front()).request.destination
-            : requireFlow(delta.declarations.front().flow_id)
-                  .request.destination;
+            : requireFlow(delta.declarations.front().flow_id).request.destination;
     queueGrantFrames(*wave, receiver_node);
 }
 
-void RnicCollectiveNetworkRuntime::Impl::queueGrantFrames(
-        const RnicCollectiveGrantWave& wave,
-        std::uint32_t receiver_node) {
+void RnicCollectiveNetworkRuntime::Impl::queueGrantFrames(const RnicCollectiveGrantWave& wave,
+                                                          std::uint32_t receiver_node) {
     NodeState& source = requireNode(receiver_node);
     for (const RnicCollectiveGrant& grant : wave.grants) {
         const FlowState& flow = requireFlow(grant.flow_id);
         if (flow.request.destination != receiver_node) {
-            throw std::logic_error(
-                "rnic-cn grant wave spans multiple receivers");
+            throw std::logic_error("rnic-cn grant wave spans multiple receivers");
         }
         RnicCollectivePacketKind packet_kind;
         if (grant.kind == RnicCollectiveGrantKind::Accept) {
@@ -2197,43 +1811,31 @@ void RnicCollectiveNetworkRuntime::Impl::queueGrantFrames(
         } else if (grant.kind == RnicCollectiveGrantKind::Update) {
             packet_kind = RnicCollectivePacketKind::GRANT_UPDATE;
         } else {
-            throw std::logic_error(
-                "rnic-cn grant wave contains an invalid packet kind");
+            throw std::logic_error("rnic-cn grant wave contains an invalid packet kind");
         }
-        enqueueControl(
-            source,
-            {packet_kind,
-             grant.flow_id,
-             receiver_node,
-             flow.request.source,
-             config.control_wire_bytes,
-             std::nullopt,
-             grant,
-             std::nullopt,
-             EventList::now(),
-             false,
-             false});
+        enqueueControl(source, {packet_kind, grant.flow_id, receiver_node, flow.request.source,
+                                config.control_wire_bytes, std::nullopt, grant, std::nullopt,
+                                EventList::now(), false, false});
     }
 }
 
 std::exception_ptr RnicCollectiveNetworkRuntime::Impl::notifyCompletions(
-        const std::vector<AtlahsFlowId>& completions) {
+    const std::vector<AtlahsFlowId>& completions) {
     std::exception_ptr first_error;
     std::set<AtlahsFlowId> unique;
     for (const AtlahsFlowId flow_id : completions) {
         if (!unique.insert(flow_id).second) {
             if (!first_error) {
-                first_error = std::make_exception_ptr(std::logic_error(
-                    "rnic-cn completion batch duplicates a flow"));
+                first_error = std::make_exception_ptr(
+                    std::logic_error("rnic-cn completion batch duplicates a flow"));
             }
             continue;
         }
         FlowState& flow = requireFlow(flow_id);
-        if (!flow.delivery_completion_time_ps.has_value()
-            || flow.completion_notified) {
+        if (!flow.delivery_completion_time_ps.has_value() || flow.completion_notified) {
             if (!first_error) {
-                first_error = std::make_exception_ptr(std::logic_error(
-                    "rnic-cn flow completion state is inconsistent"));
+                first_error = std::make_exception_ptr(
+                    std::logic_error("rnic-cn flow completion state is inconsistent"));
             }
             continue;
         }
@@ -2264,36 +1866,24 @@ bool RnicCollectiveNetworkRuntime::Impl::dispatchControls(TimePs now_ps) {
 
         const ControlFrame frame = source.control_queue.front();
         if (frame.eligible_time_ps > now_ps) {
-            throw std::logic_error(
-                "rnic-cn control became dispatchable before eligibility");
+            throw std::logic_error("rnic-cn control became dispatchable before eligibility");
         }
-        if (frame.begins_control_busy_period
-            && !frame.inherits_exact_serializer_boundary
-            && frame.eligible_time_ps == now_ps) {
+        if (frame.begins_control_busy_period && !frame.inherits_exact_serializer_boundary &&
+            frame.eligible_time_ps == now_ps) {
             // Equality with availablePs() may hide a fractional boundary
             // before now. A control that first became eligible at this
             // published timestamp cannot serialize retroactively. Controls
             // already queued behind it keep the cumulative rational clock.
             tx.rebasePhysicalIdle(now_ps);
         }
-        const RnicWireSerializationInterval interval =
-            tx.dispatchControl(now_ps, frame.wire_bytes);
+        const RnicWireSerializationInterval interval = tx.dispatchControl(now_ps, frame.wire_bytes);
         pending_launches.emplace(
             interval.end_ps,
-            SerializedFrame{frame.kind,
-                            frame.flow_id,
-                            frame.source,
-                            frame.destination,
-                            frame.wire_bytes,
-                            std::nullopt,
-                            frame.declaration,
-                            frame.grant,
-                            frame.final_ledger,
-                            frame.gap_nack,
-                            false});
+            SerializedFrame{frame.kind, frame.flow_id, frame.source, frame.destination,
+                            frame.wire_bytes, std::nullopt, frame.declaration, frame.grant,
+                            frame.final_ledger, frame.gap_nack, false});
         source.control_queue.pop_front();
-        same_time_completion =
-            same_time_completion || interval.end_ps == now_ps;
+        same_time_completion = same_time_completion || interval.end_ps == now_ps;
     }
     return same_time_completion;
 }
@@ -2311,23 +1901,17 @@ bool RnicCollectiveNetworkRuntime::Impl::dispatchData(TimePs now_ps) {
         repair_heads.reserve(source.repair_flow_ids.size());
         for (const AtlahsFlowId repair_flow_id : source.repair_flow_ids) {
             const FlowState& candidate_flow = requireFlow(repair_flow_id);
-            if (candidate_flow.request.source != source.node.nodeId()
-                || candidate_flow.repair_queue.empty()
-                || !tx.hasSelectiveRepairPending(repair_flow_id)) {
-                throw std::logic_error(
-                    "rnic-cn node-local repair index is inconsistent");
+            if (candidate_flow.request.source != source.node.nodeId() ||
+                candidate_flow.repair_queue.empty() ||
+                !tx.hasSelectiveRepairPending(repair_flow_id)) {
+                throw std::logic_error("rnic-cn node-local repair index is inconsistent");
             }
-            const RnicCollectiveDataMetadata& repair =
-                candidate_flow.repair_queue.front();
+            const RnicCollectiveDataMetadata& repair = candidate_flow.repair_queue.front();
             if (!queuedRepairIsCurrent(candidate_flow, repair)) {
-                throw std::logic_error(
-                    "rnic-cn selective repair queue lost its gap state");
+                throw std::logic_error("rnic-cn selective repair queue lost its gap state");
             }
-            repair_heads.push_back(
-                {candidate_flow.request.flow_id,
-                 repair.packet_index,
-                 repair.payload_byte_offset,
-                 repair.extent});
+            repair_heads.push_back({candidate_flow.request.flow_id, repair.packet_index,
+                                    repair.payload_byte_offset, repair.extent});
         }
         if (!tx.hasDispatchableData()) {
             if (tx.physicalSerializerAvailablePs() <= now_ps) {
@@ -2339,46 +1923,37 @@ bool RnicCollectiveNetworkRuntime::Impl::dispatchData(TimePs now_ps) {
             continue;
         }
 
-        const RnicTxOpportunity opportunity =
-            tx.dispatchOpportunity(now_ps, repair_heads);
-        same_time_completion =
-            same_time_completion || opportunity.end_ps == now_ps;
+        const RnicTxOpportunity opportunity = tx.dispatchOpportunity(now_ps, repair_heads);
+        same_time_completion = same_time_completion || opportunity.end_ps == now_ps;
         if (!opportunity.packet.has_value()) {
             continue;
         }
         const RnicTxPacket& transmitted = *opportunity.packet;
         FlowState& flow = requireFlow(transmitted.flow_id);
         if (flow.request.source != source.node.nodeId()) {
-            throw std::logic_error(
-                "rnic-cn TX port returned inconsistent DATA ownership");
+            throw std::logic_error("rnic-cn TX port returned inconsistent DATA ownership");
         }
 
         if (transmitted.kind == RnicTxPacketKind::SelectiveRepair) {
             if (flow.repair_queue.empty()) {
-                throw std::logic_error(
-                    "rnic-cn TX selected an absent repair head");
+                throw std::logic_error("rnic-cn TX selected an absent repair head");
             }
             RnicCollectiveDataMetadata data = flow.repair_queue.front();
-            if (!queuedRepairIsCurrent(flow, data)
-                || transmitted.packet_index != data.packet_index
-                || transmitted.payload_byte_offset
-                       != data.payload_byte_offset
-                || !extentsEqual(transmitted.extent, data.extent)) {
-                throw std::logic_error(
-                    "rnic-cn TX selected a conflicting repair head");
+            if (!queuedRepairIsCurrent(flow, data) ||
+                transmitted.packet_index != data.packet_index ||
+                transmitted.payload_byte_offset != data.payload_byte_offset ||
+                !extentsEqual(transmitted.extent, data.extent)) {
+                throw std::logic_error("rnic-cn TX selected a conflicting repair head");
             }
             flow.repair_queue.pop_front();
             if (flow.repair_queue.empty()) {
                 if (source.repair_flow_ids.erase(flow.request.flow_id) != 1) {
-                    throw std::logic_error(
-                        "rnic-cn repair head is absent from its node index");
+                    throw std::logic_error("rnic-cn repair head is absent from its node index");
                 }
                 tx.setSelectiveRepairPending(flow.request.flow_id, false);
-            } else if (source.repair_flow_ids.count(flow.request.flow_id) != 1
-                       || !tx.hasSelectiveRepairPending(
-                              flow.request.flow_id)) {
-                throw std::logic_error(
-                    "rnic-cn remaining repair queue lost its node index");
+            } else if (source.repair_flow_ids.count(flow.request.flow_id) != 1 ||
+                       !tx.hasSelectiveRepairPending(flow.request.flow_id)) {
+                throw std::logic_error("rnic-cn remaining repair queue lost its node index");
             }
             data.eta_ps = transmitted.eta_ps;
             if (!first_repair_dispatch_ps.has_value()) {
@@ -2386,82 +1961,55 @@ bool RnicCollectiveNetworkRuntime::Impl::dispatchData(TimePs now_ps) {
             }
             pending_launches.emplace(
                 opportunity.end_ps,
-                SerializedFrame{RnicCollectivePacketKind::DATA,
-                                flow.request.flow_id,
-                                flow.request.source,
-                                flow.request.destination,
-                                data.extent.wireBytes(),
-                                data,
-                                std::nullopt,
-                                std::nullopt,
-                                flow.final_ledger,
-                                std::nullopt,
-                                true});
+                SerializedFrame{RnicCollectivePacketKind::DATA, flow.request.flow_id,
+                                flow.request.source, flow.request.destination,
+                                data.extent.wireBytes(), data, std::nullopt, std::nullopt,
+                                flow.final_ledger, std::nullopt, true});
             ++flow.recovery.selective_retransmissions;
             ++recovery_statistics.selective_retransmissions;
             ++repairs_by_attempt[data.transmission_attempt];
             flow.recovery.selective_retransmission_wire_bytes = checkedAdd(
-                flow.recovery.selective_retransmission_wire_bytes,
-                data.extent.wireBytes(),
+                flow.recovery.selective_retransmission_wire_bytes, data.extent.wireBytes(),
                 "rnic-cn per-flow selective repair wire counter overflow");
-            recovery_statistics.selective_retransmission_wire_bytes =
-                checkedAdd(
-                    recovery_statistics.selective_retransmission_wire_bytes,
-                    data.extent.wireBytes(),
-                    "rnic-cn selective repair wire counter overflow");
-            flow.recovery.maximum_retry_attempt_observed = std::max(
-                flow.recovery.maximum_retry_attempt_observed,
-                data.transmission_attempt);
+            recovery_statistics.selective_retransmission_wire_bytes = checkedAdd(
+                recovery_statistics.selective_retransmission_wire_bytes, data.extent.wireBytes(),
+                "rnic-cn selective repair wire counter overflow");
+            flow.recovery.maximum_retry_attempt_observed =
+                std::max(flow.recovery.maximum_retry_attempt_observed, data.transmission_attempt);
             recovery_statistics.maximum_retry_attempt_observed = std::max(
-                recovery_statistics.maximum_retry_attempt_observed,
-                data.transmission_attempt);
+                recovery_statistics.maximum_retry_attempt_observed, data.transmission_attempt);
             traceFlow(flow, "repair-dispatch");
             continue;
         }
 
-        if (transmitted.kind != RnicTxPacketKind::FreshData
-            || transmitted.payload_byte_offset
-                   != flow.source_payload_bytes_dispatched
-            || transmitted.packet_index
-                   != flow.source_data_packets_dispatched) {
-            throw std::logic_error(
-                "rnic-cn TX port returned inconsistent fresh DATA");
+        if (transmitted.kind != RnicTxPacketKind::FreshData ||
+            transmitted.payload_byte_offset != flow.source_payload_bytes_dispatched ||
+            transmitted.packet_index != flow.source_data_packets_dispatched) {
+            throw std::logic_error("rnic-cn TX port returned inconsistent fresh DATA");
         }
-        const std::uint64_t next_payload = checkedAdd(
-            flow.source_payload_bytes_dispatched,
-            transmitted.extent.payloadBytes(),
-            "rnic-cn source payload ledger overflow");
-        const std::uint64_t next_wire = checkedAdd(
-            flow.source_wire_bytes_dispatched,
-            transmitted.extent.wireBytes(),
-            "rnic-cn source wire ledger overflow");
-        const std::uint64_t next_packets = checkedAdd(
-            flow.source_data_packets_dispatched,
-            1,
-            "rnic-cn source packet ledger overflow");
-        if (next_payload > flow.final_ledger.total_payload_bytes
-            || next_wire > flow.final_ledger.total_wire_bytes
-            || next_packets > flow.final_ledger.total_data_packets) {
-            throw std::logic_error(
-                "rnic-cn source DATA exceeded its final ledger");
+        const std::uint64_t next_payload =
+            checkedAdd(flow.source_payload_bytes_dispatched, transmitted.extent.payloadBytes(),
+                       "rnic-cn source payload ledger overflow");
+        const std::uint64_t next_wire =
+            checkedAdd(flow.source_wire_bytes_dispatched, transmitted.extent.wireBytes(),
+                       "rnic-cn source wire ledger overflow");
+        const std::uint64_t next_packets = checkedAdd(flow.source_data_packets_dispatched, 1,
+                                                      "rnic-cn source packet ledger overflow");
+        if (next_payload > flow.final_ledger.total_payload_bytes ||
+            next_wire > flow.final_ledger.total_wire_bytes ||
+            next_packets > flow.final_ledger.total_data_packets) {
+            throw std::logic_error("rnic-cn source DATA exceeded its final ledger");
         }
         const RnicCollectiveDataMetadata metadata{
-            transmitted.packet_index,
-            transmitted.payload_byte_offset,
-            transmitted.extent,
-            transmitted.eta_ps,
+            transmitted.packet_index, transmitted.payload_byte_offset,
+            transmitted.extent,       transmitted.eta_ps,
             flow.final_ledger,
         };
         pending_launches.emplace(
             opportunity.end_ps,
-            SerializedFrame{RnicCollectivePacketKind::DATA,
-                            flow.request.flow_id,
-                            flow.request.source,
-                            flow.request.destination,
-                            transmitted.extent.wireBytes(),
-                            metadata,
-                            std::nullopt,
-                            std::nullopt,
+            SerializedFrame{RnicCollectivePacketKind::DATA, flow.request.flow_id,
+                            flow.request.source, flow.request.destination,
+                            transmitted.extent.wireBytes(), metadata, std::nullopt, std::nullopt,
                             flow.final_ledger});
         flow.source_payload_bytes_dispatched = next_payload;
         flow.source_wire_bytes_dispatched = next_wire;
@@ -2478,8 +2026,7 @@ RnicCollectiveNetworkRuntime::Impl::nextEventTime(TimePs now_ps) const {
     std::optional<TimePs> next;
     const auto consider = [now_ps, &next](TimePs candidate) {
         if (candidate < now_ps) {
-            throw std::logic_error(
-                "rnic-cn next event calculation produced past work");
+            throw std::logic_error("rnic-cn next event calculation produced past work");
         }
         if (!next.has_value() || candidate < *next) {
             next = candidate;
@@ -2492,22 +2039,19 @@ RnicCollectiveNetworkRuntime::Impl::nextEventTime(TimePs now_ps) const {
     if (!pending_gap_decisions.empty()) {
         consider(pending_gap_decisions.begin()->first);
     }
-    if (!endpoint_arrivals.empty() || fatal_drop.has_value()
-        || deferred_failure) {
+    if (!endpoint_arrivals.empty() || fatal_drop.has_value() || deferred_failure) {
         consider(now_ps);
     }
     for (const auto& node_state : nodes) {
         const NodeState& state = *node_state;
-        const std::optional<TimePs> rx =
-            state.node.rxPort().nextEventTimePs();
+        const std::optional<TimePs> rx = state.node.rxPort().nextEventTimePs();
         if (rx.has_value()) {
             consider(*rx);
         }
         if (state.outstanding_wave.has_value()) {
             consider(state.outstanding_wave->wave.effective_time_ps);
         } else if (!state.membership_batches.empty()) {
-            consider(std::max(
-                now_ps, state.membership_batches.begin()->first));
+            consider(std::max(now_ps, state.membership_batches.begin()->first));
         }
 
         const RnicTxPort& tx = state.node.txPort();
@@ -2521,30 +2065,23 @@ RnicCollectiveNetworkRuntime::Impl::nextEventTime(TimePs now_ps) const {
 }
 
 bool RnicCollectiveNetworkRuntime::Impl::hasPendingWork() const noexcept {
-    if (!pending_launches.empty() || !pending_gap_decisions.empty()
-        || !destination_data.empty()
-        || !endpoint_arrivals.empty() || !live_packet_lifecycles.empty()
-        || fatal_drop.has_value() || deferred_failure
-        || event_handle.has_value()) {
+    if (!pending_launches.empty() || !pending_gap_decisions.empty() || !destination_data.empty() ||
+        !endpoint_arrivals.empty() || !live_packet_lifecycles.empty() || fatal_drop.has_value() ||
+        deferred_failure || event_handle.has_value()) {
         return true;
     }
     for (const auto& node_state : nodes) {
         const NodeState& state = *node_state;
-        if (!state.control_queue.empty()
-            || !state.repair_flow_ids.empty()
-            || !state.membership_batches.empty()
-            || state.outstanding_wave.has_value()
-            || state.controller.waveOutstanding()
-            || state.controller.activeFlowCount() != 0
-            || state.node.rxPort().nextEventTimePs().has_value()) {
+        if (!state.control_queue.empty() || !state.repair_flow_ids.empty() ||
+            !state.membership_batches.empty() || state.outstanding_wave.has_value() ||
+            state.controller.waveOutstanding() || state.controller.activeFlowCount() != 0 ||
+            state.node.rxPort().nextEventTimePs().has_value()) {
             return true;
         }
     }
     for (const auto& item : flows) {
-        if (!item.second->receiver_retired
-            || !item.second->missing_packets.empty()
-            || !item.second->ready_packets.empty()
-            || !item.second->repair_queue.empty()) {
+        if (!item.second->receiver_retired || !item.second->missing_packets.empty() ||
+            !item.second->ready_packets.empty() || !item.second->repair_queue.empty()) {
             return true;
         }
     }
@@ -2553,34 +2090,25 @@ bool RnicCollectiveNetworkRuntime::Impl::hasPendingWork() const noexcept {
 
 void RnicCollectiveNetworkRuntime::Impl::validateQuiescent() const {
     if (failed) {
-        throw std::logic_error(
-            "failed rnic-cn runtime cannot be declared quiescent");
+        throw std::logic_error("failed rnic-cn runtime cannot be declared quiescent");
     }
     if (hasPendingWork()) {
         throw std::logic_error("rnic-cn runtime still has physical work");
     }
     for (const auto& item : flows) {
         const FlowState& flow = *item.second;
-        if (!flow.completion_notified || !flow.receiver_retired
-            || !flow.missing_packets.empty()
-            || !flow.ready_packets.empty()
-            || !flow.repair_queue.empty()
-            || flow.sender_gate.phase()
-                   != RnicSenderGrantGate::Phase::Retired
-            || requireNode(flow.request.source)
-                   .node.txPort().contains(flow.request.flow_id)) {
-            throw std::logic_error(
-                "rnic-cn quiescent flow retains live endpoint state");
+        if (!flow.completion_notified || !flow.receiver_retired || !flow.missing_packets.empty() ||
+            !flow.ready_packets.empty() || !flow.repair_queue.empty() ||
+            flow.sender_gate.phase() != RnicSenderGrantGate::Phase::Retired ||
+            requireNode(flow.request.source).node.txPort().contains(flow.request.flow_id)) {
+            throw std::logic_error("rnic-cn quiescent flow retains live endpoint state");
         }
     }
-    if (recovery_statistics.gap_nacks_dispatched
-        != recovery_statistics.gap_nacks_received) {
-        throw std::logic_error(
-            "rnic-cn quiescent recovery retains a physical GAP_NACK");
+    if (recovery_statistics.gap_nacks_dispatched != recovery_statistics.gap_nacks_received) {
+        throw std::logic_error("rnic-cn quiescent recovery retains a physical GAP_NACK");
     }
     if (queue_trace_observer && !queue_trace_observer->good()) {
-        throw std::runtime_error(
-            "rnic-cn queue trace CSV encountered a write failure");
+        throw std::runtime_error("rnic-cn queue trace CSV encountered a write failure");
     }
 }
 
@@ -2589,8 +2117,7 @@ void RnicCollectiveNetworkRuntime::Impl::doNextEvent() {
     const TimePs now_ps = EventList::now();
     try {
         if (failed) {
-            throw std::logic_error(
-                "failed rnic-cn runtime received another event");
+            throw std::logic_error("failed rnic-cn runtime received another event");
         }
 
         // The executing source is already absent from EventList. Yielding here
@@ -2617,8 +2144,7 @@ void RnicCollectiveNetworkRuntime::Impl::doNextEvent() {
         queueDueGapNacks(now_ps);
         activateGrantWaves(now_ps);
         beginMembershipWaves(now_ps);
-        const std::exception_ptr completion_error =
-            notifyCompletions(completions);
+        const std::exception_ptr completion_error = notifyCompletions(completions);
 
         const bool control_at_same_time = dispatchControls(now_ps);
         bool data_at_same_time = false;
@@ -2632,10 +2158,8 @@ void RnicCollectiveNetworkRuntime::Impl::doNextEvent() {
         const std::optional<TimePs> next = nextEventTime(now_ps);
         if (next.has_value()) {
             wakeAt(*next);
-        } else if (hasPendingWork()
-                   && live_packet_lifecycles.empty()) {
-            throw std::logic_error(
-                "rnic-cn physical work has no future event");
+        } else if (hasPendingWork() && live_packet_lifecycles.empty()) {
+            throw std::logic_error("rnic-cn physical work has no future event");
         }
         if (completion_error) {
             std::rethrow_exception(completion_error);
@@ -2650,13 +2174,11 @@ void RnicCollectiveNetworkRuntime::Impl::doNextEvent() {
     }
 }
 
-RnicCollectiveNetworkRuntime::RnicCollectiveNetworkRuntime(
-        EventList& event_list,
-        FatTreeTopology& topology,
-        RnicCollectiveNetworkConfig config)
+RnicCollectiveNetworkRuntime::RnicCollectiveNetworkRuntime(EventList& event_list,
+                                                           FatTreeTopology& topology,
+                                                           RnicCollectiveNetworkConfig config)
     : EventSource(event_list, "rnic-collective-network-runtime"),
-      _impl(std::make_unique<Impl>(
-          *this, event_list, topology, std::move(config))) {}
+      _impl(std::make_unique<Impl>(*this, event_list, topology, std::move(config))) {}
 
 RnicCollectiveNetworkRuntime::~RnicCollectiveNetworkRuntime() {
     if (_impl) {
@@ -2664,14 +2186,12 @@ RnicCollectiveNetworkRuntime::~RnicCollectiveNetworkRuntime() {
     }
 }
 
-void RnicCollectiveNetworkRuntime::setup(
-        std::uint32_t node_count,
-        CompletionHandler complete_flow) {
+void RnicCollectiveNetworkRuntime::setup(std::uint32_t node_count,
+                                         CompletionHandler complete_flow) {
     _impl->setup(node_count, std::move(complete_flow));
 }
 
-void RnicCollectiveNetworkRuntime::send(
-        const AtlahsFlowRequest& request) {
+void RnicCollectiveNetworkRuntime::send(const AtlahsFlowRequest& request) {
     _impl->send(request);
 }
 
@@ -2687,13 +2207,11 @@ std::size_t RnicCollectiveNetworkRuntime::flowCount() const noexcept {
     return _impl->flows.size();
 }
 
-bool RnicCollectiveNetworkRuntime::contains(
-        AtlahsFlowId flow_id) const noexcept {
+bool RnicCollectiveNetworkRuntime::contains(AtlahsFlowId flow_id) const noexcept {
     return _impl->flows.count(flow_id) != 0;
 }
 
-RnicCollectiveFlowSnapshot RnicCollectiveNetworkRuntime::flow(
-        AtlahsFlowId flow_id) const {
+RnicCollectiveFlowSnapshot RnicCollectiveNetworkRuntime::flow(AtlahsFlowId flow_id) const {
     const Impl::FlowState& state = _impl->requireFlow(flow_id);
     return {state.request,
             state.final_ledger,
@@ -2725,23 +2243,20 @@ RnicCollectiveFlowSnapshot RnicCollectiveNetworkRuntime::flow(
             state.retirement_completion_time_ps};
 }
 
-std::size_t RnicCollectiveNetworkRuntime::receiverActiveFlowCount(
-        std::uint32_t node_id) const {
+std::size_t RnicCollectiveNetworkRuntime::receiverActiveFlowCount(std::uint32_t node_id) const {
     return _impl->requireNode(node_id).controller.activeFlowCount();
 }
 
-std::size_t
-RnicCollectiveNetworkRuntime::pendingFabricPacketCount() const noexcept {
+std::size_t RnicCollectiveNetworkRuntime::pendingFabricPacketCount() const noexcept {
     return _impl->live_packet_lifecycles.size();
 }
 
-std::size_t
-RnicCollectiveNetworkRuntime::pendingDestinationDataCount() const noexcept {
+std::size_t RnicCollectiveNetworkRuntime::pendingDestinationDataCount() const noexcept {
     return _impl->destination_data.size();
 }
 
-const RnicCollectiveRecoveryStatistics&
-RnicCollectiveNetworkRuntime::recoveryStatistics() const noexcept {
+const RnicCollectiveRecoveryStatistics& RnicCollectiveNetworkRuntime::recoveryStatistics()
+    const noexcept {
     return _impl->recovery_statistics;
 }
 
@@ -2749,8 +2264,7 @@ bool RnicCollectiveNetworkRuntime::hasPendingPhysicalWork() const noexcept {
     return _impl->hasPendingWork();
 }
 
-const RnicNode& RnicCollectiveNetworkRuntime::node(
-        std::uint32_t node_id) const {
+const RnicNode& RnicCollectiveNetworkRuntime::node(std::uint32_t node_id) const {
     return _impl->requireNode(node_id).node;
 }
 
@@ -2767,20 +2281,17 @@ void RnicCollectiveNetworkRuntime::writeStateTraceCsv() const {
         throw std::logic_error("rnic-cn state trace was not requested");
     }
     _impl->validateQuiescent();
-    _impl->state_trace.writeCsvAtomically(
-        *_impl->config.state_trace_csv);
+    _impl->state_trace.writeCsvAtomically(*_impl->config.state_trace_csv);
 }
 
 void RnicCollectiveNetworkRuntime::doNextEvent() {
     _impl->doNextEvent();
 }
 
-void RnicCollectiveNetworkRuntime::duplicateCurrentGapNackForTesting(
-        AtlahsFlowId flow_id) {
+void RnicCollectiveNetworkRuntime::duplicateCurrentGapNackForTesting(AtlahsFlowId flow_id) {
     _impl->duplicateCurrentGapNackForTesting(flow_id);
 }
 
-void RnicCollectiveNetworkRuntime::duplicateCurrentRepairForTesting(
-        AtlahsFlowId flow_id) {
+void RnicCollectiveNetworkRuntime::duplicateCurrentRepairForTesting(AtlahsFlowId flow_id) {
     _impl->duplicateCurrentRepairForTesting(flow_id);
 }

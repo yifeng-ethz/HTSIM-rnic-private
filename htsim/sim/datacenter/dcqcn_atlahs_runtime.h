@@ -43,8 +43,7 @@ public:
     DcqcnAtlahsRuntime(const DcqcnAtlahsRuntime&) = delete;
     DcqcnAtlahsRuntime& operator=(const DcqcnAtlahsRuntime&) = delete;
 
-    void setup(std::uint32_t node_count,
-               CompletionHandler complete_flow) override;
+    void setup(std::uint32_t node_count, CompletionHandler complete_flow) override;
     void send(const AtlahsFlowRequest& request) override;
     bool hasPendingPhysicalWork() const noexcept override;
 
@@ -68,12 +67,11 @@ private:
     std::unique_ptr<Impl> _impl;
 };
 
-std::string renderDcqcnAtlahsManifest(
-    const DcqcnAtlahsRuntimeConfig& config,
-    std::uint32_t physical_node_count,
-    const std::string& goal_file,
-    const std::string& completion_csv,
-    const std::string& state_trace_csv,
-    const char* resolved_rank_mapping);
+std::string renderDcqcnAtlahsManifest(const DcqcnAtlahsRuntimeConfig& config,
+                                      std::uint32_t physical_node_count,
+                                      const std::string& goal_file,
+                                      const std::string& completion_csv,
+                                      const std::string& state_trace_csv,
+                                      const char* resolved_rank_mapping);
 
 #endif  // DCQCN_ATLAHS_RUNTIME_H

@@ -8,8 +8,8 @@
 #include <optional>
 #include <string>
 
-#include "atlahs_state_trace.h"
 #include "atlahs_flow_runtime.h"
+#include "atlahs_state_trace.h"
 #include "eventlist.h"
 #include "rnic_packet_extent.h"
 #include "rnic_ss_core.h"
@@ -21,8 +21,7 @@ struct RnicSsRuntimeConfig {
     RnicDataPacketizationConfig packetization;
     std::uint64_t control_wire_bytes{64};
     RnicSsSelectiveRepeatConfig selective_repeat{};
-    RnicSsPathSelectionConfig path_selection{
-        8, 4, 0, 10'000'000ULL, 0};
+    RnicSsPathSelectionConfig path_selection{8, 4, 0, 10'000'000ULL, 0};
     RnicSsCreditConfig credit{};
     std::uint64_t q_hi_bytes{4ULL << 20};
     std::uint64_t q_lo_bytes{2ULL << 20};
@@ -101,19 +100,15 @@ struct RnicSsFlowSnapshot {
 // Physical ATLAHS runtime for the open rnic-ss comparator.  It is limited to
 // the controlled two-tier ns-rosetta Clos.  Every sender decision uses its
 // local request depth plus telemetry returned in a physical ACK/SACK.
-class RnicSsRuntime final : public AtlahsFlowRuntime,
-                            private EventSource {
+class RnicSsRuntime final : public AtlahsFlowRuntime, private EventSource {
 public:
-    RnicSsRuntime(EventList& event_list,
-                  FatTreeTopology& topology,
-                  RnicSsRuntimeConfig config);
+    RnicSsRuntime(EventList& event_list, FatTreeTopology& topology, RnicSsRuntimeConfig config);
     ~RnicSsRuntime() override;
 
     RnicSsRuntime(const RnicSsRuntime&) = delete;
     RnicSsRuntime& operator=(const RnicSsRuntime&) = delete;
 
-    void setup(std::uint32_t node_count,
-               CompletionHandler complete_flow) override;
+    void setup(std::uint32_t node_count, CompletionHandler complete_flow) override;
     void send(const AtlahsFlowRequest& request) override;
     bool hasPendingPhysicalWork() const noexcept override;
 

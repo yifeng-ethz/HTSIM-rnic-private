@@ -38,40 +38,27 @@ RnicAtlahsCliOptions optionsFor(RnicProfile profile) {
 }
 
 AtlahsHtsimApi::GoalLayout goalLayout() {
-    return {32,
-            1,
-            1,
-            AtlahsHtsimApi::GoalRankMapping::GpuRank,
-            32};
+    return {32, 1, 1, AtlahsHtsimApi::GoalRankMapping::GpuRank, 32};
 }
 
-TEST(RnicAtlahsDriverTest,
-     RejectsGoalDerivedInvalidGeneratedClosShapeBeforeConstruction) {
+TEST(RnicAtlahsDriverTest, RejectsGoalDerivedInvalidGeneratedClosShapeBeforeConstruction) {
     EventList& event_list = testEventList();
-    const RnicAtlahsCliOptions options =
-        optionsFor(RnicProfile::CollectiveNetwork);
+    const RnicAtlahsCliOptions options = optionsFor(RnicProfile::CollectiveNetwork);
 
-    EXPECT_THROW(
-        assembleRnicAtlahsProfile(event_list, options, 31),
-        std::invalid_argument);
+    EXPECT_THROW(assembleRnicAtlahsProfile(event_list, options, 31), std::invalid_argument);
 }
 
 TEST(RnicAtlahsDriverTest, RejectsMissingTopologyFileWithoutProcessExit) {
     EventList& event_list = testEventList();
-    RnicAtlahsCliOptions options =
-        optionsFor(RnicProfile::CollectiveNetwork);
-    options.collective.topology_file =
-        "/path/that/does/not/exist/rnic-topology";
+    RnicAtlahsCliOptions options = optionsFor(RnicProfile::CollectiveNetwork);
+    options.collective.topology_file = "/path/that/does/not/exist/rnic-topology";
 
-    EXPECT_THROW(
-        assembleRnicAtlahsProfile(event_list, options, 32),
-        std::invalid_argument);
+    EXPECT_THROW(assembleRnicAtlahsProfile(event_list, options, 32), std::invalid_argument);
 }
 
 TEST(RnicAtlahsDriverTest, AssemblesGeneratedNsTm3CollectiveProfile) {
     EventList& event_list = testEventList();
-    const RnicAtlahsCliOptions options =
-        optionsFor(RnicProfile::CollectiveNetwork);
+    const RnicAtlahsCliOptions options = optionsFor(RnicProfile::CollectiveNetwork);
 
     auto session = assembleRnicAtlahsProfile(event_list, options, 32);
 
@@ -80,35 +67,25 @@ TEST(RnicAtlahsDriverTest, AssemblesGeneratedNsTm3CollectiveProfile) {
     ASSERT_NE(session->physicalTopology(), nullptr);
     EXPECT_EQ(session->topologyConfig()->get_tiers(), 2U);
     EXPECT_EQ(session->topologyConfig()->no_of_nodes(), 32U);
-    EXPECT_EQ(session->topologyConfig()->switch_model(),
-              FatTreeSwitchModel::NsTm3);
-    EXPECT_EQ(session->topologyConfig()
-                  ->ns_tm3_shared_buffer_capacity(TOR_TIER),
-              static_cast<mem_b>(
-                  options.collective.ns_tm3_shared_buffer_bytes));
-    EXPECT_NE(dynamic_cast<RnicCollectiveNetworkRuntime*>(
-                  &session->implementation()),
-              nullptr);
+    EXPECT_EQ(session->topologyConfig()->switch_model(), FatTreeSwitchModel::NsTm3);
+    EXPECT_EQ(session->topologyConfig()->ns_tm3_shared_buffer_capacity(TOR_TIER),
+              static_cast<mem_b>(options.collective.ns_tm3_shared_buffer_bytes));
+    EXPECT_NE(dynamic_cast<RnicCollectiveNetworkRuntime*>(&session->implementation()), nullptr);
 }
 
 TEST(RnicAtlahsDriverTest, AssemblesGeneratedNsRosettaSlingshotLikeProfile) {
     EventList& event_list = testEventList();
-    const RnicAtlahsCliOptions options =
-        optionsFor(RnicProfile::SlingshotLike);
+    const RnicAtlahsCliOptions options = optionsFor(RnicProfile::SlingshotLike);
 
     auto session = assembleRnicAtlahsProfile(event_list, options, 32);
 
     ASSERT_NE(session, nullptr);
     ASSERT_NE(session->topologyConfig(), nullptr);
     ASSERT_NE(session->physicalTopology(), nullptr);
-    EXPECT_EQ(session->topologyConfig()->switch_model(),
-              FatTreeSwitchModel::NsRosetta);
-    EXPECT_EQ(session->topologyConfig()
-                  ->ns_rosetta_shared_buffer_capacity(TOR_TIER),
-              static_cast<mem_b>(
-                  options.slingshot.ns_rosetta_shared_buffer_bytes));
-    EXPECT_NE(dynamic_cast<RnicSsRuntime*>(&session->implementation()),
-              nullptr);
+    EXPECT_EQ(session->topologyConfig()->switch_model(), FatTreeSwitchModel::NsRosetta);
+    EXPECT_EQ(session->topologyConfig()->ns_rosetta_shared_buffer_capacity(TOR_TIER),
+              static_cast<mem_b>(options.slingshot.ns_rosetta_shared_buffer_bytes));
+    EXPECT_NE(dynamic_cast<RnicSsRuntime*>(&session->implementation()), nullptr);
     for (Switch* base : session->physicalTopology()->switches_lp) {
         EXPECT_NE(dynamic_cast<NsRosetta*>(base), nullptr);
     }
@@ -117,168 +94,112 @@ TEST(RnicAtlahsDriverTest, AssemblesGeneratedNsRosettaSlingshotLikeProfile) {
 TEST(RnicAtlahsDriverTest, AssemblesBothTopologyFreeProfilesWithoutAClos) {
     EventList& event_list = testEventList();
     {
-        const RnicAtlahsCliOptions options =
-            optionsFor(RnicProfile::PacketizedManifold);
+        const RnicAtlahsCliOptions options = optionsFor(RnicProfile::PacketizedManifold);
         auto session = assembleRnicAtlahsProfile(event_list, options, 32);
         EXPECT_EQ(session->topologyConfig(), nullptr);
         EXPECT_EQ(session->physicalTopology(), nullptr);
-        EXPECT_NE(dynamic_cast<RnicPacketizedManifoldRuntime*>(
-                      &session->implementation()),
+        EXPECT_NE(dynamic_cast<RnicPacketizedManifoldRuntime*>(&session->implementation()),
                   nullptr);
     }
     {
-        const RnicAtlahsCliOptions options =
-            optionsFor(RnicProfile::FluidManifold);
+        const RnicAtlahsCliOptions options = optionsFor(RnicProfile::FluidManifold);
         auto session = assembleRnicAtlahsProfile(event_list, options, 32);
         EXPECT_EQ(session->topologyConfig(), nullptr);
         EXPECT_EQ(session->physicalTopology(), nullptr);
-        EXPECT_NE(dynamic_cast<RnicFluidManifoldRuntime*>(
-                      &session->implementation()),
-                  nullptr);
+        EXPECT_NE(dynamic_cast<RnicFluidManifoldRuntime*>(&session->implementation()), nullptr);
     }
 }
 
 TEST(RnicAtlahsDriverTest, CollectiveManifestNamesPhysicalModelExactly) {
     EventList& event_list = testEventList();
-    const RnicAtlahsCliOptions options =
-        optionsFor(RnicProfile::CollectiveNetwork);
+    const RnicAtlahsCliOptions options = optionsFor(RnicProfile::CollectiveNetwork);
     auto session = assembleRnicAtlahsProfile(event_list, options, 32);
 
-    const std::string manifest =
-        renderRnicAtlahsModelManifest(options, goalLayout(), *session);
+    const std::string manifest = renderRnicAtlahsModelManifest(options, goalLayout(), *session);
 
     EXPECT_NE(manifest.find("profile=rnic-cn"), std::string::npos);
     EXPECT_NE(manifest.find("fabric=ns-tm3-clos"), std::string::npos);
-    EXPECT_NE(manifest.find("clos_tiers=2 switch=ns-tm3"),
+    EXPECT_NE(manifest.find("clos_tiers=2 switch=ns-tm3"), std::string::npos);
+    EXPECT_NE(manifest.find("link_failures=0 eta_calibration_config=construction-snapshot"),
               std::string::npos);
-    EXPECT_NE(manifest.find(
-                  "link_failures=0 eta_calibration_config=construction-snapshot"),
-              std::string::npos);
-    EXPECT_NE(manifest.find(
-                  "voq_key=physical-ingress-x-physical-egress"),
-              std::string::npos);
+    EXPECT_NE(manifest.find("voq_key=physical-ingress-x-physical-egress"), std::string::npos);
     EXPECT_NE(manifest.find("pfc=off ecn=off"), std::string::npos);
-    EXPECT_NE(manifest.find("declaration_gate=physical-accept"),
+    EXPECT_NE(manifest.find("declaration_gate=physical-accept"), std::string::npos);
+    EXPECT_NE(manifest.find("declare_cca_field=nflow startup_nflow=1"), std::string::npos);
+    EXPECT_NE(manifest.find("declare_debug_fields=collective_id,expected_fan_in "
+                            "declare_debug_affects_rx_cca=false"),
               std::string::npos);
-    EXPECT_NE(manifest.find("declare_cca_field=nflow startup_nflow=1"),
+    EXPECT_NE(manifest.find("grant=margin*C/n_hat n_hat=sum-active-declare-nflow"),
               std::string::npos);
-    EXPECT_NE(manifest.find(
-                  "declare_debug_fields=collective_id,expected_fan_in declare_debug_affects_rx_cca=false"),
+    EXPECT_NE(manifest.find("eta=source-route-injection-plus-packet-specific-no-load-transit"),
               std::string::npos);
-    EXPECT_NE(manifest.find(
-                  "grant=margin*C/n_hat n_hat=sum-active-declare-nflow"),
+    EXPECT_NE(
+        manifest.find("eta_transit=pipe-switch-latency-plus-remaining-ns-tm3-egress-serialization"),
+        std::string::npos);
+    EXPECT_NE(manifest.find("prbs_algorithm=galois-lfsr64-block64 prbs_version=2"),
               std::string::npos);
-    EXPECT_NE(manifest.find(
-                  "eta=source-route-injection-plus-packet-specific-no-load-transit"),
+    EXPECT_NE(manifest.find("word_extraction=prestep-lsb-block64-lsb-first"), std::string::npos);
+    EXPECT_NE(manifest.find("lfsr_steps_per_word=64"), std::string::npos);
+    EXPECT_NE(manifest.find("bounded_draw=nonzero-rejection-modulo-v1"), std::string::npos);
+    EXPECT_NE(manifest.find("recovery=selective-gap-nack"), std::string::npos);
+    EXPECT_NE(manifest.find("gap_decision=next-strict-ring-tick"), std::string::npos);
+    EXPECT_NE(manifest.find("early_admission=hard-error"), std::string::npos);
+    EXPECT_NE(manifest.find("overflow_admission=hard-error"), std::string::npos);
+    EXPECT_NE(manifest.find("gap_nack_priority=high"), std::string::npos);
+    EXPECT_NE(manifest.find("repair_priority=low"), std::string::npos);
+    EXPECT_NE(manifest.find("repair_arbitration=per-flow-head-in-node-prbs-lottery"),
               std::string::npos);
-    EXPECT_NE(manifest.find(
-                  "eta_transit=pipe-switch-latency-plus-remaining-ns-tm3-egress-serialization"),
+    EXPECT_NE(manifest.find("repair_prbs_draw=true"), std::string::npos);
+    EXPECT_NE(manifest.find("repair_rate_accounting=substitutes-fresh-granted-service"),
               std::string::npos);
-    EXPECT_NE(manifest.find(
-                  "prbs_algorithm=galois-lfsr64-block64 prbs_version=2"),
-              std::string::npos);
-    EXPECT_NE(manifest.find(
-                  "word_extraction=prestep-lsb-block64-lsb-first"),
-              std::string::npos);
-    EXPECT_NE(manifest.find("lfsr_steps_per_word=64"),
-              std::string::npos);
-    EXPECT_NE(manifest.find(
-                  "bounded_draw=nonzero-rejection-modulo-v1"),
-              std::string::npos);
-    EXPECT_NE(manifest.find("recovery=selective-gap-nack"),
-              std::string::npos);
-    EXPECT_NE(manifest.find("gap_decision=next-strict-ring-tick"),
-              std::string::npos);
-    EXPECT_NE(manifest.find("early_admission=hard-error"),
-              std::string::npos);
-    EXPECT_NE(manifest.find("overflow_admission=hard-error"),
-              std::string::npos);
-    EXPECT_NE(manifest.find("gap_nack_priority=high"),
-              std::string::npos);
-    EXPECT_NE(manifest.find("repair_priority=low"),
-              std::string::npos);
-    EXPECT_NE(manifest.find(
-                  "repair_arbitration=per-flow-head-in-node-prbs-lottery"),
-              std::string::npos);
-    EXPECT_NE(manifest.find("repair_prbs_draw=true"),
-              std::string::npos);
-    EXPECT_NE(manifest.find(
-                  "repair_rate_accounting=substitutes-fresh-granted-service"),
-              std::string::npos);
-    EXPECT_NE(manifest.find("maximum_repair_retries=8"),
-              std::string::npos);
-    EXPECT_NE(manifest.find(
-                  "retirement_gate=exact-rx-ledger-and-no-gap"),
-              std::string::npos);
+    EXPECT_NE(manifest.find("maximum_repair_retries=8"), std::string::npos);
+    EXPECT_NE(manifest.find("retirement_gate=exact-rx-ledger-and-no-gap"), std::string::npos);
 }
 
 TEST(RnicAtlahsDriverTest, SlingshotLikeManifestNamesOpenPhysicalModel) {
     EventList& event_list = testEventList();
-    const RnicAtlahsCliOptions options =
-        optionsFor(RnicProfile::SlingshotLike);
+    const RnicAtlahsCliOptions options = optionsFor(RnicProfile::SlingshotLike);
     auto session = assembleRnicAtlahsProfile(event_list, options, 32);
 
-    const std::string manifest =
-        renderRnicAtlahsModelManifest(options, goalLayout(), *session);
+    const std::string manifest = renderRnicAtlahsModelManifest(options, goalLayout(), *session);
 
     EXPECT_NE(manifest.find("profile=rnic-ss"), std::string::npos);
     EXPECT_NE(manifest.find("fabric=ns-rosetta-clos"), std::string::npos);
-    EXPECT_NE(manifest.find("clos_tiers=2 switch=ns-rosetta"),
+    EXPECT_NE(manifest.find("clos_tiers=2 switch=ns-rosetta"), std::string::npos);
+    EXPECT_NE(manifest.find("model=open-slingshot-like-comparator"), std::string::npos);
+    EXPECT_NE(manifest.find("proprietary_threshold_claim=false"), std::string::npos);
+    EXPECT_NE(manifest.find("path_candidates=deterministic-four-of-eight"), std::string::npos);
+    EXPECT_NE(manifest.find("global_sender_state=false"), std::string::npos);
+    EXPECT_NE(manifest.find("ack=per-data-packet-sack128"), std::string::npos);
+    EXPECT_NE(manifest.find("routing=ordered-endpoint-pair"), std::string::npos);
+    EXPECT_NE(manifest.find("normal_lossless_rto_expected=0"), std::string::npos);
+    EXPECT_NE(manifest.find("backpressure=pair-selective-physical"), std::string::npos);
+    EXPECT_NE(manifest.find("pressure_domains="
+                            "every-leaf-spine-egress-plus-switch-shared"),
               std::string::npos);
-    EXPECT_NE(manifest.find("model=open-slingshot-like-comparator"),
+    EXPECT_NE(manifest.find("source_prbs_algorithm=galois-lfsr64-block64"), std::string::npos);
+    EXPECT_NE(manifest.find("queue_bound="
+                            "controlled-clos-per-domain-aggregate-envelope"),
               std::string::npos);
-    EXPECT_NE(manifest.find("proprietary_threshold_claim=false"),
+    EXPECT_NE(manifest.find("bound_forward_data_serialization=included"), std::string::npos);
+    EXPECT_NE(manifest.find("bound_bp_enable_fan_in="
+                            "maximum-physical-egress-endpoint-pairs"),
               std::string::npos);
-    EXPECT_NE(manifest.find(
-                  "path_candidates=deterministic-four-of-eight"),
-              std::string::npos);
-    EXPECT_NE(manifest.find("global_sender_state=false"),
-              std::string::npos);
-    EXPECT_NE(manifest.find("ack=per-data-packet-sack128"),
-              std::string::npos);
-    EXPECT_NE(manifest.find("routing=ordered-endpoint-pair"),
-              std::string::npos);
-    EXPECT_NE(manifest.find("normal_lossless_rto_expected=0"),
-              std::string::npos);
-    EXPECT_NE(manifest.find("backpressure=pair-selective-physical"),
-              std::string::npos);
-    EXPECT_NE(manifest.find(
-                  "pressure_domains="
-                  "every-leaf-spine-egress-plus-switch-shared"),
-              std::string::npos);
-    EXPECT_NE(manifest.find(
-                  "source_prbs_algorithm=galois-lfsr64-block64"),
-              std::string::npos);
-    EXPECT_NE(manifest.find(
-                  "queue_bound="
-                  "controlled-clos-per-domain-aggregate-envelope"),
-              std::string::npos);
-    EXPECT_NE(manifest.find(
-                  "bound_forward_data_serialization=included"),
-              std::string::npos);
-    EXPECT_NE(manifest.find(
-                  "bound_bp_enable_fan_in="
-                  "maximum-physical-egress-endpoint-pairs"),
-              std::string::npos);
-    EXPECT_NE(manifest.find(
-                  "bound_bp_enable_serialization="
-                  "maximum-physical-control-serializer"),
+    EXPECT_NE(manifest.find("bound_bp_enable_serialization="
+                            "maximum-physical-control-serializer"),
               std::string::npos);
 }
 
 TEST(RnicAtlahsDriverTest, ManifoldManifestsExcludePhysicalTopology) {
     EventList& event_list = testEventList();
-    for (const RnicProfile profile : {RnicProfile::PacketizedManifold,
-                                      RnicProfile::FluidManifold}) {
+    for (const RnicProfile profile :
+         {RnicProfile::PacketizedManifold, RnicProfile::FluidManifold}) {
         const RnicAtlahsCliOptions options = optionsFor(profile);
         auto session = assembleRnicAtlahsProfile(event_list, options, 32);
-        const std::string manifest =
-            renderRnicAtlahsModelManifest(
-                options, goalLayout(), *session);
+        const std::string manifest = renderRnicAtlahsModelManifest(options, goalLayout(), *session);
 
         EXPECT_NE(manifest.find("topology=none"), std::string::npos);
-        EXPECT_NE(manifest.find("manifold_queue=none"),
-                  std::string::npos);
+        EXPECT_NE(manifest.find("manifold_queue=none"), std::string::npos);
         EXPECT_EQ(manifest.find("switch=ns-tm3"), std::string::npos);
     }
 }

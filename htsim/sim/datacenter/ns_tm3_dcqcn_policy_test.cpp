@@ -26,10 +26,7 @@ constexpr std::uint16_t kPacketBytes = 100;
 
 class PolicyTestPacket final : public RocePacket {
 public:
-    PolicyTestPacket(PacketFlow& flow,
-                     const Route& route,
-                     packetid_t id,
-                     PktPriority priority)
+    PolicyTestPacket(PacketFlow& flow, const Route& route, packetid_t id, PktPriority priority)
         : _priority(priority) {
         set_route(flow, route, kPacketBytes, id);
         _type = ROCE;
@@ -64,8 +61,7 @@ public:
 
 class RecordingUpstream final : public BaseQueue {
 public:
-    explicit RecordingUpstream(EventList& event_list)
-        : BaseQueue(kLinkRate, event_list, nullptr) {
+    explicit RecordingUpstream(EventList& event_list) : BaseQueue(kLinkRate, event_list, nullptr) {
         _nodename = "policy-recording-upstream";
     }
 
@@ -90,15 +86,14 @@ public:
 struct SwitchHarness {
     explicit SwitchHarness(EventList& event_list)
         : event_list(event_list),
-          owner(FatTreeSwitchFactory::create(
-              FatTreeSwitchModel::NsTm3,
-              event_list,
-              "policy-test-switch",
-              FatTreeSwitch::TOR,
-              0,
-              0,
-              nullptr,
-              4096)),
+          owner(FatTreeSwitchFactory::create(FatTreeSwitchModel::NsTm3,
+                                             event_list,
+                                             "policy-test-switch",
+                                             FatTreeSwitch::TOR,
+                                             0,
+                                             0,
+                                             nullptr,
+                                             4096)),
           traffic_manager(dynamic_cast<NsTm3Switch*>(owner.get())),
           egress(kLinkRate, event_list, nullptr) {
         if (traffic_manager == nullptr) {
@@ -130,23 +125,16 @@ std::vector<bool> redPattern(EventList& event_list,
                              mem_b queue_bytes,
                              std::size_t packet_count,
                              std::uint64_t ecn_domain_id = 0) {
-    NsTm3DcqcnPolicy policy(
-        event_list,
-        NsTm3DcqcnPolicyConfig{
-            true, 100, 300, 500000, seed,
-            false, 0, 0, 0},
-        ecn_domain_id);
+    NsTm3DcqcnPolicy policy(event_list,
+                            NsTm3DcqcnPolicyConfig{true, 100, 300, 500000, seed, false, 0, 0, 0},
+                            ecn_domain_id);
     Route route;
     PacketFlow flow(nullptr);
     flow.set_flowid(37);
     std::vector<bool> marked;
     marked.reserve(packet_count);
     for (std::size_t index = 0; index < packet_count; ++index) {
-        PolicyTestPacket packet(
-            flow,
-            route,
-            static_cast<packetid_t>(index + 1),
-            Packet::PRIO_LO);
+        PolicyTestPacket packet(flow, route, static_cast<packetid_t>(index + 1), Packet::PRIO_LO);
         policy.packet_selected(packet, 11, egress_id, queue_bytes);
         marked.push_back((packet.flags() & ECN_CE) != 0);
     }
@@ -159,36 +147,28 @@ TEST(NsTm3DcqcnPolicyTest, IsStrictlyOptInByDefault) {
     EXPECT_EQ(harness.traffic_manager->dcqcn_policy(), nullptr);
 
     EthPausePacket* pause = EthPausePacket::newpkt(1, 0);
-    EXPECT_THROW(harness.ingress->receivePacket(*pause),
-                 std::invalid_argument);
+    EXPECT_THROW(harness.ingress->receivePacket(*pause), std::invalid_argument);
     pause->free();
 
     pause = EthPausePacket::newpkt(1, 0);
-    EXPECT_THROW(harness.egress.receivePacket(*pause),
-                 std::invalid_argument);
+    EXPECT_THROW(harness.egress.receivePacket(*pause), std::invalid_argument);
     pause->free();
 }
 
-TEST(NsTm3DcqcnPolicyTest,
-     RedIsSeededPerPacketAndEgressAndLinearBetweenThresholds) {
+TEST(NsTm3DcqcnPolicyTest, RedIsSeededPerPacketAndEgressAndLinearBetweenThresholds) {
     EventList& event_list = EventList::getTheEventList();
-    const std::vector<bool> first =
-        redPattern(event_list, 19, 3, 200, 20000);
-    const std::vector<bool> replay =
-        redPattern(event_list, 19, 3, 200, 20000);
-    const std::vector<bool> other_seed =
-        redPattern(event_list, 20, 3, 200, 20000);
-    const std::vector<bool> other_egress =
-        redPattern(event_list, 19, 4, 200, 20000);
-    const std::vector<bool> other_switch =
-        redPattern(event_list, 19, 3, 200, 20000, 1);
+    const std::vector<bool> first = redPattern(event_list, 19, 3, 200, 20000);
+    const std::vector<bool> replay = redPattern(event_list, 19, 3, 200, 20000);
+    const std::vector<bool> other_seed = redPattern(event_list, 20, 3, 200, 20000);
+    const std::vector<bool> other_egress = redPattern(event_list, 19, 4, 200, 20000);
+    const std::vector<bool> other_switch = redPattern(event_list, 19, 3, 200, 20000, 1);
 
     EXPECT_EQ(first, replay);
     EXPECT_NE(first, other_seed);
     EXPECT_NE(first, other_egress);
     EXPECT_NE(first, other_switch);
-    const std::size_t marked = static_cast<std::size_t>(
-        std::count(first.begin(), first.end(), true));
+    const std::size_t marked =
+        static_cast<std::size_t>(std::count(first.begin(), first.end(), true));
     // At the midpoint the linear ramp is 250,000 ppm.
     EXPECT_GT(marked, 4700U);
     EXPECT_LT(marked, 5300U);
@@ -196,15 +176,11 @@ TEST(NsTm3DcqcnPolicyTest,
 
 TEST(NsTm3DcqcnPolicyTest, RedHonorsZeroAndPmaxEndpoints) {
     EventList& event_list = EventList::getTheEventList();
-    const std::vector<bool> at_kmin =
-        redPattern(event_list, 19, 3, 100, 512);
+    const std::vector<bool> at_kmin = redPattern(event_list, 19, 3, 100, 512);
     EXPECT_EQ(std::count(at_kmin.begin(), at_kmin.end(), true), 0);
 
-    NsTm3DcqcnPolicy policy(
-        event_list,
-        NsTm3DcqcnPolicyConfig{
-            true, 100, 300, 1000000, 19,
-            false, 0, 0, 0});
+    NsTm3DcqcnPolicy policy(event_list,
+                            NsTm3DcqcnPolicyConfig{true, 100, 300, 1000000, 19, false, 0, 0, 0});
     Route route;
     PacketFlow flow(nullptr);
     flow.set_flowid(37);
@@ -217,30 +193,19 @@ TEST(NsTm3DcqcnPolicyTest, RedHonorsZeroAndPmaxEndpoints) {
 
 TEST(NsTm3DcqcnPolicyTest, RejectsInvalidRedRangesAndProbability) {
     EventList& event_list = EventList::getTheEventList();
-    EXPECT_THROW(
-        NsTm3DcqcnPolicy(
-            event_list,
-            NsTm3DcqcnPolicyConfig{
-                true, 100, 100, 250000, 1,
-                false, 0, 0, 0}),
-        std::invalid_argument);
-    EXPECT_THROW(
-        NsTm3DcqcnPolicy(
-            event_list,
-            NsTm3DcqcnPolicyConfig{
-                true, 100, 300, 1000001, 1,
-                false, 0, 0, 0}),
-        std::invalid_argument);
+    EXPECT_THROW(NsTm3DcqcnPolicy(
+                     event_list, NsTm3DcqcnPolicyConfig{true, 100, 100, 250000, 1, false, 0, 0, 0}),
+                 std::invalid_argument);
+    EXPECT_THROW(NsTm3DcqcnPolicy(event_list, NsTm3DcqcnPolicyConfig{true, 100, 300, 1000001, 1,
+                                                                     false, 0, 0, 0}),
+                 std::invalid_argument);
 }
 
-TEST(NsTm3DcqcnPolicyTest,
-     MarksEcnAndDeliversSerializedPhysicalPauseAndResume) {
+TEST(NsTm3DcqcnPolicyTest, MarksEcnAndDeliversSerializedPhysicalPauseAndResume) {
     EventList& event_list = EventList::getTheEventList();
     SwitchHarness harness(event_list);
     harness.traffic_manager->configure_dcqcn_policy(
-        NsTm3DcqcnPolicyConfig{
-            true, 50, 100, 1000000, 1,
-            true, 25, 50, kLinkRate});
+        NsTm3DcqcnPolicyConfig{true, 50, 100, 1000000, 1, true, 25, 50, kLinkRate});
 
     RecordingUpstream upstream(event_list);
     Pipe forward_wire(timeFromNs(100u), event_list);
@@ -252,8 +217,7 @@ TEST(NsTm3DcqcnPolicyTest,
     route.push_back(&harness.egress);
     route.push_back(&sink);
     PacketFlow flow(nullptr);
-    PolicyTestPacket packet(
-        flow, route, 1, Packet::PRIO_LO);
+    PolicyTestPacket packet(flow, route, 1, Packet::PRIO_LO);
 
     const simtime_picosec start = EventList::now();
     packet.sendOn();
@@ -269,21 +233,17 @@ TEST(NsTm3DcqcnPolicyTest,
     // PAUSE and RESUME occupy consecutive wire slots and cannot co-arrive.
     EXPECT_EQ(upstream.pause_times[0], start + timeFromNs(264u));
     EXPECT_EQ(upstream.pause_times[1], start + timeFromNs(328u));
-    const NsTm3DcqcnPolicyCounters& counters =
-        harness.traffic_manager->dcqcn_policy()->counters();
+    const NsTm3DcqcnPolicyCounters& counters = harness.traffic_manager->dcqcn_policy()->counters();
     EXPECT_EQ(counters.ecn_marked_packets, 1U);
     EXPECT_EQ(counters.pause_frames, 1U);
     EXPECT_EQ(counters.resume_frames, 1U);
 }
 
-TEST(NsTm3DcqcnPolicyTest,
-     DataPauseWaitsForPacketBoundaryAndDoesNotBlockControl) {
+TEST(NsTm3DcqcnPolicyTest, DataPauseWaitsForPacketBoundaryAndDoesNotBlockControl) {
     EventList& event_list = EventList::getTheEventList();
     SwitchHarness harness(event_list);
     harness.traffic_manager->configure_dcqcn_policy(
-        NsTm3DcqcnPolicyConfig{
-            true, 4096, 8192, 1000000, 1,
-            true, 500, 1000, kLinkRate});
+        NsTm3DcqcnPolicyConfig{true, 4096, 8192, 1000000, 1, true, 500, 1000, kLinkRate});
     RecordingUpstream upstream(event_list);
     Pipe forward_wire(timeFromNs(1u), event_list);
     RecordingSink sink;

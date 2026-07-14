@@ -9,8 +9,7 @@
 
 namespace {
 
-std::uint64_t parseUnsigned(const std::string& option,
-                            const std::string& value) {
+std::uint64_t parseUnsigned(const std::string& option, const std::string& value) {
     if (value.empty() || value.front() == '-') {
         throw std::invalid_argument(option + ": expected an unsigned integer");
     }
@@ -26,8 +25,7 @@ std::uint64_t parseUnsigned(const std::string& option,
 
 template <typename Value>
 Value checkedValue(const std::string& option, std::uint64_t value) {
-    if (value > static_cast<std::uint64_t>(
-                    std::numeric_limits<Value>::max())) {
+    if (value > static_cast<std::uint64_t>(std::numeric_limits<Value>::max())) {
         throw std::out_of_range(option + ": value is out of range");
     }
     return static_cast<Value>(value);
@@ -43,14 +41,12 @@ DcqcnGoalRankMapping parseRankMapping(const std::string& value) {
     if (value == "unique-nic") {
         return DcqcnGoalRankMapping::UniqueNic;
     }
-    throw std::invalid_argument(
-        "-goal_rank_mapping: expected auto, gpu-rank, or unique-nic");
+    throw std::invalid_argument("-goal_rank_mapping: expected auto, gpu-rank, or unique-nic");
 }
 
 }  // namespace
 
-DcqcnAtlahsCliOptions parseDcqcnAtlahsCli(
-        int argc, const char* const argv[]) {
+DcqcnAtlahsCliOptions parseDcqcnAtlahsCli(int argc, const char* const argv[]) {
     if (argc <= 0 || argv == nullptr) {
         throw std::invalid_argument("invalid DCQCN ATLAHS argument vector");
     }
@@ -68,14 +64,12 @@ DcqcnAtlahsCliOptions parseDcqcnAtlahsCli(
             options.runtime.topology_file = value;
         } else if (option == "-completion_csv") {
             if (value.empty()) {
-                throw std::invalid_argument(
-                    "-completion_csv: path must be nonempty");
+                throw std::invalid_argument("-completion_csv: path must be nonempty");
             }
             options.completion_csv = value;
         } else if (option == "-state_trace_csv") {
             if (value.empty()) {
-                throw std::invalid_argument(
-                    "-state_trace_csv: path must be nonempty");
+                throw std::invalid_argument("-state_trace_csv: path must be nonempty");
             }
             options.runtime.state_trace_csv = value;
         } else if (option == "-goal_rank_mapping") {
@@ -83,16 +77,13 @@ DcqcnAtlahsCliOptions parseDcqcnAtlahsCli(
         } else if (option == "-seed") {
             options.runtime.ecmp_seed = parseUnsigned(option, value);
         } else if (option == "-link_bps") {
-            options.runtime.endpoint_link_bps =
-                parseUnsigned(option, value);
+            options.runtime.endpoint_link_bps = parseUnsigned(option, value);
         } else if (option == "-max_wire_packet_bytes") {
             options.runtime.max_wire_packet_bytes =
-                checkedValue<std::uint16_t>(
-                    option, parseUnsigned(option, value));
+                checkedValue<std::uint16_t>(option, parseUnsigned(option, value));
         } else if (option == "-data_header_bytes") {
             options.runtime.data_header_bytes =
-                checkedValue<std::uint16_t>(
-                    option, parseUnsigned(option, value));
+                checkedValue<std::uint16_t>(option, parseUnsigned(option, value));
         } else if (option == "-shared_buffer_bytes") {
             options.runtime.ns_tm3_shared_buffer_bytes =
                 checkedValue<mem_b>(option, parseUnsigned(option, value));
@@ -104,8 +95,7 @@ DcqcnAtlahsCliOptions parseDcqcnAtlahsCli(
                 checkedValue<mem_b>(option, parseUnsigned(option, value));
         } else if (option == "-ecn_pmax_ppm") {
             options.runtime.ecn_pmax_ppm =
-                checkedValue<std::uint32_t>(
-                    option, parseUnsigned(option, value));
+                checkedValue<std::uint32_t>(option, parseUnsigned(option, value));
         } else if (option == "-ecn_seed") {
             options.runtime.ecn_seed = parseUnsigned(option, value);
             ecn_seed_explicit = true;
@@ -117,14 +107,12 @@ DcqcnAtlahsCliOptions parseDcqcnAtlahsCli(
                 checkedValue<mem_b>(option, parseUnsigned(option, value));
         } else if (option == "-silent_rto_us") {
             const std::uint64_t us = parseUnsigned(option, value);
-            if (us > std::numeric_limits<simtime_picosec>::max()
-                         / UINT64_C(1000000)) {
+            if (us > std::numeric_limits<simtime_picosec>::max() / UINT64_C(1000000)) {
                 throw std::out_of_range(option + ": time overflows ps");
             }
             options.runtime.silent_loss_rto_ps = us * UINT64_C(1000000);
         } else if (option == "-dcqcn_min_rate_bps") {
-            options.runtime.dcqcn_min_rate_bps =
-                parseUnsigned(option, value);
+            options.runtime.dcqcn_min_rate_bps = parseUnsigned(option, value);
         } else {
             throw std::invalid_argument("unknown option " + option);
         }
@@ -143,27 +131,27 @@ DcqcnAtlahsCliOptions parseDcqcnAtlahsCli(
 
 const char* dcqcnGoalRankMappingName(DcqcnGoalRankMapping mapping) {
     switch (mapping) {
-    case DcqcnGoalRankMapping::Auto:
-        return "auto";
-    case DcqcnGoalRankMapping::GpuRank:
-        return "gpu-rank";
-    case DcqcnGoalRankMapping::UniqueNic:
-        return "unique-nic";
+        case DcqcnGoalRankMapping::Auto:
+            return "auto";
+        case DcqcnGoalRankMapping::GpuRank:
+            return "gpu-rank";
+        case DcqcnGoalRankMapping::UniqueNic:
+            return "unique-nic";
     }
     throw std::invalid_argument("invalid DCQCN GOAL rank mapping");
 }
 
 std::string dcqcnAtlahsCliUsage(const std::string& program_name) {
-    return "Usage: " + program_name
-        + " -goal FILE -topology FILE"
-          " [-completion_csv FILE]"
-          " [-state_trace_csv FILE]"
-          " [-goal_rank_mapping auto|gpu-rank|unique-nic]"
-          " [-seed N] [-link_bps N]"
-          " [-max_wire_packet_bytes N] [-data_header_bytes N]"
-          " [-shared_buffer_bytes N]"
-          " [-ecn_kmin_bytes N] [-ecn_kmax_bytes N]"
-          " [-ecn_pmax_ppm N] [-ecn_seed N]"
-          " [-pfc_low_bytes N] [-pfc_high_bytes N]"
-          " [-silent_rto_us N] [-dcqcn_min_rate_bps N]";
+    return "Usage: " + program_name +
+           " -goal FILE -topology FILE"
+           " [-completion_csv FILE]"
+           " [-state_trace_csv FILE]"
+           " [-goal_rank_mapping auto|gpu-rank|unique-nic]"
+           " [-seed N] [-link_bps N]"
+           " [-max_wire_packet_bytes N] [-data_header_bytes N]"
+           " [-shared_buffer_bytes N]"
+           " [-ecn_kmin_bytes N] [-ecn_kmax_bytes N]"
+           " [-ecn_pmax_ppm N] [-ecn_seed N]"
+           " [-pfc_low_bytes N] [-pfc_high_bytes N]"
+           " [-silent_rto_us N] [-dcqcn_min_rate_bps N]";
 }

@@ -49,8 +49,7 @@ public:
     // No-queue transit starts after this port's source serializer.  The
     // exact DATA extent is supplied at dispatch so a short final packet is
     // never calibrated as a maximum-size packet.
-    using TransitCalibration =
-        std::function<uint64_t(const RnicPacketExtent&)>;
+    using TransitCalibration = std::function<uint64_t(const RnicPacketExtent&)>;
 
     RnicTxPort(uint64_t node_id,
                uint64_t access_capacity_bps,
@@ -61,17 +60,13 @@ public:
                RnicDataPacketizationConfig packetization,
                uint64_t global_prbs_seed);
 
-    void addFlow(
-        uint64_t flow_id,
-        uint64_t payload_size_bytes,
-        TransitCalibration calibrated_transit_ps);
+    void addFlow(uint64_t flow_id,
+                 uint64_t payload_size_bytes,
+                 TransitCalibration calibrated_transit_ps);
 
     // Convenience for tests and topology-free callers whose transit is
     // independent of packet extent.
-    void addFlow(
-        uint64_t flow_id,
-        uint64_t payload_size_bytes,
-        uint64_t calibrated_transit_ps);
+    void addFlow(uint64_t flow_id, uint64_t payload_size_bytes, uint64_t calibrated_transit_ps);
     void setWireRateGrant(uint64_t flow_id, uint64_t wire_rate_grant_bps);
     void setDataEligible(uint64_t flow_id, bool eligible);
 
@@ -93,20 +88,12 @@ public:
     bool hasSelectiveRepairPending(uint64_t flow_id) const;
     bool hasDispatchableData() const;
     size_t flowCount() const { return _flows.size(); }
-    uint64_t nextDataOpportunityPs() const {
-        return _data_opportunity_serializer.availablePs();
-    }
-    uint64_t physicalSerializerAvailablePs() const {
-        return _wire_serializer.availablePs();
-    }
+    uint64_t nextDataOpportunityPs() const { return _data_opportunity_serializer.availablePs(); }
+    uint64_t physicalSerializerAvailablePs() const { return _wire_serializer.availablePs(); }
     uint64_t nextWireOpportunityPs() const;
-    uint64_t maxWirePacketBytes() const {
-        return _packetization.maxWirePacketBytes();
-    }
+    uint64_t maxWirePacketBytes() const { return _packetization.maxWirePacketBytes(); }
     uint64_t dataHeaderBytes() const { return _packetization.dataHeaderBytes(); }
-    uint64_t maxDataPayloadBytes() const {
-        return _packetization.maxPayloadBytes();
-    }
+    uint64_t maxDataPayloadBytes() const { return _packetization.maxPayloadBytes(); }
     const RnicPrbsManifest& prbsManifest() const { return _pacer.manifest(); }
 
     // One call consumes one selected DATA extent or advances one virtual,
@@ -116,16 +103,14 @@ public:
     // extent; the size-aware lottery preserves wire-byte rather than packet
     // shares.
     RnicTxOpportunity dispatchOpportunity(uint64_t requested_start_ps);
-    RnicTxOpportunity dispatchOpportunity(
-        uint64_t requested_start_ps,
-        const std::vector<RnicTxRepairCandidate>& repair_heads);
+    RnicTxOpportunity dispatchOpportunity(uint64_t requested_start_ps,
+                                          const std::vector<RnicTxRepairCandidate>& repair_heads);
 
     // Serialize one nonempty control frame on the same physical node wire as
     // DATA.  The CN runtime owns the strict-priority queue and calls this at a
     // packet boundary before dispatchOpportunity().  Control does not consume
     // a PRBS DATA opportunity.
-    RnicWireSerializationInterval dispatchControl(
-        uint64_t requested_start_ps, uint64_t wire_bytes);
+    RnicWireSerializationInterval dispatchControl(uint64_t requested_start_ps, uint64_t wire_bytes);
 
     // The runtime calls this only after observing that no real frame is queued
     // at a published completion boundary.
@@ -179,8 +164,7 @@ struct RnicRxPacketCompletion {
 struct RnicRxArrivalResult {
     RnicRingCamAdmission admission;
     std::optional<uint64_t> logical_release_ps;
-    std::vector<RnicRxScheduledSerialization>
-        serializations_scheduled_before_admission;
+    std::vector<RnicRxScheduledSerialization> serializations_scheduled_before_admission;
     std::vector<RnicRxPacketCompletion> packets_completed_through_arrival;
 };
 
@@ -211,14 +195,10 @@ public:
     // Ring-CAM logical release or a destination serializer completion.
     std::optional<uint64_t> nextEventTimePs() const;
 
-    uint64_t serializerAvailablePs() const {
-        return _wire_serializer.availablePs();
-    }
+    uint64_t serializerAvailablePs() const { return _wire_serializer.availablePs(); }
     uint64_t deliveredPayloadBytes(uint64_t flow_id) const;
     uint64_t deliveredWireBytes(uint64_t flow_id) const;
-    uint64_t pendingSerializerWireBytes() const {
-        return _pending_serializer_wire_bytes;
-    }
+    uint64_t pendingSerializerWireBytes() const { return _pending_serializer_wire_bytes; }
     uint64_t pendingSerializerHighWatermarkWireBytes() const {
         return _pending_serializer_high_watermark_wire_bytes;
     }
@@ -227,11 +207,9 @@ public:
 private:
     std::vector<RnicRxScheduledSerialization> scheduleSerializations(
         const std::vector<RnicRingCamRelease>& logical_releases);
-    std::vector<RnicRxPacketCompletion> accountDeliveriesThrough(
-        uint64_t now_ps);
-    void updateLogicalReleaseTracking(
-        const std::vector<RnicRingCamRelease>& released,
-        std::optional<uint64_t> admitted_release_ps);
+    std::vector<RnicRxPacketCompletion> accountDeliveriesThrough(uint64_t now_ps);
+    void updateLogicalReleaseTracking(const std::vector<RnicRingCamRelease>& released,
+                                      std::optional<uint64_t> admitted_release_ps);
 
     RnicWireSerializationClock _wire_serializer;
     RnicRingCam _ring_cam;
@@ -262,10 +240,7 @@ public:
              uint64_t global_prbs_seed,
              RnicRingCamConfig ring_cam_config)
         : _node_id(node_id),
-          _tx_port(node_id,
-                   access_capacity_bps,
-                   packetization,
-                   global_prbs_seed),
+          _tx_port(node_id, access_capacity_bps, packetization, global_prbs_seed),
           _rx_port(access_capacity_bps, ring_cam_config) {}
 
     uint64_t nodeId() const { return _node_id; }

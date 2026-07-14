@@ -115,8 +115,7 @@ struct RnicAtlahsExplicitCliOptions {
 struct RnicAtlahsCliOptions {
     std::string goal_file;
     std::optional<std::string> completion_csv;
-    RnicAtlahsGoalRankMapping goal_rank_mapping =
-        RnicAtlahsGoalRankMapping::Auto;
+    RnicAtlahsGoalRankMapping goal_rank_mapping = RnicAtlahsGoalRankMapping::Auto;
     // Zero means the driver must derive the physical rank count from GOAL.
     std::uint32_t node_count;
     std::uint64_t link_capacity_bps;
@@ -133,17 +132,14 @@ struct RnicAtlahsCliOptions {
 // option has exactly one value and may occur exactly once.  Numeric values are
 // unsigned base-10 integers in the units named by the flag; floating-point
 // unit conversion and legacy aliases are intentionally unsupported.
-RnicAtlahsCliOptions parseRnicAtlahsCli(
-    int argc, const char* const argv[]);
+RnicAtlahsCliOptions parseRnicAtlahsCli(int argc, const char* const argv[]);
 
 // HTSIM's generated two-tier Clos has N = K^2/2 endpoints for an even
 // ns-tm3 radix K. The driver also applies this predicate after deriving N
 // from GOAL, when no explicit -nodes validation override was supplied.
-bool isRnicGeneratedTwoTierClosNodeCount(
-    std::uint32_t node_count) noexcept;
+bool isRnicGeneratedTwoTierClosNodeCount(std::uint32_t node_count) noexcept;
 
-const char* rnicAtlahsGoalRankMappingName(
-    RnicAtlahsGoalRankMapping mapping);
+const char* rnicAtlahsGoalRankMappingName(RnicAtlahsGoalRankMapping mapping);
 std::string rnicAtlahsCliUsage(const std::string& program_name);
 
 #endif  // RNIC_ATLAHS_CLI_H

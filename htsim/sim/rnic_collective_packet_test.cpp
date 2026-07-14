@@ -11,12 +11,9 @@
 
 namespace {
 
-class RecordingObserver final
-    : public RnicCollectivePacketLifecycleObserver {
+class RecordingObserver final : public RnicCollectivePacketLifecycleObserver {
 public:
-    void observe(
-            const RnicCollectivePacketObservation& observation) noexcept
-            override {
+    void observe(const RnicCollectivePacketObservation& observation) noexcept override {
         observations.push_back(observation);
     }
 
@@ -81,25 +78,23 @@ RnicCollectiveFinalLedger twoPacketLedger() {
 }
 
 RnicCollectiveDeclareMetadata declareMetadata(
-        std::uint32_t nflow = 1,
-        std::optional<std::uint64_t> debug_collective_id = std::nullopt,
-        std::optional<std::uint32_t> debug_expected_fan_in = std::nullopt) {
-    return {nflow,
-            {debug_collective_id, debug_expected_fan_in}};
+    std::uint32_t nflow = 1,
+    std::optional<std::uint64_t> debug_collective_id = std::nullopt,
+    std::optional<std::uint32_t> debug_expected_fan_in = std::nullopt) {
+    return {nflow, {debug_collective_id, debug_expected_fan_in}};
 }
 
-TEST(RnicCollectivePacketTest,
-     CarriesFullAtlahsIdentityAndConsumesDataExplicitly) {
+TEST(RnicCollectivePacketTest, CarriesFullAtlahsIdentityAndConsumesDataExplicitly) {
     PacketFlow flow(nullptr);
     ConsumingEndpoint endpoint;
     Route route = routeTo(endpoint);
     auto observer = std::make_shared<RecordingObserver>();
     const AtlahsFlowId flow_id = makeAtlahsFlowId(0xfedcba98U, 0x76543210U);
-    const RnicCollectiveDataMetadata metadata{
-        0, 0, RnicPacketExtent(1000, 1064), 987654321, twoPacketLedger()};
+    const RnicCollectiveDataMetadata metadata{0, 0, RnicPacketExtent(1000, 1064), 987654321,
+                                              twoPacketLedger()};
 
-    RnicCollectivePacket* packet = RnicCollectivePacket::newData(
-        flow, route, 77, flow_id, 4, 9, metadata, observer);
+    RnicCollectivePacket* packet =
+        RnicCollectivePacket::newData(flow, route, 77, flow_id, 4, 9, metadata, observer);
 
     EXPECT_EQ(packet->kind(), RnicCollectivePacketKind::DATA);
     EXPECT_EQ(packet->atlahsFlowId(), flow_id);
@@ -118,8 +113,7 @@ TEST(RnicCollectivePacketTest,
     EXPECT_EQ(packet->finalLedger().total_wire_bytes, 1628U);
     ASSERT_EQ(observer->observations.size(), 1U);
     const std::uint64_t lifecycle_id = packet->lifecycleId();
-    EXPECT_EQ(observer->observations[0].lifecycle,
-              RnicCollectivePacketLifecycle::CREATED);
+    EXPECT_EQ(observer->observations[0].lifecycle, RnicCollectivePacketLifecycle::CREATED);
     EXPECT_EQ(observer->observations[0].lifecycle_id, lifecycle_id);
 
     packet->sendOn();
@@ -135,23 +129,14 @@ TEST(RnicCollectivePacketTest,
     EXPECT_EQ(*observer->observations[1].data_packet_index, 0U);
 }
 
-TEST(RnicCollectivePacketTest,
-     DirectFreeIsAnObservableFabricDropAndCannotRepeat) {
+TEST(RnicCollectivePacketTest, DirectFreeIsAnObservableFabricDropAndCannotRepeat) {
     PacketFlow flow(nullptr);
     ConsumingEndpoint endpoint;
     Route route = routeTo(endpoint);
     auto observer = std::make_shared<RecordingObserver>();
 
     RnicCollectivePacket* packet = RnicCollectivePacket::newDeclare(
-        flow,
-        route,
-        5,
-        0x100000001ULL,
-        2,
-        7,
-        64,
-        declareMetadata(),
-        observer);
+        flow, route, 5, 0x100000001ULL, 2, 7, 64, declareMetadata(), observer);
     EXPECT_EQ(packet->priority(), Packet::PRIO_HI);
     EXPECT_FALSE(packet->header_only());
     EXPECT_THROW(packet->consumeAtEndpoint(), std::logic_error);
@@ -159,31 +144,21 @@ TEST(RnicCollectivePacketTest,
     packet->free();
 
     ASSERT_EQ(observer->observations.size(), 2U);
-    EXPECT_EQ(observer->observations[1].lifecycle,
-              RnicCollectivePacketLifecycle::FABRIC_DROP);
+    EXPECT_EQ(observer->observations[1].lifecycle, RnicCollectivePacketLifecycle::FABRIC_DROP);
     EXPECT_EQ(observer->observations[1].route_hops_completed, 0U);
     EXPECT_FALSE(observer->observations[1].data_packet_index.has_value());
     EXPECT_THROW(packet->free(), std::logic_error);
     EXPECT_EQ(observer->observations.size(), 2U);
 }
 
-TEST(RnicCollectivePacketTest,
-     DeclareCarriesNflowWithExplicitlyDebugOnlyAnnotations) {
+TEST(RnicCollectivePacketTest, DeclareCarriesNflowWithExplicitlyDebugOnlyAnnotations) {
     PacketFlow flow(nullptr);
     ConsumingEndpoint endpoint;
     Route route = routeTo(endpoint);
     auto observer = std::make_shared<RecordingObserver>();
 
     RnicCollectivePacket* packet = RnicCollectivePacket::newDeclare(
-        flow,
-        route,
-        51,
-        0x100000010ULL,
-        2,
-        7,
-        64,
-        declareMetadata(1, 0xabcULL, 64),
-        observer);
+        flow, route, 51, 0x100000010ULL, 2, 7, 64, declareMetadata(1, 0xabcULL, 64), observer);
 
     EXPECT_EQ(packet->declaration().nflow, 1U);
     ASSERT_TRUE(packet->declaration().debug.collective_id.has_value());
@@ -195,8 +170,7 @@ TEST(RnicCollectivePacketTest,
     packet->sendOn();
 }
 
-TEST(RnicCollectivePacketTest,
-     EndpointConsumptionRequiresTheExactExplicitRouteEnd) {
+TEST(RnicCollectivePacketTest, EndpointConsumptionRequiresTheExactExplicitRouteEnd) {
     PacketFlow flow(nullptr);
     ForwardingSink forwarding_sink;
     ConsumingEndpoint endpoint;
@@ -206,15 +180,7 @@ TEST(RnicCollectivePacketTest,
     auto observer = std::make_shared<RecordingObserver>();
 
     RnicCollectivePacket* packet = RnicCollectivePacket::newDeclare(
-        flow,
-        route,
-        6,
-        0x100000002ULL,
-        2,
-        7,
-        64,
-        declareMetadata(),
-        observer);
+        flow, route, 6, 0x100000002ULL, 2, 7, 64, declareMetadata(), observer);
     packet->sendOn();
 
     EXPECT_TRUE(forwarding_sink.early_consume_rejected);
@@ -232,15 +198,7 @@ TEST(RnicCollectivePacketTest, PoolReuseResetsInheritedPacketState) {
     auto observer = std::make_shared<RecordingObserver>();
 
     RnicCollectivePacket* first = RnicCollectivePacket::newDeclare(
-        flow,
-        route,
-        7,
-        0x100000003ULL,
-        2,
-        7,
-        64,
-        declareMetadata(),
-        observer);
+        flow, route, 7, 0x100000003ULL, 2, 7, 64, declareMetadata(), observer);
     const std::uint64_t first_lifecycle = first->lifecycleId();
     first->set_flags(0xfeedU);
     first->set_hop_count(99);
@@ -251,15 +209,7 @@ TEST(RnicCollectivePacketTest, PoolReuseResetsInheritedPacketState) {
     first->free();
 
     RnicCollectivePacket* reused = RnicCollectivePacket::newDeclare(
-        flow,
-        route,
-        8,
-        0x100000004ULL,
-        3,
-        8,
-        72,
-        declareMetadata(),
-        observer);
+        flow, route, 8, 0x100000004ULL, 3, 8, 72, declareMetadata(), observer);
     EXPECT_EQ(reused, first);
     EXPECT_NE(reused->lifecycleId(), first_lifecycle);
     EXPECT_EQ(reused->id(), 8U);
@@ -287,16 +237,11 @@ TEST(RnicCollectivePacketTest, CarriesTypedGrantMetadataAtHighPriority) {
     Route route = routeTo(endpoint);
     auto observer = std::make_shared<RecordingObserver>();
     const RnicCollectiveGrant grant{
-        0xabcdef0123456789ULL,
-        11,
-        37,
-        8000000000ULL,
-        123456,
-        RnicCollectiveGrantKind::Update,
+        0xabcdef0123456789ULL, 11, 37, 8000000000ULL, 123456, RnicCollectiveGrantKind::Update,
     };
 
-    RnicCollectivePacket* packet = RnicCollectivePacket::newGrantUpdate(
-        flow, route, 91, 9, 4, 80, grant, observer);
+    RnicCollectivePacket* packet =
+        RnicCollectivePacket::newGrantUpdate(flow, route, 91, 9, 4, 80, grant, observer);
 
     EXPECT_EQ(packet->kind(), RnicCollectivePacketKind::GRANT_UPDATE);
     EXPECT_EQ(packet->priority(), Packet::PRIO_HI);
@@ -313,34 +258,27 @@ TEST(RnicCollectivePacketTest, CarriesTypedGrantMetadataAtHighPriority) {
               RnicCollectivePacketLifecycle::ENDPOINT_CONSUMED);
 
     const RnicCollectiveGrant accept{
-        grant.flow_id,
-        12,
-        38,
-        7000000000ULL,
-        223456,
-        RnicCollectiveGrantKind::Accept,
+        grant.flow_id, 12, 38, 7000000000ULL, 223456, RnicCollectiveGrantKind::Accept,
     };
-    RnicCollectivePacket* accept_packet = RnicCollectivePacket::newAccept(
-        flow, route, 93, 9, 4, 80, accept, observer);
+    RnicCollectivePacket* accept_packet =
+        RnicCollectivePacket::newAccept(flow, route, 93, 9, 4, 80, accept, observer);
     EXPECT_EQ(accept_packet->kind(), RnicCollectivePacketKind::ACCEPT);
-    EXPECT_EQ(accept_packet->grant().kind,
-              RnicCollectiveGrantKind::Accept);
+    EXPECT_EQ(accept_packet->grant().kind, RnicCollectiveGrantKind::Accept);
     accept_packet->sendOn();
     ASSERT_EQ(observer->observations.size(), 4U);
     EXPECT_EQ(observer->observations[3].lifecycle,
               RnicCollectivePacketLifecycle::ENDPOINT_CONSUMED);
 }
 
-TEST(RnicCollectivePacketTest,
-     RetireCarriesTheSameFinalLedgerAsData) {
+TEST(RnicCollectivePacketTest, RetireCarriesTheSameFinalLedgerAsData) {
     PacketFlow flow(nullptr);
     ConsumingEndpoint endpoint;
     Route route = routeTo(endpoint);
     auto observer = std::make_shared<RecordingObserver>();
     const RnicCollectiveFinalLedger ledger = twoPacketLedger();
 
-    RnicCollectivePacket* packet = RnicCollectivePacket::newRetire(
-        flow, route, 92, 0x200000003ULL, 4, 9, 64, ledger, observer);
+    RnicCollectivePacket* packet = RnicCollectivePacket::newRetire(flow, route, 92, 0x200000003ULL,
+                                                                   4, 9, 64, ledger, observer);
 
     EXPECT_EQ(packet->kind(), RnicCollectivePacketKind::RETIRE);
     EXPECT_EQ(packet->finalLedger().total_payload_bytes, 1500U);
@@ -352,25 +290,15 @@ TEST(RnicCollectivePacketTest,
               RnicCollectivePacketLifecycle::ENDPOINT_CONSUMED);
 }
 
-TEST(RnicCollectivePacketTest,
-     GapNackCarriesExactRejectedLifecycleAtHighPriority) {
+TEST(RnicCollectivePacketTest, GapNackCarriesExactRejectedLifecycleAtHighPriority) {
     PacketFlow flow(nullptr);
     ConsumingEndpoint endpoint;
     Route route = routeTo(endpoint);
     auto observer = std::make_shared<RecordingObserver>();
-    const RnicCollectiveGapNackMetadata gap{
-        7, 7000, RnicPacketExtent(936, 1000), 123456, 91, 2};
+    const RnicCollectiveGapNackMetadata gap{7, 7000, RnicPacketExtent(936, 1000), 123456, 91, 2};
 
-    RnicCollectivePacket* packet = RnicCollectivePacket::newGapNack(
-        flow,
-        route,
-        94,
-        0x200000004ULL,
-        9,
-        4,
-        64,
-        gap,
-        observer);
+    RnicCollectivePacket* packet =
+        RnicCollectivePacket::newGapNack(flow, route, 94, 0x200000004ULL, 9, 4, 64, gap, observer);
 
     EXPECT_EQ(packet->kind(), RnicCollectivePacketKind::GAP_NACK);
     EXPECT_EQ(packet->priority(), Packet::PRIO_HI);
@@ -394,56 +322,37 @@ TEST(RnicCollectivePacketTest, RejectsLossyWireAndLedgerConversions) {
     auto observer = std::make_shared<RecordingObserver>();
 
     EXPECT_THROW(
-        RnicCollectivePacket::newDeclare(
-            flow, route, 1, 1, 0, 1, 0, declareMetadata(), observer),
+        RnicCollectivePacket::newDeclare(flow, route, 1, 1, 0, 1, 0, declareMetadata(), observer),
         std::invalid_argument);
+    EXPECT_THROW(RnicCollectivePacket::newDeclare(
+                     flow, route, 1, 1, 0, 1,
+                     static_cast<std::uint64_t>(std::numeric_limits<std::uint16_t>::max()) + 1,
+                     declareMetadata(), observer),
+                 std::invalid_argument);
     EXPECT_THROW(
-        RnicCollectivePacket::newDeclare(
-            flow,
-            route,
-            1,
-            1,
-            0,
-            1,
-            static_cast<std::uint64_t>(
-                std::numeric_limits<std::uint16_t>::max()) + 1,
-            declareMetadata(),
-            observer),
-        std::invalid_argument);
-    EXPECT_THROW(
-        RnicCollectivePacket::newDeclare(
-            flow, route, 1, 1, 0, 1, 64, declareMetadata(0), observer),
+        RnicCollectivePacket::newDeclare(flow, route, 1, 1, 0, 1, 64, declareMetadata(0), observer),
         std::invalid_argument);
 
     const RnicCollectiveDataMetadata oversized{
         0,
         0,
         RnicPacketExtent(1,
-                         static_cast<std::uint64_t>(
-                             std::numeric_limits<std::uint16_t>::max()) + 1),
+                         static_cast<std::uint64_t>(std::numeric_limits<std::uint16_t>::max()) + 1),
         1,
-        {1,
-         static_cast<std::uint64_t>(
-             std::numeric_limits<std::uint16_t>::max()) + 1,
-         1},
+        {1, static_cast<std::uint64_t>(std::numeric_limits<std::uint16_t>::max()) + 1, 1},
     };
+    EXPECT_THROW(RnicCollectivePacket::newData(flow, route, 1, 1, 0, 1, oversized, observer),
+                 std::invalid_argument);
+
+    const RnicCollectiveDataMetadata inconsistent_final{0, 0, RnicPacketExtent(1500, 1564), 1,
+                                                        twoPacketLedger()};
     EXPECT_THROW(
-        RnicCollectivePacket::newData(
-            flow, route, 1, 1, 0, 1, oversized, observer),
+        RnicCollectivePacket::newData(flow, route, 1, 1, 0, 1, inconsistent_final, observer),
         std::invalid_argument);
 
-    const RnicCollectiveDataMetadata inconsistent_final{
-        0, 0, RnicPacketExtent(1500, 1564), 1, twoPacketLedger()};
+    RnicCollectiveGrant wrong_kind{1, 1, 1, 1, 1, RnicCollectiveGrantKind::Accept};
     EXPECT_THROW(
-        RnicCollectivePacket::newData(
-            flow, route, 1, 1, 0, 1, inconsistent_final, observer),
-        std::invalid_argument);
-
-    RnicCollectiveGrant wrong_kind{
-        1, 1, 1, 1, 1, RnicCollectiveGrantKind::Accept};
-    EXPECT_THROW(
-        RnicCollectivePacket::newGrantUpdate(
-            flow, route, 1, 1, 0, 64, wrong_kind, observer),
+        RnicCollectivePacket::newGrantUpdate(flow, route, 1, 1, 0, 64, wrong_kind, observer),
         std::invalid_argument);
     EXPECT_TRUE(observer->observations.empty());
 }
@@ -455,29 +364,11 @@ TEST(RnicCollectivePacketTest, RequiresObserverAndNonemptyExplicitRoute) {
     Route route = routeTo(endpoint);
     auto observer = std::make_shared<RecordingObserver>();
 
+    EXPECT_THROW(RnicCollectivePacket::newDeclare(flow, empty_route, 1, 1, 0, 1, 64,
+                                                  declareMetadata(), observer),
+                 std::invalid_argument);
     EXPECT_THROW(
-        RnicCollectivePacket::newDeclare(
-            flow,
-            empty_route,
-            1,
-            1,
-            0,
-            1,
-            64,
-            declareMetadata(),
-            observer),
-        std::invalid_argument);
-    EXPECT_THROW(
-        RnicCollectivePacket::newDeclare(
-            flow,
-            route,
-            1,
-            1,
-            0,
-            1,
-            64,
-            declareMetadata(),
-            nullptr),
+        RnicCollectivePacket::newDeclare(flow, route, 1, 1, 0, 1, 64, declareMetadata(), nullptr),
         std::invalid_argument);
     EXPECT_TRUE(observer->observations.empty());
 }

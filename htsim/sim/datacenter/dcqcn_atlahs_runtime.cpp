@@ -36,11 +36,9 @@ std::uint64_t splitmix64(std::uint64_t value) {
 }
 
 std::uint64_t transportLivePacketCount() {
-    return RocePacket::live_packet_count()
-           + RoceAck::live_packet_count()
-           + RoceNack::live_packet_count()
-           + CNPPacket::live_packet_count()
-           + EthPausePacket::live_packet_count();
+    return RocePacket::live_packet_count() + RoceAck::live_packet_count() +
+           RoceNack::live_packet_count() + CNPPacket::live_packet_count() +
+           EthPausePacket::live_packet_count();
 }
 
 class DcqcnHostQueue final : public BaseQueue {
@@ -49,14 +47,11 @@ public:
                    mem_b configured_capacity,
                    EventList& event_list,
                    std::string name)
-        : BaseQueue(bitrate, event_list, nullptr),
-          _configured_capacity(configured_capacity) {
+        : BaseQueue(bitrate, event_list, nullptr), _configured_capacity(configured_capacity) {
         _nodename = std::move(name);
     }
 
-    void register_sender(PacketSink& sender) {
-        _data_senders.push_back(&sender);
-    }
+    void register_sender(PacketSink& sender) { _data_senders.push_back(&sender); }
 
     void receivePacket(Packet& packet) override {
         if (packet.type() == ETH_PAUSE) {
@@ -64,9 +59,7 @@ public:
             const bool paused = pause.sleepTime() > 0;
             _data_paused = paused;
             for (PacketSink* sender : _data_senders) {
-                sender->receivePacket(
-                    *EthPausePacket::newpkt(paused ? 1 : 0,
-                                            pause.senderID()));
+                sender->receivePacket(*EthPausePacket::newpkt(paused ? 1 : 0, pause.senderID()));
             }
             packet.free();
             if (!_data_paused && _in_service == nullptr) {
@@ -81,8 +74,7 @@ public:
         } else if (packet.priority() == Packet::PRIO_LO) {
             _low[packet.flow_id()].push_back(&packet);
         } else {
-            throw std::invalid_argument(
-                "DCQCN host queue accepts only high control or low DATA");
+            throw std::invalid_argument("DCQCN host queue accepts only high control or low DATA");
         }
         _buffered_bytes += packet.size();
         _high_watermark = std::max(_high_watermark, _buffered_bytes);
@@ -101,29 +93,22 @@ public:
             throw std::logic_error("DCQCN host queue accounting underflow");
         }
         _buffered_bytes -= packet->size();
-        packet->flow().logTraffic(
-            *packet, *this, TrafficLogger::PKT_DEPART);
+        packet->flow().logTraffic(*packet, *this, TrafficLogger::PKT_DEPART);
         log_packet_send(drainTime(packet));
         packet->sendOn();
         begin_service();
     }
 
-    mem_b queuesize() const override {
-        return _buffered_bytes;
-    }
+    mem_b queuesize() const override { return _buffered_bytes; }
     mem_b maxsize() const override { return _configured_capacity; }
-    mem_b queuesize_high_watermark() const override {
-        return _high_watermark;
-    }
+    mem_b queuesize_high_watermark() const override { return _high_watermark; }
 
 private:
     Packet* select_low() {
         if (_data_paused || _low.empty()) {
             return nullptr;
         }
-        auto selected = _has_last_low_flow
-            ? _low.upper_bound(_last_low_flow)
-            : _low.begin();
+        auto selected = _has_last_low_flow ? _low.upper_bound(_last_low_flow) : _low.begin();
         if (selected == _low.end()) {
             selected = _low.begin();
         }
@@ -182,8 +167,7 @@ public:
           _state_trace(state_trace),
           _completion(std::move(completion)),
           _last_progress_ps(event_list.now()) {
-        setStateObserver(
-            [this](const char* event) { trace(event); });
+        setStateObserver([this](const char* event) { trace(event); });
     }
 
     void processAck(const RoceAck& ack) override {
@@ -211,11 +195,9 @@ public:
         trace(pause.sleepTime() > 0 ? "pause" : "resume");
     }
 
-    bool check_silent_rto(simtime_picosec now,
-                          simtime_picosec rto) {
-        if (done() || !has_outstanding_data()
-            || now < _last_progress_ps
-            || now - _last_progress_ps < rto) {
+    bool check_silent_rto(simtime_picosec now, simtime_picosec rto) {
+        if (done() || !has_outstanding_data() || now < _last_progress_ps ||
+            now - _last_progress_ps < rto) {
             return false;
         }
         _drops += static_cast<std::uint32_t>(_highest_sent - _last_acked);
@@ -235,19 +217,9 @@ private:
         }
         const bool paused = _state_send == PAUSED;
         const bool effective = !paused && !done();
-        _state_trace->append(
-            {eventlist().now(),
-             _atlahs_flow_id,
-             _source,
-             _destination,
-             event,
-             current_rate(),
-             effective ? current_rate() : UINT64_C(0),
-             alpha(),
-             paused,
-             _new_packets_sent,
-             _rtx_packets_sent,
-             _acked_packets});
+        _state_trace->append({eventlist().now(), _atlahs_flow_id, _source, _destination, event,
+                              current_rate(), effective ? current_rate() : UINT64_C(0), alpha(),
+                              paused, _new_packets_sent, _rtx_packets_sent, _acked_packets});
     }
 
     AtlahsFlowId _atlahs_flow_id;
@@ -270,9 +242,7 @@ std::uint32_t checkedWireFlowId(std::uint64_t value) {
 
 class DcqcnAtlahsRuntime::Impl final : public EventSource {
 public:
-    Impl(EventList& event_list,
-         DcqcnAtlahsRuntimeConfig config,
-         std::uint32_t physical_node_count)
+    Impl(EventList& event_list, DcqcnAtlahsRuntimeConfig config, std::uint32_t physical_node_count)
         : EventSource(event_list, "DCQCN ATLAHS RTO scanner"),
           event_list(event_list),
           config(std::move(config)),
@@ -281,58 +251,49 @@ public:
         validate_config();
 
         Packet::set_packet_size(
-            static_cast<int>(this->config.max_wire_packet_bytes
-                             - this->config.data_header_bytes));
+            static_cast<int>(this->config.max_wire_packet_bytes - this->config.data_header_bytes));
         RoceSink::ooo_enabled = false;
-        RoceSrc::setMinRTO(static_cast<std::uint32_t>(
-            this->config.silent_loss_rto_ps / UINT64_C(1000000)));
+        RoceSrc::setMinRTO(
+            static_cast<std::uint32_t>(this->config.silent_loss_rto_ps / UINT64_C(1000000)));
         DCQCNSrc::setMinRate(this->config.dcqcn_min_rate_bps);
 
         std::ifstream topology_probe(this->config.topology_file);
         if (!topology_probe.is_open()) {
-            throw std::invalid_argument(
-                "cannot open DCQCN topology file '"
-                + this->config.topology_file + "'");
+            throw std::invalid_argument("cannot open DCQCN topology file '" +
+                                        this->config.topology_file + "'");
         }
-        topology_config = FatTreeTopologyCfg::load(
-            this->config.topology_file,
-            this->config.ns_tm3_shared_buffer_bytes,
-            COMPOSITE,
-            FAIR_PRIO);
+        topology_config =
+            FatTreeTopologyCfg::load(this->config.topology_file,
+                                     this->config.ns_tm3_shared_buffer_bytes, COMPOSITE, FAIR_PRIO);
         if (topology_config == nullptr) {
-            throw std::runtime_error(
-                "DCQCN topology loader returned no configuration");
+            throw std::runtime_error("DCQCN topology loader returned no configuration");
         }
-        if (topology_config->get_tiers() != 2
-            || topology_config->no_of_nodes() != physical_node_count) {
+        if (topology_config->get_tiers() != 2 ||
+            topology_config->no_of_nodes() != physical_node_count) {
             throw std::invalid_argument(
                 "DCQCN comparator requires the matching two-tier GOAL "
                 "node count");
         }
-        if (topology_config->downlink_speed(TOR_TIER)
-                != this->config.endpoint_link_bps
-            || topology_config->downlink_speed(AGG_TIER)
-                != this->config.endpoint_link_bps
-            || topology_config->bundlesize(AGG_TIER) != 1) {
+        if (topology_config->downlink_speed(TOR_TIER) != this->config.endpoint_link_bps ||
+            topology_config->downlink_speed(AGG_TIER) != this->config.endpoint_link_bps ||
+            topology_config->bundlesize(AGG_TIER) != 1) {
             throw std::invalid_argument(
                 "DCQCN topology must use one equal-rate link per Clos edge");
         }
         topology_config->set_switch_model(FatTreeSwitchModel::NsTm3);
-        topology_config->set_ns_tm3_shared_buffer_capacity(
-            this->config.ns_tm3_shared_buffer_bytes);
-        topology = std::make_unique<FatTreeTopology>(
-            topology_config.get(), nullptr, &event_list, nullptr);
+        topology_config->set_ns_tm3_shared_buffer_capacity(this->config.ns_tm3_shared_buffer_bytes);
+        topology =
+            std::make_unique<FatTreeTopology>(topology_config.get(), nullptr, &event_list, nullptr);
 
-        const NsTm3DcqcnPolicyConfig policy_config{
-            true,
-            this->config.ecn_kmin_bytes,
-            this->config.ecn_kmax_bytes,
-            this->config.ecn_pmax_ppm,
-            this->config.ecn_seed,
-            true,
-            this->config.pfc_low_threshold_bytes,
-            this->config.pfc_high_threshold_bytes,
-            this->config.endpoint_link_bps};
+        const NsTm3DcqcnPolicyConfig policy_config{true,
+                                                   this->config.ecn_kmin_bytes,
+                                                   this->config.ecn_kmax_bytes,
+                                                   this->config.ecn_pmax_ppm,
+                                                   this->config.ecn_seed,
+                                                   true,
+                                                   this->config.pfc_low_threshold_bytes,
+                                                   this->config.pfc_high_threshold_bytes,
+                                                   this->config.endpoint_link_bps};
         configure_switches(topology->switches_lp, policy_config);
         configure_switches(topology->switches_up, policy_config);
         configure_switches(topology->switches_c, policy_config);
@@ -344,8 +305,7 @@ public:
         }
     }
 
-    void setup(std::uint32_t node_count,
-               CompletionHandler handler) {
+    void setup(std::uint32_t node_count, CompletionHandler handler) {
         if (setup_complete) {
             throw std::logic_error("DCQCN ATLAHS runtime setup twice");
         }
@@ -358,9 +318,7 @@ public:
         host_queues.reserve(node_count);
         for (std::uint32_t node = 0; node < node_count; ++node) {
             host_queues.push_back(std::make_unique<DcqcnHostQueue>(
-                config.endpoint_link_bps,
-                config.ns_tm3_shared_buffer_bytes,
-                event_list,
+                config.endpoint_link_bps, config.ns_tm3_shared_buffer_bytes, event_list,
                 "dcqcn-host-serializer-" + std::to_string(node)));
         }
         setup_complete = true;
@@ -371,12 +329,10 @@ public:
             throw std::logic_error("DCQCN ATLAHS send before setup");
         }
         if (request.start_time_ps != event_list.now()) {
-            throw std::invalid_argument(
-                "DCQCN ATLAHS runtime owns send timing in picoseconds");
+            throw std::invalid_argument("DCQCN ATLAHS runtime owns send timing in picoseconds");
         }
-        if (request.source >= physical_node_count
-            || request.destination >= physical_node_count
-            || request.source == request.destination) {
+        if (request.source >= physical_node_count || request.destination >= physical_node_count ||
+            request.source == request.destination) {
             throw std::out_of_range("invalid DCQCN ATLAHS endpoint pair");
         }
         if (!known_flow_ids.insert(request.flow_id).second) {
@@ -392,32 +348,23 @@ public:
         active_flow_ids.insert(request.flow_id);
 
         auto source = std::make_unique<DcqcnAtlahsSrc>(
-            event_list,
-            config.endpoint_link_bps,
-            request.flow_id,
-            request.source,
-            request.destination,
-            &state_trace,
+            event_list, config.endpoint_link_bps, request.flow_id, request.source,
+            request.destination, &state_trace,
             [this, flow_id = request.flow_id]() { complete(flow_id); });
         auto sink = std::make_unique<DCQCNSink>(event_list);
-        source->setName(
-            "dcqcn-" + std::to_string(request.source) + "-"
-            + std::to_string(request.destination) + "-"
-            + std::to_string(request.flow_id));
-        sink->DataReceiver::setName(
-            "dcqcn-sink-" + std::to_string(request.source) + "-"
-            + std::to_string(request.destination));
+        source->setName("dcqcn-" + std::to_string(request.source) + "-" +
+                        std::to_string(request.destination) + "-" +
+                        std::to_string(request.flow_id));
+        sink->DataReceiver::setName("dcqcn-sink-" + std::to_string(request.source) + "-" +
+                                    std::to_string(request.destination));
         source->set_dst(request.destination);
         sink->set_src(request.source);
         source->set_flowsize(request.payload_bytes);
 
-        Route* forward = make_route(
-            request.source, request.destination, request.flow_id, *sink);
-        Route* reverse = make_route(
-            request.destination,
-            request.source,
-            splitmix64(request.flow_id ^ UINT64_C(0xd1b54a32d192ed03)),
-            *source);
+        Route* forward = make_route(request.source, request.destination, request.flow_id, *sink);
+        Route* reverse =
+            make_route(request.destination, request.source,
+                       splitmix64(request.flow_id ^ UINT64_C(0xd1b54a32d192ed03)), *source);
         source->connect(forward, reverse, *sink, TRIGGER_START);
         source->set_flowid(checkedWireFlowId(next_wire_flow_id++));
         source->setPath(static_cast<std::uint32_t>(forward->path_id()));
@@ -434,36 +381,28 @@ public:
     }
 
     bool has_pending_physical_work() const noexcept {
-        const bool transport_timer_pending = std::any_of(
-            sources.begin(), sources.end(), [](const auto& source) {
-                return source->pacing_event_pending()
-                       || source->cc_timer_pending();
+        const bool transport_timer_pending =
+            std::any_of(sources.begin(), sources.end(), [](const auto& source) {
+                return source->pacing_event_pending() || source->cc_timer_pending();
             });
         const bool cnp_timer_pending = std::any_of(
-            sinks.begin(), sinks.end(), [](const auto& sink) {
-                return sink->cnp_timer_pending();
-            });
-        const bool pending = !active_flow_ids.empty()
-                             || transportLivePacketCount() != 0
-                             || transport_timer_pending
-                             || cnp_timer_pending
-                             || scanner_armed;
+            sinks.begin(), sinks.end(), [](const auto& sink) { return sink->cnp_timer_pending(); });
+        const bool pending = !active_flow_ids.empty() || transportLivePacketCount() != 0 ||
+                             transport_timer_pending || cnp_timer_pending || scanner_armed;
         if (pending && EventList::getPendingSources().empty()) {
-            std::cerr
-                << "[DCQCN pending] active=" << active_flow_ids.size()
-                << " data=" << RocePacket::live_packet_count()
-                << " ack=" << RoceAck::live_packet_count()
-                << " nack=" << RoceNack::live_packet_count()
-                << " cnp=" << CNPPacket::live_packet_count()
-                << " pfc=" << EthPausePacket::live_packet_count()
-                << '\n';
+            std::cerr << "[DCQCN pending] active=" << active_flow_ids.size()
+                      << " data=" << RocePacket::live_packet_count()
+                      << " ack=" << RoceAck::live_packet_count()
+                      << " nack=" << RoceNack::live_packet_count()
+                      << " cnp=" << CNPPacket::live_packet_count()
+                      << " pfc=" << EthPausePacket::live_packet_count() << '\n';
         }
         return pending;
     }
 
     std::uint64_t sum_policy_counter(
-            const std::function<std::uint64_t(
-                const NsTm3DcqcnPolicyCounters&)>& select) const noexcept {
+        const std::function<std::uint64_t(const NsTm3DcqcnPolicyCounters&)>& select)
+        const noexcept {
         std::uint64_t total = 0;
         const auto add = [&](const std::vector<Switch*>& switches) {
             for (Switch* base : switches) {
@@ -530,36 +469,27 @@ public:
 private:
     void validate_config() const {
         if (physical_node_count == 0 || config.topology_file.empty()) {
-            throw std::invalid_argument(
-                "DCQCN ATLAHS requires nodes and a topology file");
+            throw std::invalid_argument("DCQCN ATLAHS requires nodes and a topology file");
         }
-        if (config.endpoint_link_bps == 0
-            || config.max_wire_packet_bytes <= config.data_header_bytes
-            || config.ns_tm3_shared_buffer_bytes <= 0
-            || config.ecn_kmin_bytes < 0
-            || config.ecn_kmax_bytes <= config.ecn_kmin_bytes
-            || config.ecn_pmax_ppm == 0
-            || config.ecn_pmax_ppm > UINT32_C(1000000)
-            || config.pfc_low_threshold_bytes <= 0
-            || config.pfc_low_threshold_bytes
-                   >= config.pfc_high_threshold_bytes
-            || config.pfc_high_threshold_bytes
-                   >= config.ns_tm3_shared_buffer_bytes
-            || config.silent_loss_rto_ps == 0
-            || config.dcqcn_min_rate_bps == 0
-            || config.dcqcn_min_rate_bps > config.endpoint_link_bps) {
+        if (config.endpoint_link_bps == 0 ||
+            config.max_wire_packet_bytes <= config.data_header_bytes ||
+            config.ns_tm3_shared_buffer_bytes <= 0 || config.ecn_kmin_bytes < 0 ||
+            config.ecn_kmax_bytes <= config.ecn_kmin_bytes || config.ecn_pmax_ppm == 0 ||
+            config.ecn_pmax_ppm > UINT32_C(1000000) || config.pfc_low_threshold_bytes <= 0 ||
+            config.pfc_low_threshold_bytes >= config.pfc_high_threshold_bytes ||
+            config.pfc_high_threshold_bytes >= config.ns_tm3_shared_buffer_bytes ||
+            config.silent_loss_rto_ps == 0 || config.dcqcn_min_rate_bps == 0 ||
+            config.dcqcn_min_rate_bps > config.endpoint_link_bps) {
             throw std::invalid_argument("invalid DCQCN ATLAHS model config");
         }
     }
 
-    static void configure_switches(
-            const std::vector<Switch*>& switches,
-            const NsTm3DcqcnPolicyConfig& policy_config) {
+    static void configure_switches(const std::vector<Switch*>& switches,
+                                   const NsTm3DcqcnPolicyConfig& policy_config) {
         for (Switch* base : switches) {
             auto* ns_tm3 = dynamic_cast<NsTm3Switch*>(base);
             if (ns_tm3 == nullptr) {
-                throw std::logic_error(
-                    "DCQCN topology contains a non-ns-tm3 switch");
+                throw std::logic_error("DCQCN topology contains a non-ns-tm3 switch");
             }
             ns_tm3->configure_dcqcn_policy(policy_config);
         }
@@ -569,16 +499,12 @@ private:
                       std::uint32_t destination,
                       std::uint64_t entropy,
                       PacketSink& endpoint) {
-        const std::uint32_t source_leaf =
-            topology_config->HOST_POD_SWITCH(source);
-        const std::uint32_t destination_leaf =
-            topology_config->HOST_POD_SWITCH(destination);
+        const std::uint32_t source_leaf = topology_config->HOST_POD_SWITCH(source);
+        const std::uint32_t destination_leaf = topology_config->HOST_POD_SWITCH(destination);
         auto route = std::make_unique<Route>();
         route->push_back(host_queues[source].get());
         route->push_back(topology->pipes_ns_nlp[source][source_leaf][0]);
-        route->push_back(
-            topology->queues_ns_nlp[source][source_leaf][0]
-                ->getRemoteEndpoint());
+        route->push_back(topology->queues_ns_nlp[source][source_leaf][0]->getRemoteEndpoint());
 
         int path_count = 1;
         int path_id = 0;
@@ -587,32 +513,21 @@ private:
             if (path_count <= 0) {
                 throw std::logic_error("DCQCN Clos has no spine path");
             }
-            path_id = static_cast<int>(
-                splitmix64(entropy ^ config.ecmp_seed
-                           ^ (static_cast<std::uint64_t>(source) << 32)
-                           ^ destination)
-                % static_cast<std::uint64_t>(path_count));
-            const std::uint32_t spine =
-                static_cast<std::uint32_t>(path_id);
+            path_id = static_cast<int>(splitmix64(entropy ^ config.ecmp_seed ^
+                                                  (static_cast<std::uint64_t>(source) << 32) ^
+                                                  destination) %
+                                       static_cast<std::uint64_t>(path_count));
+            const std::uint32_t spine = static_cast<std::uint32_t>(path_id);
+            route->push_back(topology->queues_nlp_nup[source_leaf][spine][0]);
+            route->push_back(topology->pipes_nlp_nup[source_leaf][spine][0]);
+            route->push_back(topology->queues_nlp_nup[source_leaf][spine][0]->getRemoteEndpoint());
+            route->push_back(topology->queues_nup_nlp[spine][destination_leaf][0]);
+            route->push_back(topology->pipes_nup_nlp[spine][destination_leaf][0]);
             route->push_back(
-                topology->queues_nlp_nup[source_leaf][spine][0]);
-            route->push_back(
-                topology->pipes_nlp_nup[source_leaf][spine][0]);
-            route->push_back(
-                topology->queues_nlp_nup[source_leaf][spine][0]
-                    ->getRemoteEndpoint());
-            route->push_back(
-                topology->queues_nup_nlp[spine][destination_leaf][0]);
-            route->push_back(
-                topology->pipes_nup_nlp[spine][destination_leaf][0]);
-            route->push_back(
-                topology->queues_nup_nlp[spine][destination_leaf][0]
-                    ->getRemoteEndpoint());
+                topology->queues_nup_nlp[spine][destination_leaf][0]->getRemoteEndpoint());
         }
-        route->push_back(
-            topology->queues_nlp_ns[destination_leaf][destination][0]);
-        route->push_back(
-            topology->pipes_nlp_ns[destination_leaf][destination][0]);
+        route->push_back(topology->queues_nlp_ns[destination_leaf][destination][0]);
+        route->push_back(topology->pipes_nlp_ns[destination_leaf][destination][0]);
         route->push_back(&endpoint);
         route->set_path_id(path_id, path_count);
 
@@ -634,26 +549,21 @@ private:
     }
 
     void arm_scanner() {
-        const simtime_picosec interval = std::min(
-            config.silent_loss_rto_ps,
-            static_cast<simtime_picosec>(UINT64_C(1000000000)));
+        const simtime_picosec interval =
+            std::min(config.silent_loss_rto_ps, static_cast<simtime_picosec>(UINT64_C(1000000000)));
         event_list.sourceIsPendingRel(*this, interval);
         scanner_armed = true;
     }
 };
 
-DcqcnAtlahsRuntime::DcqcnAtlahsRuntime(
-        EventList& event_list,
-        DcqcnAtlahsRuntimeConfig config,
-        std::uint32_t physical_node_count)
-    : _impl(std::make_unique<Impl>(
-          event_list, std::move(config), physical_node_count)) {}
+DcqcnAtlahsRuntime::DcqcnAtlahsRuntime(EventList& event_list,
+                                       DcqcnAtlahsRuntimeConfig config,
+                                       std::uint32_t physical_node_count)
+    : _impl(std::make_unique<Impl>(event_list, std::move(config), physical_node_count)) {}
 
 DcqcnAtlahsRuntime::~DcqcnAtlahsRuntime() = default;
 
-void DcqcnAtlahsRuntime::setup(
-        std::uint32_t node_count,
-        CompletionHandler complete_flow) {
+void DcqcnAtlahsRuntime::setup(std::uint32_t node_count, CompletionHandler complete_flow) {
     _impl->setup(node_count, std::move(complete_flow));
 }
 
@@ -695,23 +605,17 @@ std::uint64_t DcqcnAtlahsRuntime::silent_rto_count() const noexcept {
 
 std::uint64_t DcqcnAtlahsRuntime::ecn_marked_packet_count() const noexcept {
     return _impl->sum_policy_counter(
-        [](const NsTm3DcqcnPolicyCounters& counters) {
-            return counters.ecn_marked_packets;
-        });
+        [](const NsTm3DcqcnPolicyCounters& counters) { return counters.ecn_marked_packets; });
 }
 
 std::uint64_t DcqcnAtlahsRuntime::pfc_pause_count() const noexcept {
     return _impl->sum_policy_counter(
-        [](const NsTm3DcqcnPolicyCounters& counters) {
-            return counters.pause_frames;
-        });
+        [](const NsTm3DcqcnPolicyCounters& counters) { return counters.pause_frames; });
 }
 
 std::uint64_t DcqcnAtlahsRuntime::pfc_resume_count() const noexcept {
     return _impl->sum_policy_counter(
-        [](const NsTm3DcqcnPolicyCounters& counters) {
-            return counters.resume_frames;
-        });
+        [](const NsTm3DcqcnPolicyCounters& counters) { return counters.resume_frames; });
 }
 
 std::uint64_t DcqcnAtlahsRuntime::dropped_packet_count() const noexcept {
@@ -727,70 +631,56 @@ void DcqcnAtlahsRuntime::writeStateTraceCsv() const {
         throw std::logic_error("DCQCN state trace was not requested");
     }
     if (_impl->has_pending_physical_work()) {
-        throw std::logic_error(
-            "DCQCN state trace may only be written at quiescence");
+        throw std::logic_error("DCQCN state trace may only be written at quiescence");
     }
-    _impl->state_trace.writeCsvAtomically(
-        *_impl->config.state_trace_csv);
+    _impl->state_trace.writeCsvAtomically(*_impl->config.state_trace_csv);
 }
 
-std::string renderDcqcnAtlahsManifest(
-        const DcqcnAtlahsRuntimeConfig& config,
-        std::uint32_t physical_node_count,
-    const std::string& goal_file,
-    const std::string& completion_csv,
-    const std::string& state_trace_csv,
-    const char* resolved_rank_mapping) {
+std::string renderDcqcnAtlahsManifest(const DcqcnAtlahsRuntimeConfig& config,
+                                      std::uint32_t physical_node_count,
+                                      const std::string& goal_file,
+                                      const std::string& completion_csv,
+                                      const std::string& state_trace_csv,
+                                      const char* resolved_rank_mapping) {
     std::ostringstream manifest;
-    manifest
-        << "[DCQCN manifest] schema=dcqcn-atlahs-model-v2"
-        << " profile=dcqcn"
-        << " goal=" << goal_file
-        << " completion_csv="
-        << (completion_csv.empty() ? "off" : completion_csv)
-        << " state_trace_csv="
-        << (state_trace_csv.empty() ? "off" : state_trace_csv)
-        << " resolved_rank_mapping=" << resolved_rank_mapping
-        << " physical_nodes=" << physical_node_count
-        << '\n';
-    manifest
-        << "[DCQCN manifest] topology=" << config.topology_file
-        << " clos_tiers=2 switch=ns-tm3"
-        << " routing=flow-hashed-ecmp"
-        << " ecmp_seed=" << config.ecmp_seed
-        << " endpoint_link_bps=" << config.endpoint_link_bps
-        << " shared_buffer_bytes=" << config.ns_tm3_shared_buffer_bytes
-        << '\n';
-    manifest
-        << "[DCQCN manifest] transport=rocev2-dcqcn"
-        << " recovery=go-back-n"
-        << " cnp_interval_ps=" << DCQCNSink::_cnp_interval
-        << " cnp_timer=single-coalesced-event-source"
-        << " cc_update_period_ps=" << DCQCNSrc::_cc_update_period
-        << " cc_timer=dedicated-coalesced-event-source"
-        << " pacing_timer=single-coalesced-event-source"
-        << " dcqcn_min_rate_bps=" << config.dcqcn_min_rate_bps
-        << " silent_loss_rto_ps=" << config.silent_loss_rto_ps
-        << " max_wire_packet_bytes=" << config.max_wire_packet_bytes
-        << " data_header_bytes=" << config.data_header_bytes
-        << " final_packet=exact-payload-tail"
-        << '\n';
-    manifest
-        << "[DCQCN manifest] ecn=ns-tm3-egress-selection-red"
-        << " ecn_kmin_bytes=" << config.ecn_kmin_bytes
-        << " ecn_kmax_bytes=" << config.ecn_kmax_bytes
-        << " ecn_pmax_ppm=" << config.ecn_pmax_ppm
-        << " ecn_seed=" << config.ecn_seed
-        << " ecn_sampler=packet-switch-egress-hash"
-        << " pfc=data-priority-only"
-        << " pfc_low_bytes=" << config.pfc_low_threshold_bytes
-        << " pfc_high_bytes=" << config.pfc_high_threshold_bytes
-        << " pfc_delivery=dedicated-link-local-reverse-serializer"
-        << " pfc_reverse_sharing=not-shared-with-reverse-data"
-        << " pfc_reverse_order=fifo-serialize-then-propagate"
-        << " pfc_wire_bytes=64"
-        << " pfc_preemption=none"
-        << " control_priority=strict-nonpreemptive"
-        << '\n';
+    manifest << "[DCQCN manifest] schema=dcqcn-atlahs-model-v2"
+             << " profile=dcqcn"
+             << " goal=" << goal_file
+             << " completion_csv=" << (completion_csv.empty() ? "off" : completion_csv)
+             << " state_trace_csv=" << (state_trace_csv.empty() ? "off" : state_trace_csv)
+             << " resolved_rank_mapping=" << resolved_rank_mapping
+             << " physical_nodes=" << physical_node_count << '\n';
+    manifest << "[DCQCN manifest] topology=" << config.topology_file
+             << " clos_tiers=2 switch=ns-tm3"
+             << " routing=flow-hashed-ecmp"
+             << " ecmp_seed=" << config.ecmp_seed
+             << " endpoint_link_bps=" << config.endpoint_link_bps
+             << " shared_buffer_bytes=" << config.ns_tm3_shared_buffer_bytes << '\n';
+    manifest << "[DCQCN manifest] transport=rocev2-dcqcn"
+             << " recovery=go-back-n"
+             << " cnp_interval_ps=" << DCQCNSink::_cnp_interval
+             << " cnp_timer=single-coalesced-event-source"
+             << " cc_update_period_ps=" << DCQCNSrc::_cc_update_period
+             << " cc_timer=dedicated-coalesced-event-source"
+             << " pacing_timer=single-coalesced-event-source"
+             << " dcqcn_min_rate_bps=" << config.dcqcn_min_rate_bps
+             << " silent_loss_rto_ps=" << config.silent_loss_rto_ps
+             << " max_wire_packet_bytes=" << config.max_wire_packet_bytes
+             << " data_header_bytes=" << config.data_header_bytes
+             << " final_packet=exact-payload-tail" << '\n';
+    manifest << "[DCQCN manifest] ecn=ns-tm3-egress-selection-red"
+             << " ecn_kmin_bytes=" << config.ecn_kmin_bytes
+             << " ecn_kmax_bytes=" << config.ecn_kmax_bytes
+             << " ecn_pmax_ppm=" << config.ecn_pmax_ppm << " ecn_seed=" << config.ecn_seed
+             << " ecn_sampler=packet-switch-egress-hash"
+             << " pfc=data-priority-only"
+             << " pfc_low_bytes=" << config.pfc_low_threshold_bytes
+             << " pfc_high_bytes=" << config.pfc_high_threshold_bytes
+             << " pfc_delivery=dedicated-link-local-reverse-serializer"
+             << " pfc_reverse_sharing=not-shared-with-reverse-data"
+             << " pfc_reverse_order=fifo-serialize-then-propagate"
+             << " pfc_wire_bytes=64"
+             << " pfc_preemption=none"
+             << " control_priority=strict-nonpreemptive" << '\n';
     return manifest.str();
 }

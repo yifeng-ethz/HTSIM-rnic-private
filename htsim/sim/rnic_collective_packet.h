@@ -99,8 +99,7 @@ struct RnicCollectivePacketObservation {
 class RnicCollectivePacketLifecycleObserver {
 public:
     virtual ~RnicCollectivePacketLifecycleObserver() = default;
-    virtual void observe(
-        const RnicCollectivePacketObservation& observation) noexcept = 0;
+    virtual void observe(const RnicCollectivePacketObservation& observation) noexcept = 0;
 };
 
 // A pooled, explicit-route HTSIM packet.  Metadata is immutable after factory
@@ -229,36 +228,30 @@ private:
 
     static std::uint16_t checkedWireBytes(std::uint64_t wire_bytes);
     static void validateRoute(const Route& route);
-    static void validateFinalLedger(
-        const RnicCollectiveFinalLedger& final_ledger);
+    static void validateFinalLedger(const RnicCollectiveFinalLedger& final_ledger);
     static void validateData(const RnicCollectiveDataMetadata& metadata);
-    static void validateDeclaration(
-        const RnicCollectiveDeclareMetadata& metadata);
-    static void validateGrant(
-        const RnicCollectiveGrant& grant,
-        RnicCollectivePacketKind packet_kind);
-    static void validateGapNack(
-        const RnicCollectiveGapNackMetadata& gap_nack);
+    static void validateDeclaration(const RnicCollectiveDeclareMetadata& metadata);
+    static void validateGrant(const RnicCollectiveGrant& grant,
+                              RnicCollectivePacketKind packet_kind);
+    static void validateGapNack(const RnicCollectiveGapNackMetadata& gap_nack);
     static std::uint64_t takeLifecycleId();
 
-    void initialize(
-        PacketFlow& flow,
-        const Route& route,
-        packetid_t htsim_packet_id,
-        RnicCollectivePacketKind kind,
-        AtlahsFlowId flow_id,
-        std::uint32_t source,
-        std::uint32_t destination,
-        std::uint16_t wire_bytes,
-        std::optional<RnicCollectiveDataMetadata> data,
-        std::optional<RnicCollectiveDeclareMetadata> declaration,
-        std::optional<RnicCollectiveGrant> grant,
-        std::optional<RnicCollectiveGapNackMetadata> gap_nack,
-        std::optional<RnicCollectiveFinalLedger> retire_ledger,
-        std::shared_ptr<RnicCollectivePacketLifecycleObserver> observer,
-        std::uint64_t lifecycle_id);
-    RnicCollectivePacketObservation observation(
-        RnicCollectivePacketLifecycle lifecycle) const;
+    void initialize(PacketFlow& flow,
+                    const Route& route,
+                    packetid_t htsim_packet_id,
+                    RnicCollectivePacketKind kind,
+                    AtlahsFlowId flow_id,
+                    std::uint32_t source,
+                    std::uint32_t destination,
+                    std::uint16_t wire_bytes,
+                    std::optional<RnicCollectiveDataMetadata> data,
+                    std::optional<RnicCollectiveDeclareMetadata> declaration,
+                    std::optional<RnicCollectiveGrant> grant,
+                    std::optional<RnicCollectiveGapNackMetadata> gap_nack,
+                    std::optional<RnicCollectiveFinalLedger> retire_ledger,
+                    std::shared_ptr<RnicCollectivePacketLifecycleObserver> observer,
+                    std::uint64_t lifecycle_id);
+    RnicCollectivePacketObservation observation(RnicCollectivePacketLifecycle lifecycle) const;
     void terminate(RnicCollectivePacketLifecycle lifecycle);
 
     // Route mutation is intentionally unavailable after factory construction.

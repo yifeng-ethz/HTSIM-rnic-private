@@ -13,26 +13,37 @@ DcqcnAtlahsCliOptions parse(std::vector<std::string> values) {
     for (const std::string& value : values) {
         arguments.push_back(value.c_str());
     }
-    return parseDcqcnAtlahsCli(
-        static_cast<int>(arguments.size()), arguments.data());
+    return parseDcqcnAtlahsCli(static_cast<int>(arguments.size()), arguments.data());
 }
 
 TEST(DcqcnAtlahsCliTest, AcceptsCanonicalCompletionAndModelOptions) {
-    const DcqcnAtlahsCliOptions options = parse({
-        "htsim_dcqcn_atlahs",
-        "-goal", "flat.bin",
-        "-topology", "clos.topo",
-        "-completion_csv", "flows.csv",
-        "-state_trace_csv", "state.csv",
-        "-goal_rank_mapping", "gpu-rank",
-        "-seed", "17",
-        "-ecn_kmin_bytes", "65536",
-        "-ecn_kmax_bytes", "655360",
-        "-ecn_pmax_ppm", "250000",
-        "-pfc_low_bytes", "262144",
-        "-pfc_high_bytes", "524288",
-        "-silent_rto_us", "50000",
-        "-dcqcn_min_rate_bps", "100000000"});
+    const DcqcnAtlahsCliOptions options = parse({"htsim_dcqcn_atlahs",
+                                                 "-goal",
+                                                 "flat.bin",
+                                                 "-topology",
+                                                 "clos.topo",
+                                                 "-completion_csv",
+                                                 "flows.csv",
+                                                 "-state_trace_csv",
+                                                 "state.csv",
+                                                 "-goal_rank_mapping",
+                                                 "gpu-rank",
+                                                 "-seed",
+                                                 "17",
+                                                 "-ecn_kmin_bytes",
+                                                 "65536",
+                                                 "-ecn_kmax_bytes",
+                                                 "655360",
+                                                 "-ecn_pmax_ppm",
+                                                 "250000",
+                                                 "-pfc_low_bytes",
+                                                 "262144",
+                                                 "-pfc_high_bytes",
+                                                 "524288",
+                                                 "-silent_rto_us",
+                                                 "50000",
+                                                 "-dcqcn_min_rate_bps",
+                                                 "100000000"});
 
     EXPECT_EQ(options.goal_file, "flat.bin");
     ASSERT_TRUE(options.completion_csv.has_value());
@@ -53,12 +64,10 @@ TEST(DcqcnAtlahsCliTest, AcceptsCanonicalCompletionAndModelOptions) {
 }
 
 TEST(DcqcnAtlahsCliTest, ExplicitEcnSeedOverridesRunSeedInEitherOrder) {
-    const DcqcnAtlahsCliOptions first = parse({
-        "dcqcn", "-goal", "flat.bin", "-topology", "clos.topo",
-        "-ecn_seed", "91", "-seed", "17"});
-    const DcqcnAtlahsCliOptions second = parse({
-        "dcqcn", "-goal", "flat.bin", "-topology", "clos.topo",
-        "-seed", "17", "-ecn_seed", "91"});
+    const DcqcnAtlahsCliOptions first = parse(
+        {"dcqcn", "-goal", "flat.bin", "-topology", "clos.topo", "-ecn_seed", "91", "-seed", "17"});
+    const DcqcnAtlahsCliOptions second = parse(
+        {"dcqcn", "-goal", "flat.bin", "-topology", "clos.topo", "-seed", "17", "-ecn_seed", "91"});
     EXPECT_EQ(first.runtime.ecmp_seed, 17U);
     EXPECT_EQ(first.runtime.ecn_seed, 91U);
     EXPECT_EQ(second.runtime.ecmp_seed, 17U);
@@ -66,8 +75,8 @@ TEST(DcqcnAtlahsCliTest, ExplicitEcnSeedOverridesRunSeedInEitherOrder) {
 }
 
 TEST(DcqcnAtlahsCliTest, DefaultsToThePinned400GComparisonProfile) {
-    const DcqcnAtlahsCliOptions options = parse({
-        "dcqcn", "-goal", "flat.bin", "-topology", "clos.topo"});
+    const DcqcnAtlahsCliOptions options =
+        parse({"dcqcn", "-goal", "flat.bin", "-topology", "clos.topo"});
     EXPECT_EQ(options.runtime.ecn_kmin_bytes, 65536);
     EXPECT_EQ(options.runtime.ecn_kmax_bytes, 655360);
     EXPECT_EQ(options.runtime.ecn_pmax_ppm, 250000U);
@@ -78,23 +87,17 @@ TEST(DcqcnAtlahsCliTest, DefaultsToThePinned400GComparisonProfile) {
 }
 
 TEST(DcqcnAtlahsCliTest, RequiresGoalAndTopologyAndRejectsLegacyAliases) {
-    EXPECT_THROW(parse({"dcqcn", "-topology", "clos.topo"}),
+    EXPECT_THROW(parse({"dcqcn", "-topology", "clos.topo"}), std::invalid_argument);
+    EXPECT_THROW(parse({"dcqcn", "-goal", "flat.bin"}), std::invalid_argument);
+    EXPECT_THROW(parse({"dcqcn", "-goal", "flat.bin", "-topology", "clos.topo", "-tm3", "true"}),
                  std::invalid_argument);
-    EXPECT_THROW(parse({"dcqcn", "-goal", "flat.bin"}),
-                 std::invalid_argument);
-    EXPECT_THROW(parse({"dcqcn", "-goal", "flat.bin",
-                        "-topology", "clos.topo",
-                        "-tm3", "true"}),
-                 std::invalid_argument);
-    EXPECT_THROW(parse({"dcqcn", "-goal", "flat.bin",
-                        "-topology", "clos.topo",
+    EXPECT_THROW(parse({"dcqcn", "-goal", "flat.bin", "-topology", "clos.topo",
                         "-ecn_threshold_bytes", "262144"}),
                  std::invalid_argument);
 }
 
 TEST(DcqcnAtlahsCliTest, UsageNamesSeparateComparatorExecutable) {
-    const std::string usage =
-        dcqcnAtlahsCliUsage("htsim_dcqcn_atlahs");
+    const std::string usage = dcqcnAtlahsCliUsage("htsim_dcqcn_atlahs");
     EXPECT_NE(usage.find("htsim_dcqcn_atlahs"), std::string::npos);
     EXPECT_NE(usage.find("-completion_csv FILE"), std::string::npos);
     EXPECT_NE(usage.find("-state_trace_csv FILE"), std::string::npos);

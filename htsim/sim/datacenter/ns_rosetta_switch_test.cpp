@@ -10,9 +10,9 @@
 #include <utility>
 #include <vector>
 
+#include "eth_pause_packet.h"
 #include "fat_tree_switch_factory.h"
 #include "fat_tree_topology.h"
-#include "eth_pause_packet.h"
 #include "ns_rosetta_switch.h"
 
 namespace {
@@ -23,8 +23,12 @@ constexpr mem_b kDefaultSharedBuffer = 4096;
 
 class TestPacket : public Packet {
 public:
-    TestPacket(PacketFlow& flow, const Route& route, packetid_t packet_id,
-               PktPriority priority, uint32_t source, uint32_t destination,
+    TestPacket(PacketFlow& flow,
+               const Route& route,
+               packetid_t packet_id,
+               PktPriority priority,
+               uint32_t source,
+               uint32_t destination,
                uint16_t bytes = kPacketBytes)
         : _priority(priority) {
         set_route(flow, route, bytes, packet_id);
@@ -48,17 +52,13 @@ public:
         simtime_picosec time;
     };
 
-    void receivePacket(Packet& pkt) override {
-        arrivals.push_back({pkt.id(), EventList::now()});
-    }
+    void receivePacket(Packet& pkt) override { arrivals.push_back({pkt.id(), EventList::now()}); }
     const string& nodename() override { return _name; }
 
     simtime_picosec arrival_time(packetid_t packet_id) const {
         auto arrival = std::find_if(
             arrivals.begin(), arrivals.end(),
-            [packet_id](const Arrival& value) {
-                return value.packet_id == packet_id;
-            });
+            [packet_id](const Arrival& value) { return value.packet_id == packet_id; });
         if (arrival == arrivals.end()) {
             throw std::out_of_range("packet was not delivered");
         }
@@ -71,13 +71,11 @@ private:
     string _name{"RecordingSink"};
 };
 
-class RecordingBacklogObserver final
-    : public NsRosettaBacklogObserver {
+class RecordingBacklogObserver final : public NsRosettaBacklogObserver {
 public:
     RecordingBacklogObserver() { observations.reserve(32); }
 
-    void observe(
-        const NsRosettaBacklogObservation& observation) noexcept override {
+    void observe(const NsRosettaBacklogObservation& observation) noexcept override {
         observations.push_back(observation);
     }
 
@@ -86,10 +84,8 @@ public:
 
 class CallbackEvent final : public EventSource {
 public:
-    CallbackEvent(EventList& eventlist, simtime_picosec delay,
-                  std::function<void()> callback)
-        : EventSource(eventlist, "ns-rosetta-test-callback"),
-          _callback(std::move(callback)) {
+    CallbackEvent(EventList& eventlist, simtime_picosec delay, std::function<void()> callback)
+        : EventSource(eventlist, "ns-rosetta-test-callback"), _callback(std::move(callback)) {
         eventlist.sourceIsPendingRel(*this, delay);
     }
 
@@ -101,27 +97,27 @@ private:
 
 class NsRosettaHarness {
 public:
-    explicit NsRosettaHarness(mem_b shared_buffer_capacity =
-                                  kDefaultSharedBuffer,
-                              FatTreeSwitch::switch_type type =
-                                  FatTreeSwitch::TOR,
+    explicit NsRosettaHarness(mem_b shared_buffer_capacity = kDefaultSharedBuffer,
+                              FatTreeSwitch::switch_type type = FatTreeSwitch::TOR,
                               simtime_picosec switch_delay = 0)
         : eventlist(EventList::getTheEventList()),
-          switch_owner(FatTreeSwitchFactory::create(
-              FatTreeSwitchModel::NsRosetta, eventlist,
-              "ns-rosetta-test", type, 0, switch_delay, nullptr,
-              shared_buffer_capacity)),
+          switch_owner(FatTreeSwitchFactory::create(FatTreeSwitchModel::NsRosetta,
+                                                    eventlist,
+                                                    "ns-rosetta-test",
+                                                    type,
+                                                    0,
+                                                    switch_delay,
+                                                    nullptr,
+                                                    shared_buffer_capacity)),
           traffic_manager(dynamic_cast<NsRosetta*>(switch_owner.get())) {
         if (traffic_manager == nullptr) {
-            throw std::logic_error(
-                "factory did not construct ns-rosetta switch");
+            throw std::logic_error("factory did not construct ns-rosetta switch");
         }
     }
 
-    NsRosettaEgressSerializer& add_egress(
-        QueueLogger* logger = nullptr) {
-        auto serializer = std::make_unique<NsRosettaEgressSerializer>(
-            kLinkSpeed, eventlist, logger);
+    NsRosettaEgressSerializer& add_egress(QueueLogger* logger = nullptr) {
+        auto serializer =
+            std::make_unique<NsRosettaEgressSerializer>(kLinkSpeed, eventlist, logger);
         NsRosettaEgressSerializer* result = serializer.get();
         serializers.push_back(std::move(serializer));
         traffic_manager->addPort(result);
@@ -129,11 +125,10 @@ public:
     }
 
     NsRosettaIngressPort& add_ingress(const string& name) {
-        auto* ingress = dynamic_cast<NsRosettaIngressPort*>(
-            traffic_manager->create_physical_ingress(name));
+        auto* ingress =
+            dynamic_cast<NsRosettaIngressPort*>(traffic_manager->create_physical_ingress(name));
         if (ingress == nullptr) {
-            throw std::logic_error(
-                "ns-rosetta ingress adapter was not created");
+            throw std::logic_error("ns-rosetta ingress adapter was not created");
         }
         return *ingress;
     }
@@ -149,8 +144,7 @@ public:
     NsRosetta* traffic_manager;
 };
 
-Route route_via(NsRosettaEgressSerializer& serializer,
-                RecordingSink& sink) {
+Route route_via(NsRosettaEgressSerializer& serializer, RecordingSink& sink) {
     Route route;
     route.push_back(&serializer);
     route.push_back(&sink);
@@ -165,8 +159,7 @@ std::vector<packetid_t> arrival_order(const RecordingSink& sink) {
     return result;
 }
 
-TEST(NsRosettaSwitchTest,
-     RequestGrantPreventsOneIngressFromDrivingTwoEgressesAtOnce) {
+TEST(NsRosettaSwitchTest, RequestGrantPreventsOneIngressFromDrivingTwoEgressesAtOnce) {
     NsRosettaHarness harness;
     NsRosettaEgressSerializer& egress_0 = harness.add_egress();
     NsRosettaEgressSerializer& egress_1 = harness.add_egress();
@@ -178,8 +171,7 @@ TEST(NsRosettaSwitchTest,
     PacketFlow flow(nullptr);
     TestPacket ingress_0_first(flow, route_0, 1, Packet::PRIO_LO, 0, 10);
     TestPacket ingress_0_second(flow, route_1, 2, Packet::PRIO_LO, 0, 11);
-    TestPacket independent_ingress(flow, route_1, 3, Packet::PRIO_LO, 1,
-                                   11);
+    TestPacket independent_ingress(flow, route_1, 3, Packet::PRIO_LO, 1, 11);
 
     const simtime_picosec start_time = EventList::now();
     ingress_0.receivePacket(ingress_0_first);
@@ -196,17 +188,14 @@ TEST(NsRosettaSwitchTest, PerEgressVoqsAvoidHeadOfLineBlocking) {
     NsRosettaHarness harness;
     NsRosettaEgressSerializer& blocked_egress = harness.add_egress();
     NsRosettaEgressSerializer& free_egress = harness.add_egress();
-    NsRosettaIngressPort& blocker_ingress =
-        harness.add_ingress("blocker-ingress");
-    NsRosettaIngressPort& tested_ingress =
-        harness.add_ingress("tested-ingress");
+    NsRosettaIngressPort& blocker_ingress = harness.add_ingress("blocker-ingress");
+    NsRosettaIngressPort& tested_ingress = harness.add_ingress("tested-ingress");
     RecordingSink sink;
     Route blocked_route = route_via(blocked_egress, sink);
     Route free_route = route_via(free_egress, sink);
     PacketFlow flow(nullptr);
     TestPacket blocker(flow, blocked_route, 1, Packet::PRIO_LO, 0, 8, 200);
-    TestPacket queued_behind_blocker(flow, blocked_route, 2,
-                                     Packet::PRIO_LO, 1, 8);
+    TestPacket queued_behind_blocker(flow, blocked_route, 2, Packet::PRIO_LO, 1, 8);
     TestPacket escapes_hol(flow, free_route, 3, Packet::PRIO_LO, 1, 9);
 
     blocker_ingress.receivePacket(blocker);
@@ -234,8 +223,7 @@ TEST(NsRosettaSwitchTest, AppliesStrictClassPriorityAtPacketBoundaries) {
     ingress_1.receivePacket(high_waiting);
     NsRosettaHarness::drain_all_events();
 
-    EXPECT_EQ(arrival_order(sink),
-              (std::vector<packetid_t>{1, 3, 2}));
+    EXPECT_EQ(arrival_order(sink), (std::vector<packetid_t>{1, 3, 2}));
 }
 
 TEST(NsRosettaSwitchTest, RoundRobinsIngressRequestsForOneEgress) {
@@ -257,8 +245,7 @@ TEST(NsRosettaSwitchTest, RoundRobinsIngressRequestsForOneEgress) {
     ingress_1.receivePacket(second_1);
     NsRosettaHarness::drain_all_events();
 
-    EXPECT_EQ(arrival_order(sink),
-              (std::vector<packetid_t>{1, 3, 2, 4}));
+    EXPECT_EQ(arrival_order(sink), (std::vector<packetid_t>{1, 3, 2, 4}));
 }
 
 TEST(NsRosettaSwitchTest, ExposesBoundedLocalRequestAndPathLoadSamples) {
@@ -288,8 +275,7 @@ TEST(NsRosettaSwitchTest, ExposesBoundedLocalRequestAndPathLoadSamples) {
     EXPECT_EQ(high_depth.queued_packets, 1);
     EXPECT_EQ(high_depth.queued_bytes, 100);
 
-    const NsRosettaPathLoad output_0 =
-        harness.traffic_manager->sample_path_load(0);
+    const NsRosettaPathLoad output_0 = harness.traffic_manager->sample_path_load(0);
     EXPECT_EQ(output_0.requesting_ingresses, 1);
     EXPECT_EQ(output_0.queued_packets, 1);
     EXPECT_EQ(output_0.buffered_bytes, 100);
@@ -299,25 +285,15 @@ TEST(NsRosettaSwitchTest, ExposesBoundedLocalRequestAndPathLoadSamples) {
     EXPECT_EQ(output_0.shared_buffer_occupancy, 200);
     EXPECT_EQ(output_0.shared_buffer_capacity, kDefaultSharedBuffer);
 
-    EXPECT_EQ(harness.traffic_manager->voq_buffered_bytes(
-                  0, 1, Packet::PRIO_HI),
-              100);
+    EXPECT_EQ(harness.traffic_manager->voq_buffered_bytes(0, 1, Packet::PRIO_HI), 100);
     EXPECT_EQ(harness.traffic_manager->ingress_buffered_bytes(0), 100);
     EXPECT_EQ(harness.traffic_manager->ingress_backlog_bytes(0), 200);
-    EXPECT_EQ(harness.traffic_manager->egress_pair_backlog_bytes(
-                  0, {0, 8}),
-              100);
-    EXPECT_EQ(harness.traffic_manager->egress_pair_backlog_bytes(
-                  0, {1, 8}),
-              100);
-    EXPECT_EQ(harness.traffic_manager->egress_pair_backlog_bytes(
-                  1, {0, 8}),
-              100);
+    EXPECT_EQ(harness.traffic_manager->egress_pair_backlog_bytes(0, {0, 8}), 100);
+    EXPECT_EQ(harness.traffic_manager->egress_pair_backlog_bytes(0, {1, 8}), 100);
+    EXPECT_EQ(harness.traffic_manager->egress_pair_backlog_bytes(1, {0, 8}), 100);
     EXPECT_EQ(harness.traffic_manager->pair_backlog_bytes({0, 8}), 200);
-    EXPECT_THROW(harness.traffic_manager->sample_path_load(2),
-                 std::out_of_range);
-    EXPECT_THROW(harness.traffic_manager->voq_buffered_bytes(
-                     2, 0, Packet::PRIO_LO),
+    EXPECT_THROW(harness.traffic_manager->sample_path_load(2), std::out_of_range);
+    EXPECT_THROW(harness.traffic_manager->voq_buffered_bytes(2, 0, Packet::PRIO_LO),
                  std::out_of_range);
 
     NsRosettaHarness::drain_all_events();
@@ -335,9 +311,8 @@ TEST(NsRosettaSwitchTest, PathLoadReportsResidualNotWholePacketService) {
     ingress.receivePacket(packet);
     ASSERT_TRUE(EventList::doNextEvent());
     std::optional<NsRosettaPathLoad> midpoint;
-    CallbackEvent sample(EventList::getTheEventList(), timeFromNs(50), [&] {
-        midpoint = harness.traffic_manager->sample_path_load(0);
-    });
+    CallbackEvent sample(EventList::getTheEventList(), timeFromNs(50),
+                         [&] { midpoint = harness.traffic_manager->sample_path_load(0); });
     NsRosettaHarness::drain_all_events();
 
     ASSERT_TRUE(midpoint.has_value());
@@ -345,8 +320,7 @@ TEST(NsRosettaSwitchTest, PathLoadReportsResidualNotWholePacketService) {
     EXPECT_EQ(midpoint->backlog_delay_ps, timeFromNs(150));
 }
 
-TEST(NsRosettaSwitchTest,
-     ObserverReportsDestinationEgressAndEndpointPairTransitions) {
+TEST(NsRosettaSwitchTest, ObserverReportsDestinationEgressAndEndpointPairTransitions) {
     NsRosettaHarness harness;
     NsRosettaEgressSerializer& egress = harness.add_egress();
     NsRosettaIngressPort& ingress = harness.add_ingress("ingress-0");
@@ -362,20 +336,16 @@ TEST(NsRosettaSwitchTest,
     NsRosettaHarness::drain_all_events();
 
     ASSERT_EQ(observer->observations.size(), 3);
-    EXPECT_EQ(observer->observations[0].transition,
-              NsRosettaQueueTransition::Enqueued);
-    EXPECT_EQ(observer->observations[1].transition,
-              NsRosettaQueueTransition::Granted);
+    EXPECT_EQ(observer->observations[0].transition, NsRosettaQueueTransition::Enqueued);
+    EXPECT_EQ(observer->observations[1].transition, NsRosettaQueueTransition::Granted);
     EXPECT_EQ(observer->observations[2].transition,
               NsRosettaQueueTransition::SerializationCompleted);
-    for (const NsRosettaBacklogObservation& observation :
-         observer->observations) {
+    for (const NsRosettaBacklogObservation& observation : observer->observations) {
         EXPECT_EQ(observation.switch_type, FatTreeSwitch::TOR);
         EXPECT_EQ(observation.ingress_id, 0);
         EXPECT_EQ(observation.egress_id, 0);
         EXPECT_EQ(observation.traffic_class, 1);
-        EXPECT_EQ(observation.pair,
-                  (NsRosettaEndpointPair{5, 9}));
+        EXPECT_EQ(observation.pair, (NsRosettaEndpointPair{5, 9}));
         EXPECT_EQ(observation.flow_id, 77);
         EXPECT_EQ(observation.packet_id, 91);
     }
@@ -409,8 +379,7 @@ TEST(NsRosettaSwitchTest, SharedBufferDropsWithoutPauseOrBackpressure) {
     EXPECT_EQ(harness.traffic_manager->shared_buffer_high_watermark(), 100);
 
     NsRosettaHarness::drain_all_events();
-    EXPECT_EQ(arrival_order(sink),
-              (std::vector<packetid_t>{1, 2}));
+    EXPECT_EQ(arrival_order(sink), (std::vector<packetid_t>{1, 2}));
 }
 
 TEST(NsRosettaSwitchTest, FactoryConstructsEveryClosTier) {
@@ -418,9 +387,8 @@ TEST(NsRosettaSwitchTest, FactoryConstructsEveryClosTier) {
     for (FatTreeSwitch::switch_type type :
          {FatTreeSwitch::TOR, FatTreeSwitch::AGG, FatTreeSwitch::CORE}) {
         auto switch_instance = FatTreeSwitchFactory::create(
-            FatTreeSwitchModel::NsRosetta, eventlist, "ns-rosetta-tier",
-            type, static_cast<uint32_t>(type), 0, nullptr,
-            kDefaultSharedBuffer);
+            FatTreeSwitchModel::NsRosetta, eventlist, "ns-rosetta-tier", type,
+            static_cast<uint32_t>(type), 0, nullptr, kDefaultSharedBuffer);
         auto* rosetta = dynamic_cast<NsRosetta*>(switch_instance.get());
         ASSERT_NE(rosetta, nullptr);
         EXPECT_EQ(rosetta->getType(), type);
@@ -429,8 +397,8 @@ TEST(NsRosettaSwitchTest, FactoryConstructsEveryClosTier) {
 
 TEST(NsRosettaSwitchTest, FatTreeBuildsPhysicalRosettaPorts) {
     EventList& eventlist = EventList::getTheEventList();
-    FatTreeTopologyCfg cfg(2, 32, speedFromGbps(100), 32768,
-                           timeFromNs(1000), 0, COMPOSITE, FAIR_PRIO);
+    FatTreeTopologyCfg cfg(2, 32, speedFromGbps(100), 32768, timeFromNs(1000), 0, COMPOSITE,
+                           FAIR_PRIO);
     cfg.set_switch_model(FatTreeSwitchModel::NsRosetta);
     cfg.set_ns_rosetta_shared_buffer_capacity(65536);
     FatTreeTopology topology(&cfg, nullptr, &eventlist, nullptr);
@@ -442,8 +410,7 @@ TEST(NsRosettaSwitchTest, FatTreeBuildsPhysicalRosettaPorts) {
         EXPECT_NE(dynamic_cast<NsRosetta*>(switch_instance), nullptr);
     }
 
-    std::unique_ptr<std::vector<const Route*>> paths(
-        topology.get_bidir_paths(0, 31, false));
+    std::unique_ptr<std::vector<const Route*>> paths(topology.get_bidir_paths(0, 31, false));
     ASSERT_FALSE(paths->empty());
     size_t ingress_adapters = 0;
     size_t egress_serializers = 0;
@@ -461,15 +428,12 @@ TEST(NsRosettaSwitchTest, FatTreeBuildsPhysicalRosettaPorts) {
 
 TEST(NsRosettaSwitchTest, ExplicitlyRejectsPauseQueueModes) {
     EventList& eventlist = EventList::getTheEventList();
-    for (queue_type queue_mode :
-         {LOSSLESS, LOSSLESS_INPUT, LOSSLESS_INPUT_ECN}) {
-        FatTreeTopologyCfg cfg(2, 32, speedFromGbps(100), 32768,
-                               timeFromNs(1000), 0, queue_mode,
+    for (queue_type queue_mode : {LOSSLESS, LOSSLESS_INPUT, LOSSLESS_INPUT_ECN}) {
+        FatTreeTopologyCfg cfg(2, 32, speedFromGbps(100), 32768, timeFromNs(1000), 0, queue_mode,
                                FAIR_PRIO);
         cfg.set_switch_model(FatTreeSwitchModel::NsRosetta);
 
-        EXPECT_THROW(FatTreeTopology(&cfg, nullptr, &eventlist, nullptr),
-                     std::invalid_argument);
+        EXPECT_THROW(FatTreeTopology(&cfg, nullptr, &eventlist, nullptr), std::invalid_argument);
     }
 }
 

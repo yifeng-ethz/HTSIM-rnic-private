@@ -81,14 +81,12 @@ struct NsTm3QueueObservation {
 class NsTm3QueueObserver {
 public:
     virtual ~NsTm3QueueObserver() = default;
-    virtual void observe(
-        const NsTm3QueueObservation& observation) noexcept = 0;
+    virtual void observe(const NsTm3QueueObservation& observation) noexcept = 0;
 };
 
 class NsTm3IngressPort : public PacketSink {
 public:
-    NsTm3IngressPort(NsTm3Switch& owner, uint32_t ingress_id,
-                         std::string name);
+    NsTm3IngressPort(NsTm3Switch& owner, uint32_t ingress_id, std::string name);
 
     void receivePacket(Packet& pkt) override;
     const string& nodename() override { return _name; }
@@ -105,8 +103,7 @@ private:
 // ingress/egress/class VoQs until this serializer becomes idle.
 class NsTm3EgressSerializer : public BaseQueue {
 public:
-    NsTm3EgressSerializer(linkspeed_bps bitrate, EventList& eventlist,
-                              QueueLogger* logger);
+    NsTm3EgressSerializer(linkspeed_bps bitrate, EventList& eventlist, QueueLogger* logger);
 
     void bind(NsTm3Switch& owner, uint32_t egress_id);
     void receivePacket(Packet& pkt) override;
@@ -140,10 +137,13 @@ private:
 
 class NsTm3Switch : public FatTreeSwitch {
 public:
-    NsTm3Switch(EventList& eventlist, const string& name,
-                    switch_type type, uint32_t id,
-                    simtime_picosec switch_delay, FatTreeTopology* topology,
-                    mem_b shared_buffer_capacity);
+    NsTm3Switch(EventList& eventlist,
+                const string& name,
+                switch_type type,
+                uint32_t id,
+                simtime_picosec switch_delay,
+                FatTreeTopology* topology,
+                mem_b shared_buffer_capacity);
     ~NsTm3Switch() override;
 
     int addPort(BaseQueue* queue) override;
@@ -154,30 +154,21 @@ public:
     void egress_serialization_complete(uint32_t egress_id);
     void egress_pause_state_changed(uint32_t egress_id);
     void configure_dcqcn_policy(const NsTm3DcqcnPolicyConfig& config);
-    const NsTm3DcqcnPolicy* dcqcn_policy() const {
-        return _dcqcn_policy.get();
-    }
+    const NsTm3DcqcnPolicy* dcqcn_policy() const { return _dcqcn_policy.get(); }
     void set_queue_observer(std::shared_ptr<NsTm3QueueObserver> observer) {
         _queue_observer = std::move(observer);
     }
     void set_voq_arbitration(NsTm3VoqArbitration arbitration);
-    NsTm3VoqArbitration voq_arbitration() const noexcept {
-        return _voq_arbitration;
-    }
+    NsTm3VoqArbitration voq_arbitration() const noexcept { return _voq_arbitration; }
 
     mem_b shared_buffer_capacity() const { return _shared_buffer_capacity; }
     mem_b shared_buffer_occupancy() const { return _shared_buffer_occupancy; }
-    mem_b shared_buffer_high_watermark() const {
-        return _shared_buffer_high_watermark;
-    }
-    const NsTm3BufferCounters& buffer_counters() const {
-        return _buffer_counters;
-    }
+    mem_b shared_buffer_high_watermark() const { return _shared_buffer_high_watermark; }
+    const NsTm3BufferCounters& buffer_counters() const { return _buffer_counters; }
     mem_b egress_buffered_bytes(uint32_t egress_id) const;
     mem_b egress_backlog_bytes(uint32_t egress_id) const;
     size_t physical_egress_count() const { return _egresses.size(); }
-    const NsTm3EgressStatistics& egress_statistics(
-        uint32_t egress_id) const;
+    const NsTm3EgressStatistics& egress_statistics(uint32_t egress_id) const;
     size_t physical_ingress_count() const { return _physical_ingresses.size(); }
 
 private:
@@ -214,13 +205,11 @@ private:
 
     static size_t traffic_class(Packet::PktPriority priority);
     NsTm3EgressSerializer& resolve_selected_egress(Packet& pkt);
-    void enqueue(Packet& pkt, uint32_t ingress_id,
-                 NsTm3EgressSerializer& egress);
+    void enqueue(Packet& pkt, uint32_t ingress_id, NsTm3EgressSerializer& egress);
     std::optional<SelectedPacket> select_next_packet(EgressState& egress);
     void schedule_egress(uint32_t egress_id);
-    void emit_queue_observation(
-        NsTm3QueueTransition transition,
-        const PacketSummary& packet) noexcept;
+    void emit_queue_observation(NsTm3QueueTransition transition,
+                                const PacketSummary& packet) noexcept;
     EgressState& egress_state(uint32_t egress_id);
     const EgressState& egress_state(uint32_t egress_id) const;
 
@@ -234,8 +223,7 @@ private:
     std::unordered_map<Packet*, uint32_t> _pipeline_ingress;
     std::unique_ptr<NsTm3DcqcnPolicy> _dcqcn_policy;
     std::shared_ptr<NsTm3QueueObserver> _queue_observer;
-    NsTm3VoqArbitration _voq_arbitration{
-        NsTm3VoqArbitration::OldestHeadFirst};
+    NsTm3VoqArbitration _voq_arbitration{NsTm3VoqArbitration::OldestHeadFirst};
 };
 
 #endif

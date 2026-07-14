@@ -29,14 +29,12 @@ EventList& testEventList() {
     return event_list;
 }
 
-std::unique_ptr<FatTreeTopologyCfg> topologyConfig(
-        mem_b shared_buffer_bytes = 64 << 20) {
+std::unique_ptr<FatTreeTopologyCfg> topologyConfig(mem_b shared_buffer_bytes = 64 << 20) {
     const std::filesystem::path topology_file =
-        std::filesystem::path(__FILE__).parent_path()
-        / "../../../experiments/rnic_multibaseline/topologies/clos_64_400g.topo";
-    auto config = FatTreeTopologyCfg::load(
-        topology_file.lexically_normal().string(),
-        shared_buffer_bytes, COMPOSITE, FAIR_PRIO);
+        std::filesystem::path(__FILE__).parent_path() /
+        "../../../experiments/rnic_multibaseline/topologies/clos_64_400g.topo";
+    auto config = FatTreeTopologyCfg::load(topology_file.lexically_normal().string(),
+                                           shared_buffer_bytes, COMPOSITE, FAIR_PRIO);
     if (!config) {
         throw std::runtime_error("failed to load rnic-ss test topology");
     }
@@ -62,8 +60,7 @@ RnicSsRuntimeConfig runtimeConfig(bool unordered = false) {
     };
 }
 
-void drain(RnicSsRuntime& runtime,
-           std::size_t maximum_events = 500000) {
+void drain(RnicSsRuntime& runtime, std::size_t maximum_events = 500000) {
     std::size_t events = 0;
     while (runtime.hasPendingPhysicalWork() && events < maximum_events) {
         ASSERT_TRUE(EventList::doNextEvent());
@@ -72,18 +69,14 @@ void drain(RnicSsRuntime& runtime,
     ASSERT_LT(events, maximum_events);
 }
 
-TEST(RnicSsRuntimeTest,
-     PhysicalAckBackpressureAndCreditsShareTheSourceSerializer) {
+TEST(RnicSsRuntimeTest, PhysicalAckBackpressureAndCreditsShareTheSourceSerializer) {
     EventList& event_list = testEventList();
-    auto session = makeRnicAtlahsRuntime(
-        event_list, RnicProfile::SlingshotLike, runtimeConfig(),
-        topologyConfig());
+    auto session = makeRnicAtlahsRuntime(event_list, RnicProfile::SlingshotLike, runtimeConfig(),
+                                         topologyConfig());
     auto* runtime = dynamic_cast<RnicSsRuntime*>(&session->implementation());
     ASSERT_NE(runtime, nullptr);
     std::vector<AtlahsFlowId> completions;
-    runtime->setup(kNodeCount, [&completions](AtlahsFlowId id) {
-        completions.push_back(id);
-    });
+    runtime->setup(kNodeCount, [&completions](AtlahsFlowId id) { completions.push_back(id); });
 
     const AtlahsFlowId flow_id = UINT64_C(0x100000001);
     runtime->send({flow_id, 0, 63, 16000, EventList::now(), 7});
@@ -105,8 +98,7 @@ TEST(RnicSsRuntimeTest,
     EXPECT_EQ(stats.sack_retransmissions, 0U);
     EXPECT_EQ(stats.rto_retransmissions, 0U);
     EXPECT_EQ(stats.rto_deadline_pushes, stats.new_data_packets);
-    EXPECT_EQ(stats.rto_deadline_stale_pops,
-              stats.rto_deadline_pushes);
+    EXPECT_EQ(stats.rto_deadline_stale_pops, stats.rto_deadline_pushes);
     EXPECT_EQ(stats.rto_deadline_due_pops, 0U);
     EXPECT_GT(stats.rto_deadline_heap_high_watermark, 0U);
     EXPECT_EQ(stats.physical_forward_data_observation_ps, 4332800U);
@@ -131,16 +123,13 @@ TEST(RnicSsRuntimeTest,
 
 TEST(RnicSsRuntimeTest, OrderedModeCompletesWithoutRtoOrLoss) {
     EventList& event_list = testEventList();
-    auto session = makeRnicAtlahsRuntime(
-        event_list, RnicProfile::SlingshotLike, runtimeConfig(false),
-        topologyConfig());
+    auto session = makeRnicAtlahsRuntime(event_list, RnicProfile::SlingshotLike,
+                                         runtimeConfig(false), topologyConfig());
     auto* runtime = dynamic_cast<RnicSsRuntime*>(&session->implementation());
     ASSERT_NE(runtime, nullptr);
     std::size_t completions = 0;
-    runtime->setup(kNodeCount,
-                   [&completions](AtlahsFlowId) { ++completions; });
-    runtime->send({UINT64_C(0x200000001), 1, 62, 8192,
-                   EventList::now(), 0});
+    runtime->setup(kNodeCount, [&completions](AtlahsFlowId) { ++completions; });
+    runtime->send({UINT64_C(0x200000001), 1, 62, 8192, EventList::now(), 0});
     drain(*runtime);
 
     EXPECT_EQ(completions, 1U);
@@ -150,27 +139,23 @@ TEST(RnicSsRuntimeTest, OrderedModeCompletesWithoutRtoOrLoss) {
     EXPECT_EQ(runtime->statistics().fabric_drops, 0U);
 }
 
-TEST(RnicSsRuntimeTest,
-     StateTraceUsesPhysicalCreditFeedbackAndInstallsAtQuiescence) {
+TEST(RnicSsRuntimeTest, StateTraceUsesPhysicalCreditFeedbackAndInstallsAtQuiescence) {
     EventList& event_list = testEventList();
     const std::filesystem::path trace =
-        std::filesystem::temp_directory_path()
-        / ("rnic-ss-state-"
-           + std::to_string(reinterpret_cast<std::uintptr_t>(&event_list))
-           + ".csv");
+        std::filesystem::temp_directory_path() /
+        ("rnic-ss-state-" + std::to_string(reinterpret_cast<std::uintptr_t>(&event_list)) + ".csv");
     std::filesystem::remove(trace);
     std::filesystem::remove(trace.string() + ".tmp");
     RnicSsRuntimeConfig config = runtimeConfig(false);
     config.state_trace_csv = trace.string();
-    auto session = makeRnicAtlahsRuntime(
-        event_list, RnicProfile::SlingshotLike, std::move(config),
-        topologyConfig());
+    auto session = makeRnicAtlahsRuntime(event_list, RnicProfile::SlingshotLike, std::move(config),
+                                         topologyConfig());
     auto* runtime = dynamic_cast<RnicSsRuntime*>(&session->implementation());
     ASSERT_NE(runtime, nullptr);
     runtime->setup(kNodeCount, [](AtlahsFlowId) {});
     for (std::uint32_t source = 0; source < 4; ++source) {
-        runtime->send({UINT64_C(0x210000001) + source,
-                       source, 63, 2U << 20, EventList::now(), source});
+        runtime->send(
+            {UINT64_C(0x210000001) + source, source, 63, 2U << 20, EventList::now(), source});
     }
     EXPECT_THROW(runtime->writeStateTraceCsv(), std::logic_error);
     drain(*runtime);
@@ -191,16 +176,13 @@ TEST(RnicSsRuntimeTest,
 
 TEST(RnicSsRuntimeTest, ExplicitUnorderedSensitivityStillQuiesces) {
     EventList& event_list = testEventList();
-    auto session = makeRnicAtlahsRuntime(
-        event_list, RnicProfile::SlingshotLike, runtimeConfig(true),
-        topologyConfig());
+    auto session = makeRnicAtlahsRuntime(event_list, RnicProfile::SlingshotLike,
+                                         runtimeConfig(true), topologyConfig());
     auto* runtime = dynamic_cast<RnicSsRuntime*>(&session->implementation());
     ASSERT_NE(runtime, nullptr);
     std::size_t completions = 0;
-    runtime->setup(kNodeCount,
-                   [&completions](AtlahsFlowId) { ++completions; });
-    runtime->send({UINT64_C(0x300000001), 2, 61, 8192,
-                   EventList::now(), 0});
+    runtime->setup(kNodeCount, [&completions](AtlahsFlowId) { ++completions; });
+    runtime->send({UINT64_C(0x300000001), 2, 61, 8192, EventList::now(), 0});
     drain(*runtime);
 
     EXPECT_EQ(completions, 1U);
@@ -215,26 +197,21 @@ TEST(RnicSsRuntimeTest, RejectsBufferBelowAnalyticalControlledClosEnvelope) {
     config.q_hi_bytes = 4U << 20;
     config.q_lo_bytes = 2U << 20;
     config.credit_quantum_packets = 4;
-    auto session = makeRnicAtlahsRuntime(
-        event_list, RnicProfile::SlingshotLike, std::move(config),
-        topologyConfig(16 << 20));
+    auto session = makeRnicAtlahsRuntime(event_list, RnicProfile::SlingshotLike, std::move(config),
+                                         topologyConfig(16 << 20));
     auto* runtime = dynamic_cast<RnicSsRuntime*>(&session->implementation());
     ASSERT_NE(runtime, nullptr);
-    EXPECT_THROW(
-        runtime->setup(kNodeCount, [](AtlahsFlowId) {}),
-        std::invalid_argument);
+    EXPECT_THROW(runtime->setup(kNodeCount, [](AtlahsFlowId) {}), std::invalid_argument);
 }
 
-TEST(RnicSsRuntimeTest,
-     CanonicalAnalyticalBoundIncludesForwardDataAndSerializedFanIn) {
+TEST(RnicSsRuntimeTest, CanonicalAnalyticalBoundIncludesForwardDataAndSerializedFanIn) {
     EventList& event_list = testEventList();
     RnicSsRuntimeConfig config = runtimeConfig();
     config.q_hi_bytes = 4U << 20;
     config.q_lo_bytes = 2U << 20;
     config.credit_quantum_packets = 4;
-    auto session = makeRnicAtlahsRuntime(
-        event_list, RnicProfile::SlingshotLike, std::move(config),
-        topologyConfig(32 << 20));
+    auto session = makeRnicAtlahsRuntime(event_list, RnicProfile::SlingshotLike, std::move(config),
+                                         topologyConfig(32 << 20));
     auto* runtime = dynamic_cast<RnicSsRuntime*>(&session->implementation());
     ASSERT_NE(runtime, nullptr);
     runtime->setup(kNodeCount, [](AtlahsFlowId) {});
@@ -252,22 +229,19 @@ TEST(RnicSsRuntimeTest,
     EXPECT_LT(stats.analytical_queue_bound_bytes, 32U << 20);
 }
 
-TEST(RnicSsRuntimeTest,
-     SpineHotspotUsesPhysicalPairSelectiveDomainsWithoutOverflow) {
+TEST(RnicSsRuntimeTest, SpineHotspotUsesPhysicalPairSelectiveDomainsWithoutOverflow) {
     EventList& event_list = testEventList();
     RnicSsRuntimeConfig config = runtimeConfig(false);
     config.q_hi_bytes = 512U << 10;
     config.q_lo_bytes = 256U << 10;
     config.credit_quantum_packets = 4;
     const std::uint64_t routing_seed = config.routing_seed;
-    auto session = makeRnicAtlahsRuntime(
-        event_list, RnicProfile::SlingshotLike, std::move(config),
-        topologyConfig(24 << 20));
+    auto session = makeRnicAtlahsRuntime(event_list, RnicProfile::SlingshotLike, std::move(config),
+                                         topologyConfig(24 << 20));
     auto* runtime = dynamic_cast<RnicSsRuntime*>(&session->implementation());
     ASSERT_NE(runtime, nullptr);
     std::size_t completions = 0;
-    runtime->setup(kNodeCount,
-                   [&completions](AtlahsFlowId) { ++completions; });
+    runtime->setup(kNodeCount, [&completions](AtlahsFlowId) { ++completions; });
 
     // Every selected pair chooses spine 0 in the ordered, initially unloaded
     // four-of-eight decision.  Destinations span one leaf, so seven source
@@ -278,20 +252,15 @@ TEST(RnicSsRuntimeTest,
         if (source >= 16 && source < 24) {
             continue;
         }
-        for (std::uint32_t destination = 16;
-             destination < 24; ++destination) {
+        for (std::uint32_t destination = 16; destination < 24; ++destination) {
             const RnicSsEndpointPair pair{source, destination};
             const auto candidates =
-                RnicSsHystereticPathSelector::sampleFourOfEight(
-                    pair, routing_seed);
-            if (*std::min_element(candidates.begin(), candidates.end())
-                != 0) {
+                RnicSsHystereticPathSelector::sampleFourOfEight(pair, routing_seed);
+            if (*std::min_element(candidates.begin(), candidates.end()) != 0) {
                 continue;
             }
-            runtime->send(
-                {UINT64_C(0x500000000) + flows,
-                 source, destination, 6U << 20,
-                 EventList::now(), static_cast<std::uint32_t>(flows)});
+            runtime->send({UINT64_C(0x500000000) + flows, source, destination, 6U << 20,
+                           EventList::now(), static_cast<std::uint32_t>(flows)});
             ++flows;
             break;
         }
@@ -314,8 +283,7 @@ TEST(RnicSsRuntimeTest,
     }
 }
 
-TEST(RnicSsRuntimeTest,
-     SilentLossAfterFinalRetryRaisesOnceWithoutSameTimeLivelock) {
+TEST(RnicSsRuntimeTest, SilentLossAfterFinalRetryRaisesOnceWithoutSameTimeLivelock) {
     EventList& event_list = testEventList();
     RnicSsRuntimeConfig config = runtimeConfig();
     config.q_hi_bytes = 1;
@@ -323,14 +291,12 @@ TEST(RnicSsRuntimeTest,
     config.allow_loss_stress = true;
     config.selective_repeat.retransmission_timeout_ps = timeFromUs(10U);
     config.selective_repeat.maximum_retransmissions = 1;
-    auto session = makeRnicAtlahsRuntime(
-        event_list, RnicProfile::SlingshotLike, std::move(config),
-        topologyConfig(1));
+    auto session = makeRnicAtlahsRuntime(event_list, RnicProfile::SlingshotLike, std::move(config),
+                                         topologyConfig(1));
     auto* runtime = dynamic_cast<RnicSsRuntime*>(&session->implementation());
     ASSERT_NE(runtime, nullptr);
     runtime->setup(kNodeCount, [](AtlahsFlowId) {});
-    runtime->send({UINT64_C(0x400000001), 0, 63, 1,
-                   EventList::now(), 0});
+    runtime->send({UINT64_C(0x400000001), 0, 63, 1, EventList::now(), 0});
 
     std::string failure;
     std::size_t events = 0;

@@ -21,8 +21,11 @@ constexpr mem_b kDefaultSharedBuffer = 4096;
 
 class TestPacket : public Packet {
 public:
-    TestPacket(PacketFlow& flow, const Route& route, packetid_t packet_id,
-               PktPriority priority, uint16_t bytes = kPacketBytes)
+    TestPacket(PacketFlow& flow,
+               const Route& route,
+               packetid_t packet_id,
+               PktPriority priority,
+               uint16_t bytes = kPacketBytes)
         : _priority(priority) {
         set_route(flow, route, bytes, packet_id);
     }
@@ -43,17 +46,13 @@ public:
         simtime_picosec time;
     };
 
-    void receivePacket(Packet& pkt) override {
-        arrivals.push_back({pkt.id(), EventList::now()});
-    }
+    void receivePacket(Packet& pkt) override { arrivals.push_back({pkt.id(), EventList::now()}); }
     const string& nodename() override { return _name; }
 
     simtime_picosec arrival_time(packetid_t packet_id) const {
         auto arrival = std::find_if(
             arrivals.begin(), arrivals.end(),
-            [packet_id](const Arrival& value) {
-                return value.packet_id == packet_id;
-            });
+            [packet_id](const Arrival& value) { return value.packet_id == packet_id; });
         if (arrival == arrivals.end()) {
             throw std::out_of_range("packet was not delivered");
         }
@@ -70,8 +69,7 @@ class RecordingQueueObserver final : public NsTm3QueueObserver {
 public:
     RecordingQueueObserver() { observations.reserve(32); }
 
-    void observe(
-            const NsTm3QueueObservation& observation) noexcept override {
+    void observe(const NsTm3QueueObservation& observation) noexcept override {
         observations.push_back(observation);
     }
 
@@ -80,25 +78,26 @@ public:
 
 class NsTm3Harness {
 public:
-    explicit NsTm3Harness(mem_b shared_buffer_capacity =
-                                   kDefaultSharedBuffer,
-                               FatTreeSwitch::switch_type type =
-                                   FatTreeSwitch::TOR,
-                               simtime_picosec switch_delay = 0)
+    explicit NsTm3Harness(mem_b shared_buffer_capacity = kDefaultSharedBuffer,
+                          FatTreeSwitch::switch_type type = FatTreeSwitch::TOR,
+                          simtime_picosec switch_delay = 0)
         : eventlist(EventList::getTheEventList()),
-          switch_owner(FatTreeSwitchFactory::create(
-              FatTreeSwitchModel::NsTm3, eventlist, "ns-tm3-test", type,
-              0, switch_delay, nullptr, shared_buffer_capacity)),
-          traffic_manager(
-              dynamic_cast<NsTm3Switch*>(switch_owner.get())) {
+          switch_owner(FatTreeSwitchFactory::create(FatTreeSwitchModel::NsTm3,
+                                                    eventlist,
+                                                    "ns-tm3-test",
+                                                    type,
+                                                    0,
+                                                    switch_delay,
+                                                    nullptr,
+                                                    shared_buffer_capacity)),
+          traffic_manager(dynamic_cast<NsTm3Switch*>(switch_owner.get())) {
         if (traffic_manager == nullptr) {
             throw std::logic_error("factory did not construct ns-tm3 switch");
         }
     }
 
     NsTm3EgressSerializer& add_egress(QueueLogger* logger = nullptr) {
-        auto serializer = std::make_unique<NsTm3EgressSerializer>(
-            kLinkSpeed, eventlist, logger);
+        auto serializer = std::make_unique<NsTm3EgressSerializer>(kLinkSpeed, eventlist, logger);
         NsTm3EgressSerializer* result = serializer.get();
         serializers.push_back(std::move(serializer));
         traffic_manager->addPort(result);
@@ -106,8 +105,8 @@ public:
     }
 
     NsTm3IngressPort& add_ingress(const string& name) {
-        auto* ingress = dynamic_cast<NsTm3IngressPort*>(
-            traffic_manager->create_physical_ingress(name));
+        auto* ingress =
+            dynamic_cast<NsTm3IngressPort*>(traffic_manager->create_physical_ingress(name));
         if (ingress == nullptr) {
             throw std::logic_error("ns-tm3 ingress adapter was not created");
         }
@@ -183,14 +182,12 @@ TEST(NsTm3SwitchTest, DefaultsToOldestHeadAcrossIngressVoqs) {
     ingress_1.receivePacket(second_1);
     NsTm3Harness::drain_all_events();
 
-    EXPECT_EQ(arrival_order(sink),
-              (std::vector<packetid_t>{1, 2, 3, 4}));
+    EXPECT_EQ(arrival_order(sink), (std::vector<packetid_t>{1, 2, 3, 4}));
 }
 
 TEST(NsTm3SwitchTest, RetainsIngressRoundRobinAsAnExplicitSensitivity) {
     NsTm3Harness harness;
-    harness.traffic_manager->set_voq_arbitration(
-        NsTm3VoqArbitration::IngressRoundRobin);
+    harness.traffic_manager->set_voq_arbitration(NsTm3VoqArbitration::IngressRoundRobin);
     NsTm3EgressSerializer& egress = harness.add_egress();
     NsTm3IngressPort& ingress_0 = harness.add_ingress("ingress-0");
     NsTm3IngressPort& ingress_1 = harness.add_ingress("ingress-1");
@@ -208,8 +205,7 @@ TEST(NsTm3SwitchTest, RetainsIngressRoundRobinAsAnExplicitSensitivity) {
     ingress_1.receivePacket(second_1);
     NsTm3Harness::drain_all_events();
 
-    EXPECT_EQ(arrival_order(sink),
-              (std::vector<packetid_t>{1, 3, 2, 4}));
+    EXPECT_EQ(arrival_order(sink), (std::vector<packetid_t>{1, 3, 2, 4}));
 }
 
 TEST(NsTm3SwitchTest, SerializesIndependentEgressesConcurrently) {
@@ -235,8 +231,7 @@ TEST(NsTm3SwitchTest, SerializesIndependentEgressesConcurrently) {
 
 TEST(NsTm3SwitchTest, AppliesConfiguredSwitchPipelineDelay) {
     const simtime_picosec kSwitchDelay = timeFromNs(37u);
-    NsTm3Harness harness(kDefaultSharedBuffer, FatTreeSwitch::TOR,
-                             kSwitchDelay);
+    NsTm3Harness harness(kDefaultSharedBuffer, FatTreeSwitch::TOR, kSwitchDelay);
     NsTm3EgressSerializer& egress = harness.add_egress();
     NsTm3IngressPort& ingress = harness.add_ingress("ingress-0");
     RecordingSink sink;
@@ -248,8 +243,7 @@ TEST(NsTm3SwitchTest, AppliesConfiguredSwitchPipelineDelay) {
     ingress.receivePacket(packet);
     NsTm3Harness::drain_all_events();
 
-    EXPECT_EQ(sink.arrival_time(1),
-              start_time + kSwitchDelay + timeFromNs(100));
+    EXPECT_EQ(sink.arrival_time(1), start_time + kSwitchDelay + timeFromNs(100));
 }
 
 TEST(NsTm3SwitchTest, AppliesStrictPriorityOnlyAtPacketBoundaries) {
@@ -269,8 +263,7 @@ TEST(NsTm3SwitchTest, AppliesStrictPriorityOnlyAtPacketBoundaries) {
     ingress.receivePacket(high_waiting);
     NsTm3Harness::drain_all_events();
 
-    EXPECT_EQ(arrival_order(sink),
-              (std::vector<packetid_t>{1, 3, 2}));
+    EXPECT_EQ(arrival_order(sink), (std::vector<packetid_t>{1, 3, 2}));
     EXPECT_EQ(sink.arrival_time(1), start_time + timeFromNs(100));
     EXPECT_EQ(sink.arrival_time(3), start_time + timeFromNs(200));
     EXPECT_EQ(sink.arrival_time(2), start_time + timeFromNs(300));
@@ -294,8 +287,7 @@ TEST(NsTm3SwitchTest, ConservesOneSharedBufferAccountingDomain) {
     ASSERT_TRUE(EventList::doNextEvent());
     ASSERT_TRUE(EventList::doNextEvent());
 
-    const NsTm3BufferCounters& active =
-        harness.traffic_manager->buffer_counters();
+    const NsTm3BufferCounters& active = harness.traffic_manager->buffer_counters();
     EXPECT_EQ(active.admitted_bytes, 300);
     EXPECT_EQ(active.dequeued_bytes, 100);
     EXPECT_EQ(harness.traffic_manager->shared_buffer_occupancy(), 200);
@@ -306,8 +298,7 @@ TEST(NsTm3SwitchTest, ConservesOneSharedBufferAccountingDomain) {
     EXPECT_EQ(harness.traffic_manager->shared_buffer_high_watermark(), 200);
 
     NsTm3Harness::drain_all_events();
-    const NsTm3BufferCounters& drained =
-        harness.traffic_manager->buffer_counters();
+    const NsTm3BufferCounters& drained = harness.traffic_manager->buffer_counters();
     EXPECT_EQ(drained.admitted_bytes, drained.dequeued_bytes);
     EXPECT_EQ(harness.traffic_manager->shared_buffer_occupancy(), 0);
     EXPECT_EQ(harness.traffic_manager->egress_backlog_bytes(0), 0);
@@ -333,16 +324,13 @@ TEST(NsTm3SwitchTest, TracesExactEgressBacklogAndMaximumQueueWait) {
     NsTm3Harness::drain_all_events();
 
     ASSERT_EQ(observer->observations.size(), 9U);
-    EXPECT_EQ(observer->observations[0].transition,
-              NsTm3QueueTransition::Enqueued);
-    EXPECT_EQ(observer->observations[1].transition,
-              NsTm3QueueTransition::Dequeued);
-    const auto peak = std::max_element(
-        observer->observations.begin(), observer->observations.end(),
-        [](const NsTm3QueueObservation& left,
-           const NsTm3QueueObservation& right) {
-            return left.egress_backlog_bytes < right.egress_backlog_bytes;
-        });
+    EXPECT_EQ(observer->observations[0].transition, NsTm3QueueTransition::Enqueued);
+    EXPECT_EQ(observer->observations[1].transition, NsTm3QueueTransition::Dequeued);
+    const auto peak =
+        std::max_element(observer->observations.begin(), observer->observations.end(),
+                         [](const NsTm3QueueObservation& left, const NsTm3QueueObservation& right) {
+                             return left.egress_backlog_bytes < right.egress_backlog_bytes;
+                         });
     ASSERT_NE(peak, observer->observations.end());
     EXPECT_EQ(peak->egress_backlog_bytes, 300);
     EXPECT_EQ(peak->egress_buffered_bytes, 200);
@@ -350,8 +338,7 @@ TEST(NsTm3SwitchTest, TracesExactEgressBacklogAndMaximumQueueWait) {
     EXPECT_EQ(peak->flow_id, 77U);
     EXPECT_EQ(peak->egress_id, 0U);
 
-    const NsTm3EgressStatistics& statistics =
-        harness.traffic_manager->egress_statistics(0);
+    const NsTm3EgressStatistics& statistics = harness.traffic_manager->egress_statistics(0);
     EXPECT_EQ(statistics.buffered_high_watermark, 200);
     EXPECT_EQ(statistics.backlog_high_watermark, 300);
     EXPECT_EQ(statistics.max_queue_wait_ps, timeFromNs(200));
@@ -381,8 +368,7 @@ TEST(NsTm3SwitchTest, DropsOnlyWhenSharedBufferCapacityIsExceeded) {
     ASSERT_TRUE(EventList::doNextEvent());
     ASSERT_TRUE(EventList::doNextEvent());
 
-    const NsTm3BufferCounters& counters =
-        harness.traffic_manager->buffer_counters();
+    const NsTm3BufferCounters& counters = harness.traffic_manager->buffer_counters();
     EXPECT_EQ(counters.admitted_packets, 2);
     EXPECT_EQ(counters.dropped_packets, 1);
     EXPECT_EQ(counters.dropped_bytes, 100);
@@ -392,8 +378,7 @@ TEST(NsTm3SwitchTest, DropsOnlyWhenSharedBufferCapacityIsExceeded) {
               harness.traffic_manager->shared_buffer_occupancy());
 
     NsTm3Harness::drain_all_events();
-    EXPECT_EQ(arrival_order(sink),
-              (std::vector<packetid_t>{1, 2}));
+    EXPECT_EQ(arrival_order(sink), (std::vector<packetid_t>{1, 2}));
 }
 
 TEST(NsTm3SwitchTest, RejectsRoutesThatBypassTheTrafficManager) {
@@ -411,16 +396,14 @@ TEST(NsTm3SwitchTest, RejectsRoutesThatBypassTheTrafficManager) {
 
 TEST(NsTm3SwitchTest, SharedDropDoesNotMisreportAnEmptyEgressQueue) {
     EventList& eventlist = EventList::getTheEventList();
-    QueueLoggerSampling empty_egress_logger(timeFromUs(uint32_t{10}),
-                                            eventlist);
+    QueueLoggerSampling empty_egress_logger(timeFromUs(uint32_t{10}), eventlist);
     // Consume the logger's immediate initialization event, then remove its
     // periodic sample before draining this finite test.
     ASSERT_TRUE(EventList::doNextEvent());
 
     NsTm3Harness harness(100);
     NsTm3EgressSerializer& busy_egress = harness.add_egress();
-    NsTm3EgressSerializer& empty_egress =
-        harness.add_egress(&empty_egress_logger);
+    NsTm3EgressSerializer& empty_egress = harness.add_egress(&empty_egress_logger);
     NsTm3IngressPort& ingress = harness.add_ingress("ingress-0");
     RecordingSink sink;
     Route busy_route = route_via(busy_egress, sink);
@@ -450,10 +433,9 @@ TEST(NsTm3SwitchTest, FactoryConstructsEveryClosTier) {
     for (FatTreeSwitch::switch_type type :
          {FatTreeSwitch::TOR, FatTreeSwitch::AGG, FatTreeSwitch::CORE}) {
         auto switch_instance = FatTreeSwitchFactory::create(
-            FatTreeSwitchModel::NsTm3, eventlist, "ns-tm3-tier", type,
-            static_cast<uint32_t>(type), 0, nullptr, kDefaultSharedBuffer);
-        auto* ns_tm3 =
-            dynamic_cast<NsTm3Switch*>(switch_instance.get());
+            FatTreeSwitchModel::NsTm3, eventlist, "ns-tm3-tier", type, static_cast<uint32_t>(type),
+            0, nullptr, kDefaultSharedBuffer);
+        auto* ns_tm3 = dynamic_cast<NsTm3Switch*>(switch_instance.get());
         ASSERT_NE(ns_tm3, nullptr);
         EXPECT_EQ(ns_tm3->getType(), type);
     }
@@ -461,8 +443,8 @@ TEST(NsTm3SwitchTest, FactoryConstructsEveryClosTier) {
 
 TEST(NsTm3SwitchTest, PreservesFatTreeFibPathSelection) {
     EventList& eventlist = EventList::getTheEventList();
-    FatTreeTopologyCfg cfg(2, 32, speedFromGbps(100), 32768,
-                           timeFromNs(1000), 0, COMPOSITE, FAIR_PRIO);
+    FatTreeTopologyCfg cfg(2, 32, speedFromGbps(100), 32768, timeFromNs(1000), 0, COMPOSITE,
+                           FAIR_PRIO);
     cfg.set_switch_model(FatTreeSwitchModel::NsTm3);
     cfg.set_ns_tm3_shared_buffer_capacity(65536);
     FatTreeTopology topology(&cfg, nullptr, &eventlist, nullptr);
@@ -475,17 +457,13 @@ TEST(NsTm3SwitchTest, PreservesFatTreeFibPathSelection) {
     RecordingSink destination;
     PacketFlow flow(nullptr);
     flow.set_flowid(17);
-    topology.switches_lp[source_tor]->addHostPort(
-        destination_host, flow.flow_id(), &destination);
+    topology.switches_lp[source_tor]->addHostPort(destination_host, flow.flow_id(), &destination);
 
     Route source_to_tor;
+    source_to_tor.push_back(topology.queues_ns_nlp[source_host][source_tor][0]);
+    source_to_tor.push_back(topology.pipes_ns_nlp[source_host][source_tor][0]);
     source_to_tor.push_back(
-        topology.queues_ns_nlp[source_host][source_tor][0]);
-    source_to_tor.push_back(
-        topology.pipes_ns_nlp[source_host][source_tor][0]);
-    source_to_tor.push_back(
-        topology.queues_ns_nlp[source_host][source_tor][0]
-            ->getRemoteEndpoint());
+        topology.queues_ns_nlp[source_host][source_tor][0]->getRemoteEndpoint());
 
     TestPacket packet(flow, source_to_tor, 1, Packet::PRIO_LO);
     packet.set_src(source_host);
@@ -499,8 +477,8 @@ TEST(NsTm3SwitchTest, PreservesFatTreeFibPathSelection) {
 
 TEST(NsTm3SwitchTest, ThreeTierRoutesUsePhysicalIngressAdapters) {
     EventList& eventlist = EventList::getTheEventList();
-    FatTreeTopologyCfg cfg(3, 128, speedFromGbps(100), 32768,
-                           timeFromNs(1000), 0, COMPOSITE, FAIR_PRIO);
+    FatTreeTopologyCfg cfg(3, 128, speedFromGbps(100), 32768, timeFromNs(1000), 0, COMPOSITE,
+                           FAIR_PRIO);
     cfg.set_switch_model(FatTreeSwitchModel::NsTm3);
     cfg.set_ns_tm3_shared_buffer_capacity(65536);
     FatTreeTopology topology(&cfg, nullptr, &eventlist, nullptr);
@@ -515,8 +493,7 @@ TEST(NsTm3SwitchTest, ThreeTierRoutesUsePhysicalIngressAdapters) {
         EXPECT_NE(dynamic_cast<NsTm3Switch*>(switch_instance), nullptr);
     }
 
-    std::unique_ptr<std::vector<const Route*>> paths(
-        topology.get_bidir_paths(0, 127, false));
+    std::unique_ptr<std::vector<const Route*>> paths(topology.get_bidir_paths(0, 127, false));
     ASSERT_FALSE(paths->empty());
     const Route* route = paths->front();
     size_t ingress_adapters = 0;
@@ -546,14 +523,12 @@ TEST(NsTm3SwitchTest, ThreeTierRoutesUsePhysicalIngressAdapters) {
 
 TEST(NsTm3SwitchTest, ExplicitlyRejectsPauseQueueModes) {
     EventList& eventlist = EventList::getTheEventList();
-    for (queue_type queue_mode :
-         {LOSSLESS, LOSSLESS_INPUT, LOSSLESS_INPUT_ECN}) {
-        FatTreeTopologyCfg cfg(2, 32, speedFromGbps(100), 32768,
-                               timeFromNs(1000), 0, queue_mode, FAIR_PRIO);
+    for (queue_type queue_mode : {LOSSLESS, LOSSLESS_INPUT, LOSSLESS_INPUT_ECN}) {
+        FatTreeTopologyCfg cfg(2, 32, speedFromGbps(100), 32768, timeFromNs(1000), 0, queue_mode,
+                               FAIR_PRIO);
         cfg.set_switch_model(FatTreeSwitchModel::NsTm3);
 
-        EXPECT_THROW(FatTreeTopology(&cfg, nullptr, &eventlist, nullptr),
-                     std::invalid_argument);
+        EXPECT_THROW(FatTreeTopology(&cfg, nullptr, &eventlist, nullptr), std::invalid_argument);
     }
 }
 
