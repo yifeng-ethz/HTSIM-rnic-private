@@ -422,15 +422,43 @@ proves such a bound.
 Adding a random fraction of a deterministic inter-packet gap is not PRBS
 pacing: it changes the mean rate and is prohibited.
 
+### Selective late repair uses granted PRBS service
+
+A packet at or beyond `eta + Delta` is still rejected by the Ring-CAM.  The
+receiver reports that exact logical packet with an in-band gap NACK; it does
+not admit the late copy or widen `Delta`.  At the sender, a queued repair
+becomes the affected flow's head in the same node-wide PRBS lottery used by
+fresh DATA.  There is one candidate per flow at its current effective wire-rate
+grant.  A selected repair therefore consumes one ordinary PRBS opportunity and
+substitutes for fresh granted service; it is never a second, unpaced DATA
+class.  Other flows remain eligible in the lottery while that repair is
+pending.  Control frames, including the gap NACK, retain strict non-preemptive
+priority on the shared physical serializer and do not consume a DATA draw.
+
+Each repair is stamped with a new `eta` at its actual source-serializer
+completion plus packet-specific calibrated transit.  It does not advance the
+original source payload, packet-index, or final-flow ledger.  The receiver
+grant and TX flow state remain live after the final original packet until the
+exact RX ledger closes and retirement commits, so a final-tail repair still
+has granted service.  Duplicate NACKs and DATA are idempotent; the retry limit
+is a terminal diagnostic guard, not extra rate or permission to change the
+fixed `Delta = 4.096 us` and `margin = 0.9` operating point.
+
+Consequently, fresh plus repair DATA remains inside the same sustainable
+aggregate grant ceiling `sum r_i <= margin * C`; recovery cannot add a second
+line-rate load on top of that ceiling.  As above, PRBS supplies no hard finite
+`sigma`, so this is a stable rate-accounting invariant rather than a proof that
+every finite replay has zero late packets.
+
 ## Ring-CAM resequencer
 
 The sender stamps packet eligibility `eta` at the physical route-injection
 boundary: source serializer completion plus packet-specific no-load physical
 transit. That transit includes the route's pipe and switch-pipeline latency and
 the remaining `ns-tm3` egress serialization at the packet's exact wire
-extent. A same-ToR path has one ToR-downlink serialization; a cross-ToR
-two-tier path has two inter-switch serializations at the aggregation-tier link
-rate plus one ToR-downlink serialization. The physical HTSIM route starts at
+extent. A same-leaf path has one leaf-to-RNIC serialization; a cross-leaf
+two-tier path has two leaf-spine serializations at the inter-switch link
+rate plus one leaf-to-RNIC serialization. The physical HTSIM route starts at
 the source-serializer boundary, so adding transit at source dispatch start
 would incorrectly omit source serialization. Calibrating every packet as a
 maximum-size packet would instead make short tails appear early. At a receiver,
@@ -481,18 +509,24 @@ tests never merge these causes.
 
 ## `ns-tm3` Clos model
 
-Every Clos profile uses the `ns-tm3` switch model at ToR, aggregation, and core
-tiers until explicitly overridden by a future model. This is a behavioral
+Every Clos profile uses the `ns-tm3` switch model at leaf and spine tiers until
+explicitly overridden by a future model. This is a behavioral
 traffic-manager contract motivated by the Tomahawk 3 hardware family, not a
 cycle-accurate claim about a particular ASIC revision.
 
 The switch reuses the existing Clos FIB and path selection, then enqueues by
-`(physical ingress port, physical egress port)` into VoQs. Each egress arbitrates
-among its non-empty ingress VoQs with deterministic round-robin at packet
-boundaries and serves at the configured physical egress rate. Control packets
-use an explicit priority class without bypassing serialization. Buffer limits,
-drop accounting, and any pause behavior are properties of this switch model and
-must not be confused with endpoint resequencing capacity.
+`(physical ingress port, physical egress port)` into VoQs. Within each strict
+priority class, an egress selects the oldest head packet across non-empty
+ingress VoQs (with ingress ID as the deterministic same-time tie break) and
+serves it at the configured physical egress rate. This preserves the aggregate
+output-FIFO service model used by the CN network-calculus argument without
+reintroducing ingress head-of-line blocking. Whole-packet ingress round-robin is
+retained only as an explicit sensitivity because it gives each physical ingress
+an equal turn regardless of offered rate; under local plus cross-leaf fan-in it
+can make one packet's residence far exceed instantaneous aggregate `q/C`.
+Control packets use an explicit priority class without bypassing serialization.
+Buffer limits, drop accounting, and any pause behavior are properties of this
+switch model and must not be confused with endpoint resequencing capacity.
 
 ## Reproducibility and acceptance gates
 
