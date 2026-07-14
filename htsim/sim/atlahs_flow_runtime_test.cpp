@@ -223,7 +223,9 @@ TEST(AtlahsFlowRuntimeTest, DelegatesExactPayloadForConcurrentSameSourceFlows) {
 }
 
 TEST(AtlahsFlowRuntimeTest, RoutesEachFlowCompletionExactlyOnce) {
+    EventList event_list;
     CapturingAtlahsHtsimApi api;
+    api.setEventList(&event_list);
     api.total_nodes = 4;
     auto runtime = std::make_unique<FakeFlowRuntime>();
     FakeFlowRuntime* fake = runtime.get();
@@ -231,7 +233,7 @@ TEST(AtlahsFlowRuntimeTest, RoutesEachFlowCompletionExactlyOnce) {
     api.Setup();
 
     const auto flow = makeFlow(1, 42, 2, 12345, 77);
-    api.Send(SendEvent(1, 2, flow.size, flow.tag, 8765), flow);
+    api.Send(SendEvent(1, 2, flow.size, flow.tag, 0), flow);
     ASSERT_EQ(fake->requests.size(), 1U);
 
     fake->complete(fake->requests.front().flow_id);
@@ -239,12 +241,22 @@ TEST(AtlahsFlowRuntimeTest, RoutesEachFlowCompletionExactlyOnce) {
     EXPECT_EQ(api.completed_flow.host, 1U);
     EXPECT_EQ(api.completed_flow.offset, 42U);
     EXPECT_EQ(api.completed_payload_bytes, 12345U);
-    EXPECT_EQ(api.completed_start_time_ps, 8765U);
+    EXPECT_EQ(api.completed_start_time_ps, 0U);
+    ASSERT_EQ(api.completedFlows().size(), 1U);
+    const AtlahsCompletedFlowRecord& record = api.completedFlows().front();
+    EXPECT_EQ(record.flow_id, fake->requests.front().flow_id);
+    EXPECT_EQ(record.source, fake->requests.front().source);
+    EXPECT_EQ(record.destination, fake->requests.front().destination);
+    EXPECT_EQ(record.payload_bytes, 12345U);
+    EXPECT_EQ(record.start_time_ps, 0U);
+    EXPECT_EQ(record.completion_time_ps, event_list.now());
+    EXPECT_EQ(record.fct_ps(), event_list.now());
 
     // A repeated runtime notification is harmless and cannot release GOAL a
     // second time.
     fake->complete(fake->requests.front().flow_id);
     EXPECT_EQ(api.completion_count, 1);
+    EXPECT_EQ(api.completedFlows().size(), 1U);
 }
 
 }  // namespace

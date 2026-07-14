@@ -171,6 +171,17 @@ TEST(RnicAtlahsCliTest, OmitsNodeOverrideForGoalLayoutDiscovery) {
     EXPECT_FALSE(options.explicitly_supplied.node_count);
 }
 
+TEST(RnicAtlahsCliTest, AcceptsProtocolNeutralCompletionCsv) {
+    for (const std::string& profile :
+         {"rnic-cn", "rnic-nn", "rnic-nn-fluid"}) {
+        std::vector<std::string> arguments = baseArguments(profile);
+        append(arguments, "-completion_csv", "results/fct.csv");
+        const RnicAtlahsCliOptions options = parse(std::move(arguments));
+        ASSERT_TRUE(options.completion_csv.has_value());
+        EXPECT_EQ(*options.completion_csv, "results/fct.csv");
+    }
+}
+
 TEST(RnicAtlahsCliTest, AcceptsOnlyExactGoalRankMappingNames) {
     const std::vector<std::pair<std::string, RnicAtlahsGoalRankMapping>> valid{
         {"auto", RnicAtlahsGoalRankMapping::Auto},
@@ -396,6 +407,7 @@ TEST(RnicAtlahsCliTest, UsageNamesOnlyCanonicalProfilesAndExactUnits) {
     EXPECT_NE(usage.find("rnic-cn|rnic-nn|rnic-nn-fluid"),
               std::string::npos);
     EXPECT_NE(usage.find("-linkspeed_bps"), std::string::npos);
+    EXPECT_NE(usage.find("-completion_csv FILE"), std::string::npos);
     EXPECT_NE(usage.find(
                   "-goal_rank_mapping auto|gpu-rank|unique-nic"),
               std::string::npos);

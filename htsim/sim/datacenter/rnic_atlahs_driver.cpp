@@ -154,6 +154,9 @@ std::string renderRnicAtlahsModelManifest(
         << '\n';
     manifest
         << "[RNIC manifest] goal=" << options.goal_file
+        << " completion_csv="
+        << (options.completion_csv.has_value()
+                ? *options.completion_csv : "off")
         << " requested_rank_mapping="
         << rnicAtlahsGoalRankMappingName(options.goal_rank_mapping)
         << " resolved_rank_mapping="

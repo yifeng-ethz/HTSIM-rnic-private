@@ -3,6 +3,7 @@
 
 #include "atlahs_api.h"
 #include "atlahs_flow_runtime.h"
+#include <cstdint>
 #include <iostream>
 #include <functional>
 #include <limits>
@@ -50,6 +51,23 @@ public:
     uint64_t flowSize;
     uint64_t numNacks;
     uint64_t finalCwnd;
+};
+
+// Protocol-neutral completion record for runtime-owned ATLAHS flows.  Times
+// remain in the simulator's picosecond clock so experiment analysis never has
+// to reconstruct FCT from rounded console output.
+struct AtlahsCompletedFlowRecord {
+    AtlahsFlowId flow_id;
+    std::uint32_t source;
+    std::uint32_t destination;
+    std::uint64_t payload_bytes;
+    simtime_picosec start_time_ps;
+    simtime_picosec completion_time_ps;
+    std::uint64_t tag;
+
+    simtime_picosec fct_ps() const {
+        return completion_time_ps - start_time_ps;
+    }
 };
 
 class AtlahsHtsimApi : public AtlahsApi {
@@ -109,6 +127,9 @@ public:
     // Runtime completion is idempotent: only a currently pending flow can be
     // completed, and EventFinished is invoked exactly once for that flow ID.
     bool completeFlow(AtlahsFlowId flow_id);
+    const std::vector<AtlahsCompletedFlowRecord>& completedFlows() const {
+        return _completed_flows;
+    }
 
     // Getter and setter for ComputeEvent
     void setComputeEvent(ComputeEvent* compute_event) { 
@@ -287,6 +308,7 @@ private:
         AtlahsFlowRequest request;
     };
     std::unordered_map<AtlahsFlowId, PendingFlow> _pending_flows;
+    std::vector<AtlahsCompletedFlowRecord> _completed_flows;
     ComputeEvent *compute_events_handler = nullptr;
     NullEvent *null_events_handler = nullptr;
 

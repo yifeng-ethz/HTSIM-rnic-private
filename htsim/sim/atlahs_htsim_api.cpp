@@ -41,6 +41,24 @@ bool AtlahsHtsimApi::completeFlow(AtlahsFlowId flow_id) {
     PendingFlow pending = std::move(pending_it->second);
     _pending_flows.erase(pending_it);
 
+    if (_eventlist == nullptr) {
+        throw std::logic_error(
+            "ATLAHS completed a runtime-owned flow without an EventList");
+    }
+    const simtime_picosec completion_time_ps = _eventlist->now();
+    if (completion_time_ps < pending.request.start_time_ps) {
+        throw std::logic_error(
+            "ATLAHS runtime-owned flow completed before it started");
+    }
+    _completed_flows.push_back(AtlahsCompletedFlowRecord{
+        pending.request.flow_id,
+        pending.request.source,
+        pending.request.destination,
+        pending.request.payload_bytes,
+        pending.request.start_time_ps,
+        completion_time_ps,
+        pending.request.tag});
+
     EventOver event(
         static_cast<int>(pending.request.source),
         static_cast<int>(pending.request.destination),

@@ -69,6 +69,7 @@ struct RnicAtlahsExplicitCliOptions {
 
 struct RnicAtlahsCliOptions {
     std::string goal_file;
+    std::optional<std::string> completion_csv;
     RnicAtlahsGoalRankMapping goal_rank_mapping =
         RnicAtlahsGoalRankMapping::Auto;
     // Zero means the driver must derive the physical rank count from GOAL.

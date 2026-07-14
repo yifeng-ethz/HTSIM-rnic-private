@@ -151,6 +151,14 @@ add_subdirectory(datacenter)
 add_executable(parse_output parse_output.cpp)
 target_link_libraries(parse_output PRIVATE htsim)
 
+# Build the checked-in GOAL text parser directly.  This avoids requiring re2c
+# and gengetopt merely to consume experiment schedules, and unlike the legacy
+# checked-in executable produces a native binary for the current host.
+set_source_files_properties(lgs/cmdline_txt2bin.c PROPERTIES LANGUAGE CXX)
+add_executable(htsim_goal_txt2bin
+    lgs/txt2bin.cpp
+    lgs/cmdline_txt2bin.c)
+
 if ( ENABLE_TESTS )
     # Unit tests.
     set(UNIT_TEST_FILES

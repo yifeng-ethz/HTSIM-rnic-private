@@ -263,6 +263,11 @@ RnicAtlahsCliOptions parseRnicAtlahsCli(
         if (option == "-goal") {
             options.goal_file = value;
             required.goal = true;
+        } else if (option == "-completion_csv") {
+            if (value.empty()) {
+                throw optionError(option, "path must be nonempty");
+            }
+            options.completion_csv = value;
         } else if (option == "-goal_rank_mapping") {
             options.goal_rank_mapping = parseGoalRankMapping(value);
             options.explicitly_supplied.goal_rank_mapping = true;
@@ -393,6 +398,7 @@ std::string rnicAtlahsCliUsage(const std::string& program_name) {
     usage
         << "Usage: " << program_name
         << " -goal FILE"
+           " [-completion_csv FILE]"
            " [-goal_rank_mapping auto|gpu-rank|unique-nic]"
            " [-nodes N] -linkspeed_bps BPS"
            " -rnic_profile rnic-cn|rnic-nn|rnic-nn-fluid\n"
