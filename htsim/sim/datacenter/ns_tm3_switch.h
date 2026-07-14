@@ -36,6 +36,10 @@ struct NsTm3BufferCounters {
     mem_b dequeued_bytes{0};
     uint64_t dropped_packets{0};
     mem_b dropped_bytes{0};
+    uint64_t shared_pool_dropped_packets{0};
+    mem_b shared_pool_dropped_bytes{0};
+    uint64_t egress_domain_dropped_packets{0};
+    mem_b egress_domain_dropped_bytes{0};
 };
 
 // Cumulative diagnostics for one physical output. Buffered bytes exclude the
@@ -126,7 +130,7 @@ private:
     // The serializer is a physical service element, not a public queueing
     // path. Only its owning traffic manager may advance a packet into it.
     void dispatch(Packet& pkt);
-    void note_shared_buffer_drop(Packet& pkt);
+    void note_buffer_drop(Packet& pkt);
 
     NsTm3Switch* _owner{nullptr};
     uint32_t _egress_id{UINT32_MAX};
@@ -162,6 +166,11 @@ public:
     NsTm3VoqArbitration voq_arbitration() const noexcept { return _voq_arbitration; }
 
     mem_b shared_buffer_capacity() const { return _shared_buffer_capacity; }
+    // The shared capacity is one switch-wide physical pool.  This separate
+    // cap bounds the switch-owned VoQ bytes mapped to any one physical
+    // egress; bytes already in serialization reside in neither domain.
+    void set_egress_buffer_capacity(mem_b capacity);
+    mem_b egress_buffer_capacity() const { return _egress_buffer_capacity; }
     mem_b shared_buffer_occupancy() const { return _shared_buffer_occupancy; }
     mem_b shared_buffer_high_watermark() const { return _shared_buffer_high_watermark; }
     const NsTm3BufferCounters& buffer_counters() const { return _buffer_counters; }
@@ -214,6 +223,7 @@ private:
     const EgressState& egress_state(uint32_t egress_id) const;
 
     mem_b _shared_buffer_capacity;
+    mem_b _egress_buffer_capacity;
     mem_b _shared_buffer_occupancy{0};
     mem_b _shared_buffer_high_watermark{0};
     NsTm3BufferCounters _buffer_counters;

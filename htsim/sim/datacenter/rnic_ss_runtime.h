@@ -2,6 +2,7 @@
 #ifndef RNIC_SS_RUNTIME_H
 #define RNIC_SS_RUNTIME_H
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -61,6 +62,12 @@ struct RnicSsRuntimeStatistics {
     std::uint64_t source_priority_violations{0};
     std::uint64_t source_prbs_data_opportunities{0};
     std::uint64_t source_prbs_busy_deferrals{0};
+    // Ordered inter-leaf pairs are counted when their source leaf binds one of
+    // the eight spine paths.  These counters expose deterministic coverage and
+    // skew without changing the public state-trace schema.
+    std::uint64_t ordered_path_bindings{0};
+    std::array<std::uint64_t, 8> ordered_path_bindings_by_path{};
+    std::uint64_t ordered_path_binding_max_leaf_skew{0};
     // Analytical components of the controlled-Clos queue envelope.  The
     // bound_control_loop interval is forward_data_observation plus the time
     // until the last serialized BP_ENABLE can reach a contributor.

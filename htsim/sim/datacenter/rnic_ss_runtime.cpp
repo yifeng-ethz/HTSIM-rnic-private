@@ -802,11 +802,31 @@ struct RnicSsRuntime::Impl {
         return pair.ledger.nextSequence() - pair.ledger.outstanding().begin()->first < 128;
     }
 
+    void noteOrderedPathBinding(std::uint32_t source, std::uint8_t path) {
+        if (path >= statistics.ordered_path_bindings_by_path.size()) {
+            throw std::out_of_range("rnic-ss ordered binding path is outside the Clos");
+        }
+        const std::uint32_t source_leaf = topology.cfg().HOST_POD_SWITCH(source);
+        auto& leaf_counts = ordered_path_bindings_by_leaf[source_leaf];
+        ++leaf_counts[path];
+        ++statistics.ordered_path_bindings;
+        ++statistics.ordered_path_bindings_by_path[path];
+
+        std::uint64_t maximum_skew = 0;
+        for (const auto& [leaf, counts] : ordered_path_bindings_by_leaf) {
+            (void)leaf;
+            const auto bounds = std::minmax_element(counts.begin(), counts.end());
+            maximum_skew = std::max(maximum_skew, *bounds.second - *bounds.first);
+        }
+        statistics.ordered_path_binding_max_leaf_skew = maximum_skew;
+    }
+
     std::uint8_t choosePath(PairState& pair,
                             RnicSsSequence sequence,
                             const RnicSsRouteProvider::RouteView& routes,
                             TimePs now_ps,
-                            bool retransmission) {
+                            bool retransmission,
+                            std::uint32_t reservation_wire_bytes) {
         if (routes.size() == 1) {
             pair.current_path = 0;
             pair.ordered_path = 0;
@@ -827,6 +847,8 @@ struct RnicSsRuntime::Impl {
             config.unordered_packet_routing ? pair.current_path : std::nullopt);
 
         std::array<std::uint64_t, 4> scores{};
+        std::array<NsRosetta*, 4> source_leaves{};
+        std::array<std::uint32_t, 4> source_egresses{};
         std::size_t best = 0;
         for (std::size_t index = 0; index < delayed.candidates.size(); ++index) {
             const std::uint8_t path = delayed.candidates[index];
@@ -842,10 +864,16 @@ struct RnicSsRuntime::Impl {
             }
             const NsRosettaPathLoad local =
                 local_egress->owner()->sample_path_load(local_egress->egress_id());
+            source_leaves[index] = local_egress->owner();
+            source_egresses[index] = local_egress->egress_id();
+            if (index != 0 && source_leaves[index] != source_leaves[0]) {
+                throw std::logic_error("rnic-ss candidates do not share one source leaf");
+            }
             scores[index] =
                 saturatedAdd(delayed.candidate_queue_delay_ps[index], local.backlog_delay_ps);
-            if (index != 0 && (scores[index] < scores[best] || (scores[index] == scores[best] &&
-                                                                path < delayed.candidates[best]))) {
+            // Candidate order is already a deterministic pair/seed hash.
+            // Keeping that order for equal scores avoids a lowest-spine bias.
+            if (index != 0 && scores[index] < scores[best]) {
                 best = index;
             }
         }
@@ -865,7 +893,13 @@ struct RnicSsRuntime::Impl {
         const std::uint8_t selected = delayed.candidates[best];
         pair.current_path = selected;
         if (!config.unordered_packet_routing) {
+            if (reservation_wire_bytes == 0 || source_leaves[best] == nullptr) {
+                throw std::logic_error("rnic-ss ordered path lacks a local route reservation");
+            }
+            source_leaves[best]->reserve_ordered_route(pair.pair, source_egresses[best],
+                                                       static_cast<mem_b>(reservation_wire_bytes));
             pair.ordered_path = selected;
+            noteOrderedPathBinding(pair.pair.source, selected);
         }
         return selected;
     }
@@ -936,7 +970,8 @@ struct RnicSsRuntime::Impl {
         const RnicSsSequence sequence = pair.ledger.nextSequence();
         const auto& routes = route_provider.routes(pair.pair.source, pair.pair.destination,
                                                    *endpoints[pair.pair.destination]);
-        const std::uint8_t path = choosePath(pair, sequence, routes, now_ps, false);
+        const std::uint8_t path = choosePath(pair, sequence, routes, now_ps, false,
+                                             static_cast<std::uint32_t>(extent.wireBytes()));
         const RnicSsSequence recorded = pair.ledger.recordNewTransmission(
             static_cast<std::uint32_t>(extent.wireBytes()), now_ps);
         if (recorded != sequence) {
@@ -979,7 +1014,8 @@ struct RnicSsRuntime::Impl {
         FlowState& flow = requireFlow(data.flow_id);
         const auto& routes = route_provider.routes(pair.pair.source, pair.pair.destination,
                                                    *endpoints[pair.pair.destination]);
-        const std::uint8_t path = choosePath(pair, sequence, routes, now_ps, true);
+        const std::uint8_t path = choosePath(pair, sequence, routes, now_ps, true,
+                                             static_cast<std::uint32_t>(data.extent.wireBytes()));
         pair.ledger.recordRetransmission(sequence, now_ps, reason);
         scheduleRto(pair, sequence);
         consumePairCredit(pair, static_cast<std::uint32_t>(data.extent.wireBytes()));
@@ -1742,6 +1778,12 @@ struct RnicSsRuntime::Impl {
                 return true;
             }
         }
+        for (Switch* base : topology.switches_lp) {
+            const auto* leaf = dynamic_cast<const NsRosetta*>(base);
+            if (leaf != nullptr && leaf->active_ordered_route_reservations() != 0) {
+                return true;
+            }
+        }
         return false;
     }
 
@@ -1782,6 +1824,7 @@ struct RnicSsRuntime::Impl {
     std::vector<std::unique_ptr<Endpoint>> endpoints;
     std::vector<std::unique_ptr<SourcePacerState>> source_pacers;
     std::vector<std::vector<PairState*>> source_pairs;
+    std::map<std::uint32_t, std::array<std::uint64_t, 8>> ordered_path_bindings_by_leaf;
     std::map<AtlahsFlowId, std::unique_ptr<FlowState>> flows;
     std::map<RnicSsEndpointPair, std::unique_ptr<PairState>> pairs;
     std::map<packetid_t, RnicSsPacket*> live_packets;

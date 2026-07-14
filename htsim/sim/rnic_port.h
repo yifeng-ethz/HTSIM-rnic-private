@@ -16,10 +16,10 @@
 
 enum class RnicTxPacketKind {
     FreshData,
-    SelectiveRepair,
+    Retransmission,
 };
 
-struct RnicTxRepairCandidate {
+struct RnicTxRetransmissionCandidate {
     uint64_t flow_id;
     uint64_t packet_index;
     uint64_t payload_byte_offset;
@@ -54,11 +54,13 @@ public:
     RnicTxPort(uint64_t node_id,
                uint64_t access_capacity_bps,
                uint64_t max_wire_packet_bytes,
-               uint64_t global_prbs_seed);
+               uint64_t global_prbs_seed,
+               uint64_t eligibility_tick_ps = 0);
     RnicTxPort(uint64_t node_id,
                uint64_t access_capacity_bps,
                RnicDataPacketizationConfig packetization,
-               uint64_t global_prbs_seed);
+               uint64_t global_prbs_seed,
+               uint64_t eligibility_tick_ps = 0);
 
     void addFlow(uint64_t flow_id,
                  uint64_t payload_size_bytes,
@@ -70,11 +72,11 @@ public:
     void setWireRateGrant(uint64_t flow_id, uint64_t wire_rate_grant_bps);
     void setDataEligible(uint64_t flow_id, bool eligible);
 
-    // Makes one per-flow selective-repair head participate in the same PRBS
-    // lottery and source-edge progressive filling as fresh DATA. The runtime
-    // owns the repair metadata and supplies the exact head to
+    // Makes one per-flow deterministic-retransmission head participate in the
+    // same PRBS lottery and source-edge progressive filling as fresh DATA. The
+    // runtime owns the retransmission metadata and supplies the exact head to
     // dispatchOpportunity(); this bit only records whether that head exists.
-    void setSelectiveRepairPending(uint64_t flow_id, bool pending);
+    void setRetransmissionPending(uint64_t flow_id, bool pending);
 
     // Runtime-only terminal cleanup after receiver retirement has committed.
     // The source payload must already be fully dispatched, and the runtime
@@ -85,7 +87,7 @@ public:
     bool sourcePayloadDispatched(uint64_t flow_id) const;
     uint64_t flowPayloadBytesDispatched(uint64_t flow_id) const;
     uint64_t effectiveWireRateBps(uint64_t flow_id) const;
-    bool hasSelectiveRepairPending(uint64_t flow_id) const;
+    bool hasRetransmissionPending(uint64_t flow_id) const;
     bool hasDispatchableData() const;
     size_t flowCount() const { return _flows.size(); }
     uint64_t nextDataOpportunityPs() const { return _data_opportunity_serializer.availablePs(); }
@@ -103,8 +105,9 @@ public:
     // extent; the size-aware lottery preserves wire-byte rather than packet
     // shares.
     RnicTxOpportunity dispatchOpportunity(uint64_t requested_start_ps);
-    RnicTxOpportunity dispatchOpportunity(uint64_t requested_start_ps,
-                                          const std::vector<RnicTxRepairCandidate>& repair_heads);
+    RnicTxOpportunity dispatchOpportunity(
+        uint64_t requested_start_ps,
+        const std::vector<RnicTxRetransmissionCandidate>& retransmission_heads);
 
     // Serialize one nonempty control frame on the same physical node wire as
     // DATA.  The CN runtime owns the strict-priority queue and calls this at a
@@ -130,11 +133,20 @@ private:
         uint64_t effective_wire_rate_bps = 0;
         uint64_t payload_bytes_dispatched = 0;
         uint64_t packet_index = 0;
+        std::optional<RnicPacketExtent> cached_fresh_extent;
+        std::optional<uint64_t> cached_fresh_transit_ps;
+        std::optional<uint64_t> last_fresh_eta_tick_ps;
         bool data_eligible = false;
-        bool selective_repair_pending = false;
+        bool retransmission_pending = false;
     };
 
     RnicPacketExtent headExtent(const FlowState& state) const;
+    bool freshHeadPreservesEtaOrder(const FlowState& state,
+                                    const RnicPacketExtent& extent,
+                                    uint64_t calibrated_transit_ps,
+                                    uint64_t requested_start_ps) const;
+    void prepareFreshHead(FlowState& state);
+    uint64_t quantizedEtaPs(uint64_t eta_ps) const;
     void recomputeEffectiveRates();
     FlowState& requireFlow(uint64_t flow_id);
     const FlowState& requireFlow(uint64_t flow_id) const;
@@ -144,6 +156,7 @@ private:
     RnicWireSerializationClock _wire_serializer;
     RnicWireSerializationClock _data_opportunity_serializer;
     RnicPrbsPacer _pacer;
+    uint64_t _eligibility_tick_ps;
     std::map<uint64_t, FlowState> _flows;
 };
 
@@ -240,7 +253,11 @@ public:
              uint64_t global_prbs_seed,
              RnicRingCamConfig ring_cam_config)
         : _node_id(node_id),
-          _tx_port(node_id, access_capacity_bps, packetization, global_prbs_seed),
+          _tx_port(node_id,
+                   access_capacity_bps,
+                   packetization,
+                   global_prbs_seed,
+                   ring_cam_config.release_tick_ps),
           _rx_port(access_capacity_bps, ring_cam_config) {}
 
     uint64_t nodeId() const { return _node_id; }

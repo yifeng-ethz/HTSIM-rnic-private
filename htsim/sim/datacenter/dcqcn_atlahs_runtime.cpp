@@ -294,9 +294,12 @@ public:
                                                    this->config.pfc_low_threshold_bytes,
                                                    this->config.pfc_high_threshold_bytes,
                                                    this->config.endpoint_link_bps};
-        configure_switches(topology->switches_lp, policy_config);
-        configure_switches(topology->switches_up, policy_config);
-        configure_switches(topology->switches_c, policy_config);
+        configure_switches(topology->switches_lp, this->config.ns_tm3_egress_buffer_bytes,
+                           policy_config);
+        configure_switches(topology->switches_up, this->config.ns_tm3_egress_buffer_bytes,
+                           policy_config);
+        configure_switches(topology->switches_c, this->config.ns_tm3_egress_buffer_bytes,
+                           policy_config);
     }
 
     ~Impl() override {
@@ -418,13 +421,14 @@ public:
         return total;
     }
 
-    std::uint64_t dropped_packets() const noexcept {
+    std::uint64_t sum_buffer_counter(
+        const std::function<std::uint64_t(const NsTm3BufferCounters&)>& select) const noexcept {
         std::uint64_t total = 0;
         const auto add = [&](const std::vector<Switch*>& switches) {
             for (Switch* base : switches) {
                 const auto* ns_tm3 = dynamic_cast<const NsTm3Switch*>(base);
                 if (ns_tm3 != nullptr) {
-                    total += ns_tm3->buffer_counters().dropped_packets;
+                    total += select(ns_tm3->buffer_counters());
                 }
             }
         };
@@ -432,6 +436,11 @@ public:
         add(topology->switches_up);
         add(topology->switches_c);
         return total;
+    }
+
+    std::uint64_t dropped_packets() const noexcept {
+        return sum_buffer_counter(
+            [](const NsTm3BufferCounters& counters) { return counters.dropped_packets; });
     }
 
     void doNextEvent() override {
@@ -473,11 +482,14 @@ private:
         }
         if (config.endpoint_link_bps == 0 ||
             config.max_wire_packet_bytes <= config.data_header_bytes ||
-            config.ns_tm3_shared_buffer_bytes <= 0 || config.ecn_kmin_bytes < 0 ||
-            config.ecn_kmax_bytes <= config.ecn_kmin_bytes || config.ecn_pmax_ppm == 0 ||
-            config.ecn_pmax_ppm > UINT32_C(1000000) || config.pfc_low_threshold_bytes <= 0 ||
+            config.ns_tm3_shared_buffer_bytes <= 0 || config.ns_tm3_egress_buffer_bytes <= 0 ||
+            config.ns_tm3_egress_buffer_bytes > config.ns_tm3_shared_buffer_bytes ||
+            config.ecn_kmin_bytes < 0 || config.ecn_kmax_bytes <= config.ecn_kmin_bytes ||
+            config.ecn_pmax_ppm == 0 || config.ecn_pmax_ppm > UINT32_C(1000000) ||
+            config.pfc_low_threshold_bytes <= 0 ||
             config.pfc_low_threshold_bytes >= config.pfc_high_threshold_bytes ||
             config.pfc_high_threshold_bytes >= config.ns_tm3_shared_buffer_bytes ||
+            config.ecn_kmax_bytes >= config.ns_tm3_egress_buffer_bytes ||
             config.silent_loss_rto_ps == 0 || config.dcqcn_min_rate_bps == 0 ||
             config.dcqcn_min_rate_bps > config.endpoint_link_bps) {
             throw std::invalid_argument("invalid DCQCN ATLAHS model config");
@@ -485,12 +497,14 @@ private:
     }
 
     static void configure_switches(const std::vector<Switch*>& switches,
+                                   mem_b egress_buffer_capacity,
                                    const NsTm3DcqcnPolicyConfig& policy_config) {
         for (Switch* base : switches) {
             auto* ns_tm3 = dynamic_cast<NsTm3Switch*>(base);
             if (ns_tm3 == nullptr) {
                 throw std::logic_error("DCQCN topology contains a non-ns-tm3 switch");
             }
+            ns_tm3->set_egress_buffer_capacity(egress_buffer_capacity);
             ns_tm3->configure_dcqcn_policy(policy_config);
         }
     }
@@ -622,6 +636,16 @@ std::uint64_t DcqcnAtlahsRuntime::dropped_packet_count() const noexcept {
     return _impl->dropped_packets();
 }
 
+std::uint64_t DcqcnAtlahsRuntime::shared_pool_dropped_packet_count() const noexcept {
+    return _impl->sum_buffer_counter(
+        [](const NsTm3BufferCounters& counters) { return counters.shared_pool_dropped_packets; });
+}
+
+std::uint64_t DcqcnAtlahsRuntime::egress_domain_dropped_packet_count() const noexcept {
+    return _impl->sum_buffer_counter(
+        [](const NsTm3BufferCounters& counters) { return counters.egress_domain_dropped_packets; });
+}
+
 std::size_t DcqcnAtlahsRuntime::state_trace_row_count() const noexcept {
     return _impl->state_trace.size();
 }
@@ -643,7 +667,7 @@ std::string renderDcqcnAtlahsManifest(const DcqcnAtlahsRuntimeConfig& config,
                                       const std::string& state_trace_csv,
                                       const char* resolved_rank_mapping) {
     std::ostringstream manifest;
-    manifest << "[DCQCN manifest] schema=dcqcn-atlahs-model-v2"
+    manifest << "[DCQCN manifest] schema=dcqcn-atlahs-model-v3"
              << " profile=dcqcn"
              << " goal=" << goal_file
              << " completion_csv=" << (completion_csv.empty() ? "off" : completion_csv)
@@ -655,7 +679,11 @@ std::string renderDcqcnAtlahsManifest(const DcqcnAtlahsRuntimeConfig& config,
              << " routing=flow-hashed-ecmp"
              << " ecmp_seed=" << config.ecmp_seed
              << " endpoint_link_bps=" << config.endpoint_link_bps
-             << " shared_buffer_bytes=" << config.ns_tm3_shared_buffer_bytes << '\n';
+             << " shared_buffer_bytes=" << config.ns_tm3_shared_buffer_bytes
+             << " shared_buffer_scope=switch-wide"
+             << " egress_buffer_bytes=" << config.ns_tm3_egress_buffer_bytes
+             << " egress_buffer_scope=per-physical-egress"
+             << " buffer_residency=queued-voq-excludes-egress-serializer" << '\n';
     manifest << "[DCQCN manifest] transport=rocev2-dcqcn"
              << " recovery=go-back-n"
              << " cnp_interval_ps=" << DCQCNSink::_cnp_interval
@@ -674,6 +702,7 @@ std::string renderDcqcnAtlahsManifest(const DcqcnAtlahsRuntimeConfig& config,
              << " ecn_pmax_ppm=" << config.ecn_pmax_ppm << " ecn_seed=" << config.ecn_seed
              << " ecn_sampler=packet-switch-egress-hash"
              << " pfc=data-priority-only"
+             << " pfc_meter_scope=per-physical-ingress"
              << " pfc_low_bytes=" << config.pfc_low_threshold_bytes
              << " pfc_high_bytes=" << config.pfc_high_threshold_bytes
              << " pfc_delivery=dedicated-link-local-reverse-serializer"

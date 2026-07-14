@@ -280,6 +280,7 @@ TEST(NsRosettaSwitchTest, ExposesBoundedLocalRequestAndPathLoadSamples) {
     EXPECT_EQ(output_0.queued_packets, 1);
     EXPECT_EQ(output_0.buffered_bytes, 100);
     EXPECT_EQ(output_0.in_service_bytes, 100);
+    EXPECT_EQ(output_0.ordered_route_reserved_bytes, 0);
     EXPECT_EQ(output_0.backlog_bytes, 200);
     EXPECT_EQ(output_0.backlog_delay_ps, timeFromNs(200));
     EXPECT_EQ(output_0.shared_buffer_occupancy, 200);
@@ -297,6 +298,117 @@ TEST(NsRosettaSwitchTest, ExposesBoundedLocalRequestAndPathLoadSamples) {
                  std::out_of_range);
 
     NsRosettaHarness::drain_all_events();
+}
+
+TEST(NsRosettaSwitchTest, OrderedRouteReservationContributesLocalPressureUntilFirstArrival) {
+    NsRosettaHarness harness;
+    NsRosettaEgressSerializer& pressured = harness.add_egress();
+    NsRosettaEgressSerializer& idle = harness.add_egress();
+    NsRosettaIngressPort& ingress = harness.add_ingress("ingress-0");
+    RecordingSink sink;
+    Route route = route_via(pressured, sink);
+    PacketFlow flow(nullptr);
+    const NsRosettaEndpointPair pair{5, 9};
+
+    harness.traffic_manager->reserve_ordered_route(pair, 0, 300);
+    EXPECT_EQ(harness.traffic_manager->active_ordered_route_reservations(), 1U);
+    EXPECT_EQ(harness.traffic_manager->ordered_route_reserved_bytes(0), 300);
+    EXPECT_EQ(harness.traffic_manager->ordered_route_reserved_bytes(1), 0);
+    const NsRosettaPathLoad reserved = harness.traffic_manager->sample_path_load(0);
+    const NsRosettaPathLoad unreserved = harness.traffic_manager->sample_path_load(1);
+    EXPECT_EQ(reserved.ordered_route_reserved_bytes, 300);
+    EXPECT_EQ(reserved.backlog_bytes, 300);
+    EXPECT_EQ(reserved.backlog_delay_ps, timeFromNs(300));
+    EXPECT_EQ(unreserved.backlog_delay_ps, 0);
+    EXPECT_THROW(harness.traffic_manager->reserve_ordered_route(pair, 0, 100), std::logic_error);
+
+    TestPacket first_data(flow, route, 1, Packet::PRIO_LO, pair.source, pair.destination);
+    ingress.receivePacket(first_data);
+    NsRosettaHarness::drain_all_events();
+
+    EXPECT_EQ(harness.traffic_manager->active_ordered_route_reservations(), 0U);
+    EXPECT_EQ(harness.traffic_manager->ordered_route_reserved_bytes(0), 0);
+    (void)idle;
+}
+
+TEST(NsRosettaSwitchTest, ReverseFlowControlCannotConsumeADataRouteReservation) {
+    NsRosettaHarness harness;
+    NsRosettaEgressSerializer& reserved = harness.add_egress();
+    NsRosettaEgressSerializer& other = harness.add_egress();
+    NsRosettaIngressPort& ingress = harness.add_ingress("ingress-0");
+    RecordingSink sink;
+    Route reserved_route = route_via(reserved, sink);
+    Route other_route = route_via(other, sink);
+    PacketFlow flow(nullptr);
+    const NsRosettaEndpointPair pair{5, 9};
+
+    harness.traffic_manager->reserve_ordered_route(pair, 0, 300);
+
+    // A control packet for the reverse B->A flow travels A->B on the wire.
+    // It therefore matches the reserved endpoint pair, but can overtake the
+    // first DATA and can use another control route.
+    TestPacket reverse_flow_control(flow, other_route, 1, Packet::PRIO_HI, pair.source,
+                                    pair.destination, 64);
+    EXPECT_NO_THROW(ingress.receivePacket(reverse_flow_control));
+    NsRosettaHarness::drain_all_events();
+    EXPECT_EQ(harness.traffic_manager->active_ordered_route_reservations(), 1U);
+    EXPECT_EQ(harness.traffic_manager->ordered_route_reserved_bytes(0), 300);
+
+    TestPacket first_data(flow, reserved_route, 2, Packet::PRIO_LO, pair.source, pair.destination);
+    ingress.receivePacket(first_data);
+    NsRosettaHarness::drain_all_events();
+    EXPECT_EQ(harness.traffic_manager->active_ordered_route_reservations(), 0U);
+    EXPECT_EQ(harness.traffic_manager->ordered_route_reserved_bytes(0), 0);
+}
+
+TEST(NsRosettaSwitchTest,
+     ConcurrentPhasePairsKeepIndependentDataReservationsAcrossControlOvertake) {
+    NsRosettaHarness harness;
+    NsRosettaEgressSerializer& first_egress = harness.add_egress();
+    NsRosettaEgressSerializer& second_egress = harness.add_egress();
+    NsRosettaIngressPort& ingress = harness.add_ingress("ingress-0");
+    RecordingSink sink;
+    Route first_route = route_via(first_egress, sink);
+    Route second_route = route_via(second_egress, sink);
+    PacketFlow flow(nullptr);
+    const NsRosettaEndpointPair first_pair{5, 9};
+    const NsRosettaEndpointPair second_pair{5, 13};
+
+    // A dependency-gated workload can start the next endpoint pair while
+    // reverse-flow control for the preceding pair is still in flight.  Both
+    // first DATA packets are behind the physical source serializer here.
+    harness.traffic_manager->reserve_ordered_route(first_pair, 0, 300);
+    harness.traffic_manager->reserve_ordered_route(second_pair, 1, 300);
+
+    TestPacket first_reverse_control(flow, second_route, 1, Packet::PRIO_HI, first_pair.source,
+                                     first_pair.destination, 64);
+    TestPacket second_reverse_control(flow, first_route, 2, Packet::PRIO_HI, second_pair.source,
+                                      second_pair.destination, 64);
+    ingress.receivePacket(first_reverse_control);
+    ingress.receivePacket(second_reverse_control);
+    NsRosettaHarness::drain_all_events();
+
+    EXPECT_EQ(harness.traffic_manager->active_ordered_route_reservations(), 2U);
+    EXPECT_EQ(harness.traffic_manager->ordered_route_reserved_bytes(0), 300);
+    EXPECT_EQ(harness.traffic_manager->ordered_route_reserved_bytes(1), 300);
+
+    // Arrival order is independent of binding order; only matching DATA may
+    // consume each switch-local reservation.
+    TestPacket second_data(flow, second_route, 3, Packet::PRIO_LO, second_pair.source,
+                           second_pair.destination);
+    ingress.receivePacket(second_data);
+    NsRosettaHarness::drain_all_events();
+    EXPECT_EQ(harness.traffic_manager->active_ordered_route_reservations(), 1U);
+    EXPECT_EQ(harness.traffic_manager->ordered_route_reserved_bytes(0), 300);
+    EXPECT_EQ(harness.traffic_manager->ordered_route_reserved_bytes(1), 0);
+
+    TestPacket first_data(flow, first_route, 4, Packet::PRIO_LO, first_pair.source,
+                          first_pair.destination);
+    ingress.receivePacket(first_data);
+    NsRosettaHarness::drain_all_events();
+    EXPECT_EQ(harness.traffic_manager->active_ordered_route_reservations(), 0U);
+    EXPECT_EQ(harness.traffic_manager->ordered_route_reserved_bytes(0), 0);
+    EXPECT_EQ(harness.traffic_manager->ordered_route_reserved_bytes(1), 0);
 }
 
 TEST(NsRosettaSwitchTest, PathLoadReportsResidualNotWholePacketService) {

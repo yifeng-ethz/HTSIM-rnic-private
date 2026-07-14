@@ -39,17 +39,20 @@ struct RnicCollectiveNetworkConfig {
     // Optional sparse sender/control state trace. It is buffered in memory
     // and atomically installed only after validateQuiescent().
     std::optional<std::string> state_trace_csv;
-    // Maximum number of selective DATA transmissions after the original.
-    // A retry that is still late at this attempt fails the run explicitly.
-    std::uint32_t maximum_repair_retries{8};
+    // Maximum number of deterministic retransmissions after the original.
+    // A retransmission that is still late at this attempt fails explicitly.
+    std::uint32_t maximum_retransmissions{8};
+    // Sender-visible overtime for a retry that receives neither a subsequent
+    // exact-gap NACK nor a physical GAP_RESOLVED closure.
+    std::uint64_t retransmission_rto_ps{50000000000ULL};
 };
 
 struct RnicCollectiveRecoveryStatistics {
     std::uint64_t late_data_packets{0};
     std::uint64_t gap_nacks_dispatched{0};
     std::uint64_t gap_nacks_received{0};
-    std::uint64_t selective_retransmissions{0};
-    std::uint64_t selective_retransmission_wire_bytes{0};
+    std::uint64_t deterministic_retransmissions{0};
+    std::uint64_t deterministic_retransmission_wire_bytes{0};
     std::uint64_t duplicate_gap_nacks_ignored{0};
     std::uint64_t duplicate_data_packets_ignored{0};
     std::uint32_t maximum_retry_attempt_observed{0};
@@ -69,8 +72,8 @@ struct RnicCollectiveFlowSnapshot {
     std::uint64_t late_data_packets;
     std::uint64_t gap_nacks_dispatched;
     std::uint64_t gap_nacks_received;
-    std::uint64_t selective_retransmissions;
-    std::uint64_t selective_retransmission_wire_bytes;
+    std::uint64_t deterministic_retransmissions;
+    std::uint64_t deterministic_retransmission_wire_bytes;
     std::uint64_t duplicate_gap_nacks_ignored;
     std::uint64_t duplicate_data_packets_ignored;
     std::uint32_t maximum_retry_attempt_observed;
@@ -132,7 +135,20 @@ private:
     // idempotence with real routed packets.  It is deliberately inaccessible
     // to drivers and profiles, so production simulations cannot enable it.
     void duplicateCurrentGapNackForTesting(AtlahsFlowId flow_id);
-    void duplicateCurrentRepairForTesting(AtlahsFlowId flow_id);
+    void duplicateCurrentRetransmissionForTesting(AtlahsFlowId flow_id);
+    void dropOriginalDataForTesting(AtlahsFlowId flow_id, std::uint64_t packet_index);
+    void dropDataAttemptForTesting(AtlahsFlowId flow_id,
+                                   std::uint64_t packet_index,
+                                   std::uint32_t transmission_attempt);
+    void duplicateOriginalDataForTesting(AtlahsFlowId flow_id, std::uint64_t packet_index);
+    void replayResolvedGapNackForTesting(AtlahsFlowId flow_id, std::uint64_t packet_index);
+    std::uint64_t maxOriginalReleaseForTesting(AtlahsFlowId flow_id) const;
+    std::uint64_t finalOriginalReleaseForTesting(AtlahsFlowId flow_id) const;
+    std::optional<std::uint64_t> publishedRetireDeadlineForTesting(AtlahsFlowId flow_id) const;
+    std::optional<std::uint64_t> firstGapObservationForTesting(AtlahsFlowId flow_id) const;
+    std::optional<std::uint64_t> firstGapDecisionForTesting(AtlahsFlowId flow_id) const;
+    std::optional<std::uint64_t> retryDispatchForTesting(AtlahsFlowId flow_id,
+                                                         std::uint32_t transmission_attempt) const;
     friend class RnicCollectiveNetworkRuntimeTestPeer;
 
     std::unique_ptr<Impl> _impl;

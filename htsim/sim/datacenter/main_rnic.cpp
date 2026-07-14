@@ -120,6 +120,18 @@ void validateRuntimeQuiescence(AtlahsHtsimApi& api) {
             << " rnic_ss_source_prbs_data_opportunities="
             << statistics.source_prbs_data_opportunities
             << " rnic_ss_source_prbs_busy_deferrals=" << statistics.source_prbs_busy_deferrals
+            << " rnic_ss_ordered_path_bindings=" << statistics.ordered_path_bindings
+            << " rnic_ss_ordered_path_binding_max_leaf_skew="
+            << statistics.ordered_path_binding_max_leaf_skew
+            << " rnic_ss_ordered_path_bindings_by_path="
+            << statistics.ordered_path_bindings_by_path[0] << ':'
+            << statistics.ordered_path_bindings_by_path[1] << ':'
+            << statistics.ordered_path_bindings_by_path[2] << ':'
+            << statistics.ordered_path_bindings_by_path[3] << ':'
+            << statistics.ordered_path_bindings_by_path[4] << ':'
+            << statistics.ordered_path_bindings_by_path[5] << ':'
+            << statistics.ordered_path_bindings_by_path[6] << ':'
+            << statistics.ordered_path_bindings_by_path[7]
             << " rnic_ss_source_priority_violations=" << statistics.source_priority_violations
             << '\n';
         return;
@@ -131,9 +143,10 @@ void validateRuntimeQuiescence(AtlahsHtsimApi& api) {
         std::cout << "[RNIC manifest] rnic_cn_late_data_packets=" << recovery.late_data_packets
                   << " rnic_cn_gap_nacks_dispatched=" << recovery.gap_nacks_dispatched
                   << " rnic_cn_gap_nacks_received=" << recovery.gap_nacks_received
-                  << " rnic_cn_selective_retransmissions=" << recovery.selective_retransmissions
-                  << " rnic_cn_selective_retransmission_wire_bytes="
-                  << recovery.selective_retransmission_wire_bytes
+                  << " rnic_cn_deterministic_retransmissions="
+                  << recovery.deterministic_retransmissions
+                  << " rnic_cn_deterministic_retransmission_wire_bytes="
+                  << recovery.deterministic_retransmission_wire_bytes
                   << " rnic_cn_duplicate_gap_nacks_ignored=" << recovery.duplicate_gap_nacks_ignored
                   << " rnic_cn_duplicate_data_packets_ignored="
                   << recovery.duplicate_data_packets_ignored

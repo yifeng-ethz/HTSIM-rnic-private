@@ -47,6 +47,11 @@ struct NsRosettaPathLoad {
     uint64_t queued_packets{0};
     mem_b buffered_bytes{0};
     mem_b in_service_bytes{0};
+    // A new ordered endpoint pair reserves one DATA envelope on its selected
+    // source-leaf egress until the first packet reaches that leaf.  This is a
+    // switch-local route-request reservation, not buffered DATA and not remote
+    // or global state.
+    mem_b ordered_route_reserved_bytes{0};
     mem_b backlog_bytes{0};
     simtime_picosec backlog_delay_ps{0};
     mem_b shared_buffer_occupancy{0};
@@ -186,6 +191,15 @@ public:
     NsRosettaRequestDepth request_depth(uint32_t egress_id, Packet::PktPriority priority) const;
     NsRosettaPathLoad sample_path_load(uint32_t egress_id) const;
 
+    // Reserve a source-leaf egress while the first packet of a newly bound
+    // ordered endpoint pair is still on the node-to-leaf cable.  The matching
+    // first packet consumes the reservation when it enters this switch.
+    void reserve_ordered_route(const NsRosettaEndpointPair& pair,
+                               uint32_t egress_id,
+                               mem_b wire_bytes);
+    size_t active_ordered_route_reservations() const { return _ordered_route_reservations.size(); }
+    mem_b ordered_route_reserved_bytes(uint32_t egress_id) const;
+
 private:
     static constexpr size_t kTrafficClassCount = 3;
 
@@ -228,8 +242,14 @@ private:
         NsRosettaEgressSerializer* serializer{nullptr};
         std::array<TrafficClassVoqs, kTrafficClassCount> traffic_classes;
         mem_b buffered_bytes{0};
+        mem_b ordered_route_reserved_bytes{0};
         std::optional<PacketSummary> active_grant;
         std::map<NsRosettaEndpointPair, PairState> pairs;
+    };
+
+    struct OrderedRouteReservation {
+        uint32_t egress_id;
+        mem_b wire_bytes;
     };
 
     struct Grant {
@@ -245,6 +265,7 @@ private:
                                    size_t traffic_class);
     NsRosettaEgressSerializer& resolve_selected_egress(Packet& pkt);
     void enqueue(Packet& pkt, uint32_t ingress_id, NsRosettaEgressSerializer& egress);
+    void consume_ordered_route_reservation(const NsRosettaEndpointPair& pair, uint32_t egress_id);
     void run_arbitration();
     std::optional<Grant> select_egress_grant(uint32_t egress_id,
                                              const std::vector<bool>& ingress_matched) const;
@@ -265,6 +286,7 @@ private:
     std::vector<IngressState> _ingresses;
     std::vector<EgressState> _egresses;
     std::map<NsRosettaEndpointPair, PairState> _pairs;
+    std::map<NsRosettaEndpointPair, OrderedRouteReservation> _ordered_route_reservations;
     std::unordered_map<Packet*, uint32_t> _pipeline_ingress;
     std::shared_ptr<NsRosettaBacklogObserver> _backlog_observer;
 };

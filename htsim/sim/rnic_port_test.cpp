@@ -135,14 +135,14 @@ TEST(RnicTxPortTest, ControlAndDataShareOnePhysicalSerializer) {
     EXPECT_EQ(port.physicalSerializerAvailablePs(), data.end_ps);
 }
 
-TEST(RnicTxPortTest, SelectiveRepairUsesTheFlowsPrbsOpportunityBehindControl) {
+TEST(RnicTxPortTest, RetransmissionUsesTheFlowsPrbsOpportunityBehindControl) {
     RnicTxPort port(1, 8000000000000ULL, 1000, 7);
     port.addFlow(10, 1000, 0);
 
     // An idle PRBS result reserves a virtual DATA opportunity without using
-    // the physical wire. High-priority control may use that hole. A repair is
-    // not a separate priority class: it becomes this flow's head at the next
-    // ordinary PRBS opportunity.
+    // the physical wire. High-priority control may use that hole. A
+    // retransmission is not a separate priority class: it becomes this flow's
+    // head at the next ordinary PRBS opportunity.
     const RnicTxOpportunity idle = port.dispatchOpportunity(0);
     ASSERT_FALSE(idle.packet.has_value());
     ASSERT_EQ(idle.end_ps, 1000U);
@@ -152,58 +152,60 @@ TEST(RnicTxPortTest, SelectiveRepairUsesTheFlowsPrbsOpportunityBehindControl) {
 
     port.setWireRateGrant(10, 8000000000000ULL);
     port.setDataEligible(10, true);
-    port.setSelectiveRepairPending(10, true);
-    const RnicTxOpportunity repair =
+    port.setRetransmissionPending(10, true);
+    const RnicTxOpportunity retransmission =
         port.dispatchOpportunity(idle.end_ps, {{10, 4, 400, {200, 200}}});
-    ASSERT_TRUE(repair.packet.has_value());
-    EXPECT_EQ(repair.packet->kind, RnicTxPacketKind::SelectiveRepair);
-    EXPECT_EQ(repair.packet->packet_index, 4U);
-    EXPECT_EQ(repair.packet->payload_byte_offset, 400U);
-    EXPECT_EQ(repair.start_ps, idle.end_ps);
-    EXPECT_EQ(repair.end_ps, 1200U);
-    EXPECT_EQ(port.nextDataOpportunityPs(), repair.end_ps);
-    EXPECT_EQ(port.physicalSerializerAvailablePs(), repair.end_ps);
+    ASSERT_TRUE(retransmission.packet.has_value());
+    EXPECT_EQ(retransmission.packet->kind, RnicTxPacketKind::Retransmission);
+    EXPECT_EQ(retransmission.packet->packet_index, 4U);
+    EXPECT_EQ(retransmission.packet->payload_byte_offset, 400U);
+    EXPECT_EQ(retransmission.start_ps, idle.end_ps);
+    EXPECT_EQ(retransmission.end_ps, 1200U);
+    EXPECT_EQ(port.nextDataOpportunityPs(), retransmission.end_ps);
+    EXPECT_EQ(port.physicalSerializerAvailablePs(), retransmission.end_ps);
     EXPECT_EQ(port.flowPayloadBytesDispatched(10), 0U);
 
-    port.setSelectiveRepairPending(10, false);
-    const RnicTxOpportunity fresh = port.dispatchOpportunity(repair.end_ps);
+    port.setRetransmissionPending(10, false);
+    const RnicTxOpportunity fresh = port.dispatchOpportunity(retransmission.end_ps);
     ASSERT_TRUE(fresh.packet.has_value());
     EXPECT_EQ(fresh.packet->kind, RnicTxPacketKind::FreshData);
-    EXPECT_EQ(fresh.start_ps, repair.end_ps);
+    EXPECT_EQ(fresh.start_ps, retransmission.end_ps);
     EXPECT_EQ(fresh.packet->packet_index, 0U);
     EXPECT_EQ(fresh.packet->payload_byte_offset, 0U);
     EXPECT_EQ(fresh.end_ps, 2200U);
 }
 
-TEST(RnicTxPortTest, SelectiveRepairConsumesExactlyTheFreshCandidatesGoldenPrbsHits) {
+TEST(RnicTxPortTest, RetransmissionConsumesExactlyTheFreshCandidatesGoldenPrbsHits) {
     RnicTxPort fresh(9, 100000000000ULL, 1000, 20260713);
-    RnicTxPort repair(9, 100000000000ULL, 1000, 20260713);
+    RnicTxPort retransmission(9, 100000000000ULL, 1000, 20260713);
     fresh.addFlow(10, 1000000000, 0);
-    repair.addFlow(10, 0, 0);
+    retransmission.addFlow(10, 0, 0);
     fresh.setDataEligible(10, true);
-    repair.setDataEligible(10, true);
+    retransmission.setDataEligible(10, true);
     fresh.setWireRateGrant(10, 30000000000ULL);
-    repair.setWireRateGrant(10, 30000000000ULL);
-    repair.setSelectiveRepairPending(10, true);
+    retransmission.setWireRateGrant(10, 30000000000ULL);
+    retransmission.setRetransmissionPending(10, true);
 
     uint64_t fresh_time = 0;
-    uint64_t repair_time = 0;
-    const std::vector<RnicTxRepairCandidate> head{{10, 17, 17000, {1000, 1000}}};
+    uint64_t retransmission_time = 0;
+    const std::vector<RnicTxRetransmissionCandidate> head{{10, 17, 17000, {1000, 1000}}};
     for (uint64_t i = 0; i < 512; ++i) {
         const RnicTxOpportunity fresh_opportunity = fresh.dispatchOpportunity(fresh_time);
-        const RnicTxOpportunity repair_opportunity = repair.dispatchOpportunity(repair_time, head);
-        ASSERT_EQ(fresh_opportunity.packet.has_value(), repair_opportunity.packet.has_value());
-        EXPECT_EQ(fresh_opportunity.end_ps, repair_opportunity.end_ps);
-        if (repair_opportunity.packet.has_value()) {
-            EXPECT_EQ(repair_opportunity.packet->kind, RnicTxPacketKind::SelectiveRepair);
-            EXPECT_EQ(repair.flowPayloadBytesDispatched(10), 0U);
+        const RnicTxOpportunity retransmission_opportunity =
+            retransmission.dispatchOpportunity(retransmission_time, head);
+        ASSERT_EQ(fresh_opportunity.packet.has_value(),
+                  retransmission_opportunity.packet.has_value());
+        EXPECT_EQ(fresh_opportunity.end_ps, retransmission_opportunity.end_ps);
+        if (retransmission_opportunity.packet.has_value()) {
+            EXPECT_EQ(retransmission_opportunity.packet->kind, RnicTxPacketKind::Retransmission);
+            EXPECT_EQ(retransmission.flowPayloadBytesDispatched(10), 0U);
         }
         fresh_time = fresh_opportunity.end_ps;
-        repair_time = repair_opportunity.end_ps;
+        retransmission_time = retransmission_opportunity.end_ps;
     }
 }
 
-TEST(RnicTxPortTest, PendingRepairDoesNotBlockAnotherFlowsFreshPrbsHead) {
+TEST(RnicTxPortTest, PendingRetransmissionDoesNotBlockAnotherFlowsFreshPrbsHead) {
     RnicTxPort port(9, 100000000000ULL, 1000, 20260713);
     port.addFlow(10, 1000000000, 0);
     port.addFlow(11, 1000000000, 0);
@@ -211,24 +213,24 @@ TEST(RnicTxPortTest, PendingRepairDoesNotBlockAnotherFlowsFreshPrbsHead) {
     port.setDataEligible(11, true);
     port.setWireRateGrant(10, 50000000000ULL);
     port.setWireRateGrant(11, 50000000000ULL);
-    port.setSelectiveRepairPending(10, true);
+    port.setRetransmissionPending(10, true);
 
     uint64_t time_ps = 0;
-    uint64_t repairs = 0;
+    uint64_t retransmissions = 0;
     uint64_t other_fresh = 0;
-    const std::vector<RnicTxRepairCandidate> head{{10, 17, 17000, {1000, 1000}}};
+    const std::vector<RnicTxRetransmissionCandidate> head{{10, 17, 17000, {1000, 1000}}};
     for (uint64_t i = 0; i < 512; ++i) {
         const RnicTxOpportunity opportunity = port.dispatchOpportunity(time_ps, head);
         ASSERT_TRUE(opportunity.packet.has_value());
-        repairs += opportunity.packet->kind == RnicTxPacketKind::SelectiveRepair;
+        retransmissions += opportunity.packet->kind == RnicTxPacketKind::Retransmission;
         other_fresh += opportunity.packet->flow_id == 11;
         time_ps = opportunity.end_ps;
     }
-    EXPECT_GT(repairs, 0U);
+    EXPECT_GT(retransmissions, 0U);
     EXPECT_GT(other_fresh, 0U);
 }
 
-TEST(RnicTxPortTest, SourceCompleteRepairReactivatesOnlyUnderItsLiveGrant) {
+TEST(RnicTxPortTest, SourceCompleteRetransmissionReactivatesOnlyUnderItsLiveGrant) {
     RnicTxPort port(1, 100000000000ULL, 1000, 7);
     port.addFlow(10, 1000, 0);
     port.setWireRateGrant(10, 100000000000ULL);
@@ -239,13 +241,13 @@ TEST(RnicTxPortTest, SourceCompleteRepairReactivatesOnlyUnderItsLiveGrant) {
     ASSERT_TRUE(port.sourcePayloadDispatched(10));
     ASSERT_FALSE(port.hasDispatchableData());
 
-    port.setSelectiveRepairPending(10, true);
+    port.setRetransmissionPending(10, true);
     EXPECT_TRUE(port.hasDispatchableData());
     EXPECT_EQ(port.effectiveWireRateBps(10), 100000000000ULL);
-    const RnicTxOpportunity repair =
+    const RnicTxOpportunity retransmission =
         port.dispatchOpportunity(original.end_ps, {{10, 0, 0, {1000, 1000}}});
-    ASSERT_TRUE(repair.packet.has_value());
-    EXPECT_EQ(repair.packet->kind, RnicTxPacketKind::SelectiveRepair);
+    ASSERT_TRUE(retransmission.packet.has_value());
+    EXPECT_EQ(retransmission.packet->kind, RnicTxPacketKind::Retransmission);
     EXPECT_EQ(port.flowPayloadBytesDispatched(10), 1000U);
 
     port.setWireRateGrant(10, 0);
@@ -376,6 +378,37 @@ TEST(RnicTxPortTest, TransitCalibrationUsesEachDispatchedPacketsExactWireExtent)
     EXPECT_EQ(short_tail.packet->extent.wireBytes(), 80u);
     EXPECT_EQ(short_tail.packet->eta_ps - short_tail.end_ps, 240u);
     EXPECT_EQ(calibrated_wire_extents, (std::vector<uint64_t>{1000, 80}));
+}
+
+TEST(RnicTxPortTest, ShortTailWaitsForANondecreasingEligibilityTickWithoutRestampingEta) {
+    constexpr uint64_t tick_ps = 16;
+    RnicTxPort port(1, 400000000000ULL, RnicDataPacketizationConfig(4160, 64), 7, tick_ps);
+    std::vector<uint64_t> calibrated_wire_extents;
+    port.addFlow(10, 4097, [&calibrated_wire_extents](const RnicPacketExtent& extent) {
+        calibrated_wire_extents.push_back(extent.wireBytes());
+        return extent.wireBytes() * 3;
+    });
+    port.setWireRateGrant(10, 400000000000ULL);
+    port.setDataEligible(10, true);
+
+    const RnicTxOpportunity full = port.dispatchOpportunity(0);
+    ASSERT_TRUE(full.packet.has_value());
+    ASSERT_EQ(full.packet->extent.wireBytes(), 4160U);
+
+    // The exact 65-byte tail would otherwise have an earlier ETA than PSN 0.
+    // Consume a virtual PRBS opportunity while keeping the physical wire idle.
+    const RnicTxOpportunity guard = port.dispatchOpportunity(full.end_ps);
+    EXPECT_FALSE(guard.packet.has_value());
+    EXPECT_EQ(port.physicalSerializerAvailablePs(), full.end_ps);
+
+    const RnicTxOpportunity tail = port.dispatchOpportunity(guard.end_ps);
+    ASSERT_TRUE(tail.packet.has_value());
+    EXPECT_EQ(tail.packet->extent.wireBytes(), 65U);
+    EXPECT_EQ(tail.start_ps, guard.end_ps);
+    EXPECT_EQ(tail.packet->eta_ps, tail.end_ps + 195U);
+    const auto ceil_tick = [](uint64_t value) { return (value + tick_ps - 1) / tick_ps * tick_ps; };
+    EXPECT_GE(ceil_tick(tail.packet->eta_ps), ceil_tick(full.packet->eta_ps));
+    EXPECT_EQ(calibrated_wire_extents, (std::vector<uint64_t>{4160, 65}));
 }
 
 TEST(RnicTxPortTest, RouteInjectionEtaOverflowIsTransactional) {

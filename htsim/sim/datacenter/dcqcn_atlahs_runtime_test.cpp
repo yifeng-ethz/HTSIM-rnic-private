@@ -23,6 +23,7 @@ TEST(DcqcnAtlahsRuntimeTest, CompletesPacketizedFlowOnTheSharedNsTm3Clos) {
     DcqcnAtlahsRuntimeConfig config;
     config.topology_file = topology.lexically_normal().string();
     config.ns_tm3_shared_buffer_bytes = 1024 * 1024;
+    config.ns_tm3_egress_buffer_bytes = 1024 * 1024;
     config.ecn_kmin_bytes = 0;
     config.ecn_kmax_bytes = 4096;
     config.ecn_pmax_ppm = 1000000;
@@ -52,6 +53,8 @@ TEST(DcqcnAtlahsRuntimeTest, CompletesPacketizedFlowOnTheSharedNsTm3Clos) {
     EXPECT_EQ(runtime.completed_flow_count(), 8U);
     EXPECT_EQ(runtime.silent_rto_count(), 0U);
     EXPECT_EQ(runtime.dropped_packet_count(), 0U);
+    EXPECT_EQ(runtime.shared_pool_dropped_packet_count(), 0U);
+    EXPECT_EQ(runtime.egress_domain_dropped_packet_count(), 0U);
     EXPECT_GT(runtime.ecn_marked_packet_count(), 0U);
     EXPECT_GT(runtime.pfc_pause_count(), 0U);
     EXPECT_EQ(runtime.pfc_pause_count(), runtime.pfc_resume_count());
@@ -74,6 +77,12 @@ TEST(DcqcnAtlahsRuntimeTest, CompletesPacketizedFlowOnTheSharedNsTm3Clos) {
     EXPECT_NE(manifest.find("profile=dcqcn"), std::string::npos);
     EXPECT_NE(manifest.find("switch=ns-tm3"), std::string::npos);
     EXPECT_NE(manifest.find("state_trace_csv=state.csv"), std::string::npos);
+    EXPECT_NE(manifest.find("shared_buffer_bytes=1048576"), std::string::npos);
+    EXPECT_NE(manifest.find("shared_buffer_scope=switch-wide"), std::string::npos);
+    EXPECT_NE(manifest.find("egress_buffer_bytes=1048576"), std::string::npos);
+    EXPECT_NE(manifest.find("egress_buffer_scope=per-physical-egress"), std::string::npos);
+    EXPECT_NE(manifest.find("buffer_residency=queued-voq-excludes-egress-serializer"),
+              std::string::npos);
     EXPECT_NE(manifest.find("recovery=go-back-n"), std::string::npos);
     EXPECT_NE(manifest.find("ecn=ns-tm3-egress-selection-red"), std::string::npos);
     EXPECT_NE(manifest.find("ecn_kmin_bytes=0"), std::string::npos);
@@ -81,6 +90,7 @@ TEST(DcqcnAtlahsRuntimeTest, CompletesPacketizedFlowOnTheSharedNsTm3Clos) {
     EXPECT_NE(manifest.find("ecn_pmax_ppm=1000000"), std::string::npos);
     EXPECT_NE(manifest.find("ecn_seed=9"), std::string::npos);
     EXPECT_NE(manifest.find("ecn_sampler=packet-switch-egress-hash"), std::string::npos);
+    EXPECT_NE(manifest.find("pfc_meter_scope=per-physical-ingress"), std::string::npos);
     EXPECT_NE(manifest.find("dcqcn_min_rate_bps=100000000"), std::string::npos);
     EXPECT_NE(manifest.find("cnp_timer=single-coalesced-event-source"), std::string::npos);
     EXPECT_NE(manifest.find("cc_timer=dedicated-coalesced-event-source"), std::string::npos);

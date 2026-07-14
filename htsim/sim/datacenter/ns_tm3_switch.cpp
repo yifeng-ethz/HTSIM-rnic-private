@@ -108,7 +108,7 @@ mem_b NsTm3EgressSerializer::queuesize() const {
 }
 
 mem_b NsTm3EgressSerializer::maxsize() const {
-    return _owner == nullptr ? 0 : _owner->shared_buffer_capacity();
+    return _owner == nullptr ? 0 : _owner->egress_buffer_capacity();
 }
 
 mem_b NsTm3EgressSerializer::in_service_bytes() const {
@@ -122,13 +122,13 @@ void NsTm3EgressSerializer::note_packet_enqueued(Packet& pkt) {
     }
 }
 
-void NsTm3EgressSerializer::note_shared_buffer_drop(Packet& pkt) {
+void NsTm3EgressSerializer::note_buffer_drop(Packet& pkt) {
     pkt.flow().logTraffic(pkt, *this, TrafficLogger::PKT_DROP);
 
-    // Admission belongs to the switch-wide shared-buffer domain. A per-egress
-    // queue logger cannot represent a drop caused by occupancy on other
-    // egresses (and several legacy loggers assume local backlog >= drop size).
-    // NsTm3BufferCounters are therefore the authoritative drop ledger.
+    // Admission belongs jointly to a switch-wide shared pool and a local
+    // egress domain.  Several legacy queue loggers assume local backlog >=
+    // drop size, which is false for shared-pool drops.  NsTm3BufferCounters
+    // are therefore the authoritative, domain-specific drop ledger.
 }
 
 NsTm3Switch::NsTm3Switch(EventList& eventlist,
@@ -139,7 +139,8 @@ NsTm3Switch::NsTm3Switch(EventList& eventlist,
                          FatTreeTopology* topology,
                          mem_b shared_buffer_capacity)
     : FatTreeSwitch(eventlist, name, type, id, switch_delay, topology),
-      _shared_buffer_capacity(shared_buffer_capacity) {
+      _shared_buffer_capacity(shared_buffer_capacity),
+      _egress_buffer_capacity(shared_buffer_capacity) {
     if (_shared_buffer_capacity <= 0) {
         throw std::invalid_argument("ns-tm3 shared-buffer capacity must be positive");
     }
@@ -165,6 +166,27 @@ void NsTm3Switch::set_voq_arbitration(NsTm3VoqArbitration arbitration) {
         }
     }
     _voq_arbitration = arbitration;
+}
+
+void NsTm3Switch::set_egress_buffer_capacity(mem_b capacity) {
+    if (capacity <= 0 || capacity > _shared_buffer_capacity) {
+        throw std::invalid_argument(
+            "ns-tm3 egress-buffer capacity must be positive and no larger "
+            "than the switch-wide shared pool");
+    }
+    if (_shared_buffer_occupancy != 0 || !_pipeline_ingress.empty()) {
+        throw std::logic_error(
+            "ns-tm3 cannot change egress-buffer capacity with packets in "
+            "the traffic manager");
+    }
+    for (const EgressState& egress : _egresses) {
+        if (egress.serializer->is_busy()) {
+            throw std::logic_error(
+                "ns-tm3 cannot change egress-buffer capacity while "
+                "serializing");
+        }
+    }
+    _egress_buffer_capacity = capacity;
 }
 
 int NsTm3Switch::addPort(BaseQueue* queue) {
@@ -263,19 +285,32 @@ NsTm3EgressSerializer& NsTm3Switch::resolve_selected_egress(Packet& pkt) {
 
 void NsTm3Switch::enqueue(Packet& pkt, uint32_t ingress_id, NsTm3EgressSerializer& egress) {
     const mem_b packet_bytes = pkt.size();
+    EgressState& state = egress_state(egress.egress_id());
     const PacketSummary packet{ingress_id,    egress.egress_id(), pkt.priority(),
                                pkt.flow_id(), pkt.id(),           packet_bytes};
     if (packet_bytes > _shared_buffer_capacity ||
         _shared_buffer_occupancy > _shared_buffer_capacity - packet_bytes) {
         _buffer_counters.dropped_packets++;
         _buffer_counters.dropped_bytes += packet_bytes;
-        egress.note_shared_buffer_drop(pkt);
+        _buffer_counters.shared_pool_dropped_packets++;
+        _buffer_counters.shared_pool_dropped_bytes += packet_bytes;
+        egress.note_buffer_drop(pkt);
+        emit_queue_observation(NsTm3QueueTransition::Dropped, packet);
+        pkt.free();
+        return;
+    }
+    if (packet_bytes > _egress_buffer_capacity ||
+        state.buffered_bytes > _egress_buffer_capacity - packet_bytes) {
+        _buffer_counters.dropped_packets++;
+        _buffer_counters.dropped_bytes += packet_bytes;
+        _buffer_counters.egress_domain_dropped_packets++;
+        _buffer_counters.egress_domain_dropped_bytes += packet_bytes;
+        egress.note_buffer_drop(pkt);
         emit_queue_observation(NsTm3QueueTransition::Dropped, packet);
         pkt.free();
         return;
     }
 
-    EgressState& state = egress_state(egress.egress_id());
     state.traffic_classes[traffic_class(pkt.priority())].packets_by_ingress[ingress_id].push_back(
         &pkt);
     state.buffered_bytes += packet_bytes;

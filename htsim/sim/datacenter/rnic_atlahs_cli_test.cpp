@@ -57,7 +57,8 @@ TEST(RnicAtlahsCliTest, ResolvesCollectiveDefaultsInConstructorUnits) {
     EXPECT_EQ(options.collective.ring_release_tick_ps, 16000U);
     EXPECT_EQ(options.collective.ring_wire_capacity_bytes, UINT64_C(1) << 20);
     EXPECT_EQ(options.collective.ns_tm3_shared_buffer_bytes, UINT64_C(1) << 20);
-    EXPECT_EQ(options.collective.maximum_repair_retries, 8U);
+    EXPECT_EQ(options.collective.maximum_retransmissions, 8U);
+    EXPECT_EQ(options.collective.retransmission_rto_ps, UINT64_C(50000000000));
 
     const RnicAtlahsExplicitCliOptions& supplied = options.explicitly_supplied;
     EXPECT_FALSE(supplied.max_wire_packet_bytes);
@@ -73,7 +74,8 @@ TEST(RnicAtlahsCliTest, ResolvesCollectiveDefaultsInConstructorUnits) {
     EXPECT_FALSE(supplied.ring_release_tick_ps);
     EXPECT_FALSE(supplied.ring_wire_capacity_bytes);
     EXPECT_FALSE(supplied.ns_tm3_shared_buffer_bytes);
-    EXPECT_FALSE(supplied.cn_maximum_repair_retries);
+    EXPECT_FALSE(supplied.cn_maximum_retransmissions);
+    EXPECT_FALSE(supplied.cn_retransmission_rto_ps);
 }
 
 TEST(RnicAtlahsCliTest, RecordsExplicitGeneratedCollectiveOverrides) {
@@ -90,7 +92,8 @@ TEST(RnicAtlahsCliTest, RecordsExplicitGeneratedCollectiveOverrides) {
     append(arguments, "-rnic_cn_ring_tick_ps", "32000");
     append(arguments, "-rnic_cn_ring_capacity_bytes", "2097152");
     append(arguments, "-rnic_cn_ns_tm3_buffer_bytes", "4194304");
-    append(arguments, "-rnic_cn_max_repair_retries", "12");
+    append(arguments, "-rnic_cn_max_retransmissions", "12");
+    append(arguments, "-rnic_cn_retransmission_rto_ps", "25000000000");
 
     const RnicAtlahsCliOptions options = parse(std::move(arguments));
     EXPECT_FALSE(options.collective.topology_file.has_value());
@@ -106,7 +109,8 @@ TEST(RnicAtlahsCliTest, RecordsExplicitGeneratedCollectiveOverrides) {
     EXPECT_EQ(options.collective.ring_release_tick_ps, 32000U);
     EXPECT_EQ(options.collective.ring_wire_capacity_bytes, 2097152U);
     EXPECT_EQ(options.collective.ns_tm3_shared_buffer_bytes, 4194304U);
-    EXPECT_EQ(options.collective.maximum_repair_retries, 12U);
+    EXPECT_EQ(options.collective.maximum_retransmissions, 12U);
+    EXPECT_EQ(options.collective.retransmission_rto_ps, UINT64_C(25000000000));
 
     const RnicAtlahsExplicitCliOptions& supplied = options.explicitly_supplied;
     EXPECT_TRUE(supplied.max_wire_packet_bytes);
@@ -122,7 +126,8 @@ TEST(RnicAtlahsCliTest, RecordsExplicitGeneratedCollectiveOverrides) {
     EXPECT_TRUE(supplied.ring_release_tick_ps);
     EXPECT_TRUE(supplied.ring_wire_capacity_bytes);
     EXPECT_TRUE(supplied.ns_tm3_shared_buffer_bytes);
-    EXPECT_TRUE(supplied.cn_maximum_repair_retries);
+    EXPECT_TRUE(supplied.cn_maximum_retransmissions);
+    EXPECT_TRUE(supplied.cn_retransmission_rto_ps);
 }
 
 TEST(RnicAtlahsCliTest, ResolvesCanonicalSlingshotLikeOverrides) {
@@ -377,9 +382,13 @@ TEST(RnicAtlahsCliTest, RejectsCrossProfileOptions) {
     append(nn_trace, "-rnic_cn_queue_trace_csv", "queues.csv");
     EXPECT_THROW(parse(std::move(nn_trace)), std::invalid_argument);
 
-    std::vector<std::string> ss_cn_repair = baseArguments("rnic-ss");
-    append(ss_cn_repair, "-rnic_cn_max_repair_retries", "8");
-    EXPECT_THROW(parse(std::move(ss_cn_repair)), std::invalid_argument);
+    std::vector<std::string> ss_cn_retransmission = baseArguments("rnic-ss");
+    append(ss_cn_retransmission, "-rnic_cn_max_retransmissions", "8");
+    EXPECT_THROW(parse(std::move(ss_cn_retransmission)), std::invalid_argument);
+
+    std::vector<std::string> nn_cn_rto = baseArguments("rnic-nn");
+    append(nn_cn_rto, "-rnic_cn_retransmission_rto_ps", "50000000000");
+    EXPECT_THROW(parse(std::move(nn_cn_rto)), std::invalid_argument);
 }
 
 TEST(RnicAtlahsCliTest, ChecksPacketizationAndSimulatorResolution) {
@@ -454,9 +463,13 @@ TEST(RnicAtlahsCliTest, ChecksCollectiveTopologyAndRuntimeBounds) {
     append(zero_buffer, "-rnic_cn_ns_tm3_buffer_bytes", "0");
     EXPECT_THROW(parse(std::move(zero_buffer)), std::invalid_argument);
 
-    std::vector<std::string> zero_repair = baseArguments("rnic-cn");
-    append(zero_repair, "-rnic_cn_max_repair_retries", "0");
-    EXPECT_THROW(parse(std::move(zero_repair)), std::invalid_argument);
+    std::vector<std::string> zero_retransmission = baseArguments("rnic-cn");
+    append(zero_retransmission, "-rnic_cn_max_retransmissions", "0");
+    EXPECT_THROW(parse(std::move(zero_retransmission)), std::invalid_argument);
+
+    std::vector<std::string> zero_retransmission_rto = baseArguments("rnic-cn");
+    append(zero_retransmission_rto, "-rnic_cn_retransmission_rto_ps", "0");
+    EXPECT_THROW(parse(std::move(zero_retransmission_rto)), std::invalid_argument);
 
     std::vector<std::string> huge_buffer = baseArguments("rnic-cn");
     append(huge_buffer, "-rnic_cn_ns_tm3_buffer_bytes", "9223372036854775808");
@@ -477,7 +490,8 @@ TEST(RnicAtlahsCliTest, UsageNamesOnlyCanonicalProfilesAndExactUnits) {
     EXPECT_NE(usage.find("rnic-cn|rnic-ss|rnic-nn|rnic-nn-fluid"), std::string::npos);
     EXPECT_NE(usage.find("-linkspeed_bps"), std::string::npos);
     EXPECT_NE(usage.find("-completion_csv FILE"), std::string::npos);
-    EXPECT_NE(usage.find("-rnic_cn_max_repair_retries N"), std::string::npos);
+    EXPECT_NE(usage.find("-rnic_cn_max_retransmissions N"), std::string::npos);
+    EXPECT_NE(usage.find("-rnic_cn_retransmission_rto_ps PS"), std::string::npos);
     EXPECT_NE(usage.find("-goal_rank_mapping auto|gpu-rank|unique-nic"), std::string::npos);
     EXPECT_NE(usage.find("-rnic_hop_latency_ps"), std::string::npos);
     EXPECT_NE(usage.find("-topo FILE"), std::string::npos);

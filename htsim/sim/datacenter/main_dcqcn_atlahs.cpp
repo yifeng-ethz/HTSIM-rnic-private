@@ -135,6 +135,10 @@ int main(int argc, char* argv[]) {
                   << " pfc_pause_frames=" << installed_runtime->pfc_pause_count()
                   << " pfc_resume_frames=" << installed_runtime->pfc_resume_count()
                   << " ns_tm3_dropped_packets=" << installed_runtime->dropped_packet_count()
+                  << " ns_tm3_shared_pool_dropped_packets="
+                  << installed_runtime->shared_pool_dropped_packet_count()
+                  << " ns_tm3_egress_domain_dropped_packets="
+                  << installed_runtime->egress_domain_dropped_packet_count()
                   << " physical_quiescence=verified\n";
         return 0;
     } catch (const std::exception& error) {

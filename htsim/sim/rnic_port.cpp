@@ -21,21 +21,25 @@ uint64_t checkedAdd(uint64_t lhs, uint64_t rhs, const char* message) {
 RnicTxPort::RnicTxPort(uint64_t node_id,
                        uint64_t access_capacity_bps,
                        uint64_t max_wire_packet_bytes,
-                       uint64_t global_prbs_seed)
+                       uint64_t global_prbs_seed,
+                       uint64_t eligibility_tick_ps)
     : RnicTxPort(node_id,
                  access_capacity_bps,
                  RnicDataPacketizationConfig(max_wire_packet_bytes),
-                 global_prbs_seed) {}
+                 global_prbs_seed,
+                 eligibility_tick_ps) {}
 
 RnicTxPort::RnicTxPort(uint64_t node_id,
                        uint64_t access_capacity_bps,
                        RnicDataPacketizationConfig packetization,
-                       uint64_t global_prbs_seed)
+                       uint64_t global_prbs_seed,
+                       uint64_t eligibility_tick_ps)
     : _access_capacity_bps(access_capacity_bps),
       _packetization(std::move(packetization)),
       _wire_serializer(access_capacity_bps),
       _data_opportunity_serializer(access_capacity_bps),
-      _pacer(global_prbs_seed, node_id) {}
+      _pacer(global_prbs_seed, node_id),
+      _eligibility_tick_ps(eligibility_tick_ps) {}
 
 void RnicTxPort::addFlow(uint64_t flow_id,
                          uint64_t payload_size_bytes,
@@ -67,9 +71,9 @@ void RnicTxPort::setDataEligible(uint64_t flow_id, bool eligible) {
     recomputeEffectiveRates();
 }
 
-void RnicTxPort::setSelectiveRepairPending(uint64_t flow_id, bool pending) {
+void RnicTxPort::setRetransmissionPending(uint64_t flow_id, bool pending) {
     FlowState& state = requireFlow(flow_id);
-    state.selective_repair_pending = pending;
+    state.retransmission_pending = pending;
     recomputeEffectiveRates();
 }
 
@@ -86,8 +90,8 @@ void RnicTxPort::removeRetiredFlow(uint64_t flow_id) {
     if (state.data_eligible) {
         throw std::logic_error("cannot remove RNIC TX flow while DATA remains eligible");
     }
-    if (state.selective_repair_pending) {
-        throw std::logic_error("cannot remove RNIC TX flow with a pending selective repair");
+    if (state.retransmission_pending) {
+        throw std::logic_error("cannot remove RNIC TX flow with a pending retransmission");
     }
     if (state.wire_rate_grant_bps != 0) {
         throw std::logic_error("cannot remove RNIC TX flow with a nonzero wire-rate grant");
@@ -119,8 +123,8 @@ uint64_t RnicTxPort::effectiveWireRateBps(uint64_t flow_id) const {
     return requireFlow(flow_id).effective_wire_rate_bps;
 }
 
-bool RnicTxPort::hasSelectiveRepairPending(uint64_t flow_id) const {
-    return requireFlow(flow_id).selective_repair_pending;
+bool RnicTxPort::hasRetransmissionPending(uint64_t flow_id) const {
+    return requireFlow(flow_id).retransmission_pending;
 }
 
 bool RnicTxPort::hasDispatchableData() const {
@@ -128,7 +132,7 @@ bool RnicTxPort::hasDispatchableData() const {
         const FlowState& state = item.second;
         if (state.data_eligible &&
             (state.payload_bytes_dispatched < state.payload_size_bytes ||
-             state.selective_repair_pending) &&
+             state.retransmission_pending) &&
             state.effective_wire_rate_bps > 0) {
             return true;
         }
@@ -146,37 +150,47 @@ RnicTxOpportunity RnicTxPort::dispatchOpportunity(uint64_t requested_start_ps) {
 
 RnicTxOpportunity RnicTxPort::dispatchOpportunity(
     uint64_t requested_start_ps,
-    const std::vector<RnicTxRepairCandidate>& repair_heads) {
+    const std::vector<RnicTxRetransmissionCandidate>& retransmission_heads) {
     if (requested_start_ps < nextWireOpportunityPs()) {
         throw std::invalid_argument("RNIC TX opportunities cannot overlap");
     }
 
-    std::map<uint64_t, const RnicTxRepairCandidate*> repair_by_flow;
-    for (const RnicTxRepairCandidate& repair : repair_heads) {
-        const FlowState& state = requireFlow(repair.flow_id);
-        if (!state.selective_repair_pending) {
-            throw std::invalid_argument("RNIC TX repair head is not marked pending");
+    std::map<uint64_t, const RnicTxRetransmissionCandidate*> retransmission_by_flow;
+    for (const RnicTxRetransmissionCandidate& retransmission : retransmission_heads) {
+        const FlowState& state = requireFlow(retransmission.flow_id);
+        if (!state.retransmission_pending) {
+            throw std::invalid_argument("RNIC TX retransmission head is not marked pending");
         }
-        if (repair.extent.wireBytes() > _packetization.maxWirePacketBytes()) {
-            throw std::invalid_argument("RNIC TX repair exceeds the DATA packet extent");
+        if (retransmission.extent.wireBytes() > _packetization.maxWirePacketBytes()) {
+            throw std::invalid_argument("RNIC TX retransmission exceeds the DATA packet extent");
         }
-        if (!repair_by_flow.emplace(repair.flow_id, &repair).second) {
-            throw std::invalid_argument("RNIC TX received two repair heads for one flow");
+        if (!retransmission_by_flow.emplace(retransmission.flow_id, &retransmission).second) {
+            throw std::invalid_argument("RNIC TX received two retransmission heads for one flow");
         }
     }
 
     std::vector<RnicPrbsWireCandidate> candidates;
-    for (const auto& item : _flows) {
-        const FlowState& state = item.second;
-        const auto repair = repair_by_flow.find(state.flow_id);
-        const bool has_repair = repair != repair_by_flow.end();
-        if (state.selective_repair_pending != has_repair) {
-            throw std::logic_error("RNIC TX pending repair has no matching per-flow head");
+    for (auto& item : _flows) {
+        FlowState& state = item.second;
+        const auto retransmission = retransmission_by_flow.find(state.flow_id);
+        const bool has_retransmission = retransmission != retransmission_by_flow.end();
+        if (state.retransmission_pending != has_retransmission) {
+            throw std::logic_error("RNIC TX pending retransmission has no matching per-flow head");
         }
         const bool has_fresh = state.payload_bytes_dispatched < state.payload_size_bytes;
-        if (state.data_eligible && (has_repair || has_fresh) && state.effective_wire_rate_bps > 0) {
-            const uint64_t head_wire_bytes =
-                has_repair ? repair->second->extent.wireBytes() : headExtent(state).wireBytes();
+        if (has_fresh) {
+            prepareFreshHead(state);
+        }
+        const std::optional<RnicPacketExtent>& fresh_extent = state.cached_fresh_extent;
+        const bool fresh_is_time_ordered =
+            fresh_extent.has_value() &&
+            freshHeadPreservesEtaOrder(state, *fresh_extent, *state.cached_fresh_transit_ps,
+                                       requested_start_ps);
+        if (state.data_eligible && (has_retransmission || fresh_is_time_ordered) &&
+            state.effective_wire_rate_bps > 0) {
+            const uint64_t head_wire_bytes = has_retransmission
+                                                 ? retransmission->second->extent.wireBytes()
+                                                 : fresh_extent->wireBytes();
             candidates.push_back({state.flow_id, state.effective_wire_rate_bps, head_wire_bytes});
         }
     }
@@ -187,15 +201,15 @@ RnicTxOpportunity RnicTxPort::dispatchOpportunity(
     std::optional<RnicTxPacket> packet;
     uint64_t event_wire_bytes = _packetization.maxWirePacketBytes();
     FlowState* selected_state = nullptr;
-    const RnicTxRepairCandidate* selected_repair = nullptr;
+    const RnicTxRetransmissionCandidate* selected_retransmission = nullptr;
     std::optional<RnicPacketExtent> selected_extent;
     if (selected.has_value()) {
         FlowState& state = requireFlow(*selected);
         selected_state = &state;
-        const auto repair = repair_by_flow.find(state.flow_id);
-        if (repair != repair_by_flow.end()) {
-            selected_repair = repair->second;
-            selected_extent = selected_repair->extent;
+        const auto retransmission = retransmission_by_flow.find(state.flow_id);
+        if (retransmission != retransmission_by_flow.end()) {
+            selected_retransmission = retransmission->second;
+            selected_extent = selected_retransmission->extent;
         } else {
             if (state.packet_index == std::numeric_limits<uint64_t>::max()) {
                 throw std::overflow_error("RNIC TX packet index overflow");
@@ -228,7 +242,9 @@ RnicTxOpportunity RnicTxPort::dispatchOpportunity(
     std::optional<uint64_t> selected_eta_ps;
     if (selected_state != nullptr) {
         const uint64_t calibrated_transit_ps =
-            selected_state->calibrated_transit_ps(*selected_extent);
+            selected_retransmission != nullptr
+                ? selected_state->calibrated_transit_ps(*selected_extent)
+                : *selected_state->cached_fresh_transit_ps;
         selected_eta_ps = checkedAdd(interval.end_ps, calibrated_transit_ps,
                                      "RNIC TX eligibility timestamp overflow");
     }
@@ -238,20 +254,30 @@ RnicTxOpportunity RnicTxPort::dispatchOpportunity(
     _data_opportunity_serializer = next_data_opportunity_serializer;
     if (selected_state != nullptr) {
         FlowState& state = *selected_state;
-        if (selected_repair != nullptr) {
+        if (selected_retransmission != nullptr) {
             packet = RnicTxPacket{state.flow_id,
-                                  selected_repair->packet_index,
-                                  selected_repair->payload_byte_offset,
+                                  selected_retransmission->packet_index,
+                                  selected_retransmission->payload_byte_offset,
                                   *selected_extent,
                                   interval.start_ps,
                                   interval.end_ps,
                                   *selected_eta_ps,
-                                  RnicTxPacketKind::SelectiveRepair};
+                                  RnicTxPacketKind::Retransmission};
         } else {
             packet = RnicTxPacket{
                 state.flow_id,    state.packet_index,         state.payload_bytes_dispatched,
                 *selected_extent, interval.start_ps,          interval.end_ps,
                 *selected_eta_ps, RnicTxPacketKind::FreshData};
+            if (_eligibility_tick_ps != 0) {
+                const uint64_t eta_tick = quantizedEtaPs(*selected_eta_ps);
+                if (state.last_fresh_eta_tick_ps.has_value() &&
+                    eta_tick < *state.last_fresh_eta_tick_ps) {
+                    throw std::logic_error("RNIC TX dispatched a decreasing fresh-DATA ETA tick");
+                }
+                state.last_fresh_eta_tick_ps = eta_tick;
+            }
+            state.cached_fresh_extent.reset();
+            state.cached_fresh_transit_ps.reset();
             state.payload_bytes_dispatched += selected_extent->payloadBytes();
             ++state.packet_index;
             if (state.payload_bytes_dispatched == state.payload_size_bytes) {
@@ -294,6 +320,54 @@ RnicPacketExtent RnicTxPort::headExtent(const FlowState& state) const {
     return _packetization.packetize(state.payload_size_bytes - state.payload_bytes_dispatched);
 }
 
+uint64_t RnicTxPort::quantizedEtaPs(uint64_t eta_ps) const {
+    if (_eligibility_tick_ps == 0) {
+        return eta_ps;
+    }
+    const uint64_t remainder = eta_ps % _eligibility_tick_ps;
+    if (remainder == 0) {
+        return eta_ps;
+    }
+    return checkedAdd(eta_ps, _eligibility_tick_ps - remainder,
+                      "RNIC TX eligibility tick ceiling overflow");
+}
+
+bool RnicTxPort::freshHeadPreservesEtaOrder(const FlowState& state,
+                                            const RnicPacketExtent& extent,
+                                            uint64_t calibrated_transit_ps,
+                                            uint64_t requested_start_ps) const {
+    if (_eligibility_tick_ps == 0) {
+        return true;
+    }
+    if (!state.last_fresh_eta_tick_ps.has_value()) {
+        return true;
+    }
+
+    RnicWireSerializationClock next_wire = _wire_serializer;
+    RnicWireSerializationClock next_data = _data_opportunity_serializer;
+    next_wire.synchronizeAvailableWith(next_data);
+    const RnicWireSerializationInterval interval =
+        next_wire.serialize(requested_start_ps, extent.wireBytes());
+    const uint64_t eta_ps = checkedAdd(interval.end_ps, calibrated_transit_ps,
+                                       "RNIC TX eligibility timestamp overflow");
+    return quantizedEtaPs(eta_ps) >= *state.last_fresh_eta_tick_ps;
+}
+
+void RnicTxPort::prepareFreshHead(FlowState& state) {
+    if (state.cached_fresh_extent.has_value() || state.cached_fresh_transit_ps.has_value()) {
+        if (!state.cached_fresh_extent.has_value() || !state.cached_fresh_transit_ps.has_value() ||
+            state.cached_fresh_extent->payloadBytes() != headExtent(state).payloadBytes() ||
+            state.cached_fresh_extent->wireBytes() != headExtent(state).wireBytes()) {
+            throw std::logic_error("RNIC TX cached fresh head is inconsistent");
+        }
+        return;
+    }
+    const RnicPacketExtent extent = headExtent(state);
+    const uint64_t transit_ps = state.calibrated_transit_ps(extent);
+    state.cached_fresh_extent = extent;
+    state.cached_fresh_transit_ps = transit_ps;
+}
+
 void RnicTxPort::recomputeEffectiveRates() {
     std::vector<FlowState*> active;
     uint64_t allocated_bps = 0;
@@ -302,7 +376,7 @@ void RnicTxPort::recomputeEffectiveRates() {
         state.effective_wire_rate_bps = 0;
         if (state.data_eligible &&
             (state.payload_bytes_dispatched < state.payload_size_bytes ||
-             state.selective_repair_pending) &&
+             state.retransmission_pending) &&
             state.wire_rate_grant_bps > 0) {
             active.push_back(&state);
         }

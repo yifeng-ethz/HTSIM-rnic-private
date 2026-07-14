@@ -106,7 +106,8 @@ RnicAtlahsRuntimeConfig collectiveRuntimeConfig(const RnicAtlahsCliOptions& opti
         {},
         options.collective.queue_trace_csv,
         options.collective.state_trace_csv,
-        options.collective.maximum_repair_retries,
+        options.collective.maximum_retransmissions,
+        options.collective.retransmission_rto_ps,
     };
 }
 
@@ -260,21 +261,25 @@ std::string renderRnicAtlahsModelManifest(const RnicAtlahsCliOptions& options,
                  << " eta=source-route-injection-plus-packet-specific-no-load-transit"
                  << " eta_transit=pipe-switch-latency-plus-remaining-ns-tm3-egress-serialization"
                  << " same_time_order=release-before-admission" << '\n';
-        manifest << "[RNIC manifest] recovery=selective-gap-nack"
-                 << " late_admission=repair"
+        manifest << "[RNIC manifest] recovery=deterministic-gap-nack-retransmission"
+                 << " late_admission=rejected-as-gap"
                  << " early_admission=hard-error"
                  << " overflow_admission=hard-error"
-                 << " gap_decision=next-strict-ring-tick"
+                 << " gap_decision=post-resequence-same-timestamp"
                  << " gap_decision_epsilon_ps=0"
                  << " gap_nack_priority=high"
                  << " gap_nack_wire_bytes=" << options.collective.control_wire_bytes
-                 << " repair_priority=low"
-                 << " repair_arbitration=per-flow-head-in-node-prbs-lottery"
-                 << " repair_prbs_draw=true"
-                 << " repair_rate_accounting=substitutes-fresh-granted-service"
-                 << " repair_eta=fresh-packet-specific-calibration"
-                 << " repair_scope=exact-logical-packet"
-                 << " maximum_repair_retries=" << options.collective.maximum_repair_retries
+                 << " retransmission_priority=low"
+                 << " retransmission_arbitration=per-flow-head-in-node-prbs-lottery"
+                 << " retransmission_prbs_draw=true"
+                 << " retransmission_rate_accounting=substitutes-fresh-granted-service"
+                 << " retransmission_eta=fresh-packet-specific-calibration"
+                 << " retransmission_scope=exact-logical-packet"
+                 << " maximum_retransmissions=" << options.collective.maximum_retransmissions
+                 << " retransmission_rto_ps=" << options.collective.retransmission_rto_ps
+                 << " retransmission_rto_epoch=physical-retry-serialization-end"
+                 << " control_loss=fatal-no-control-recovery"
+                 << " retire_deadline=max-original-release"
                  << " retirement_gate=exact-rx-ledger-and-no-gap" << '\n';
     } else if (spec.profile == RnicProfile::SlingshotLike) {
         manifest << "[RNIC manifest] topology="
@@ -299,7 +304,11 @@ std::string renderRnicAtlahsModelManifest(const RnicAtlahsCliOptions& options,
                  << (options.slingshot.unordered_packet_routing ? "unordered-packet"
                                                                 : "ordered-endpoint-pair")
                  << " path_candidates=deterministic-four-of-eight"
-                 << " sender_information=local-request-depth-plus-physical-ack-telemetry"
+                 << " sender_information=source-local-switch-state-plus-physical-ack-telemetry"
+                 << " local_path_score=source-leaf-backlog-delay"
+                 << " equal_cost_tie=hashed-candidate-order"
+                 << " ordered_startup_reservation=one-data-envelope-until-first-data-arrival"
+                 << " reservation_buffer_residency=false"
                  << " global_sender_state=false"
                  << " telemetry_delay_ps=" << options.slingshot.telemetry_delay_ps
                  << " sample_age_ps=" << options.slingshot.maximum_sample_age_ps

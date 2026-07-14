@@ -260,6 +260,16 @@ void NsRosetta::enqueue(Packet& pkt, uint32_t ingress_id, NsRosettaEgressSeriali
     const PacketSummary packet =
         summarize(pkt, ingress_id, egress.egress_id(), selected_traffic_class);
 
+    // Ordered route binding happens before the first DATA packet traverses the
+    // node-to-leaf cable.  Once that low-priority DATA packet reaches the
+    // selected source-leaf egress, real queue state replaces the provisional
+    // local reservation.  Reverse-flow ACK/SACK, credit, and backpressure
+    // packets can have the same wire {src,dst}; their strict high priority
+    // must never consume or validate a DATA reservation.
+    if (pkt.priority() == Packet::PRIO_LO) {
+        consume_ordered_route_reservation(packet.pair, packet.egress_id);
+    }
+
     if (packet.packet_bytes > _shared_buffer_capacity ||
         _shared_buffer_occupancy > _shared_buffer_capacity - packet.packet_bytes) {
         _buffer_counters.dropped_packets++;
@@ -587,6 +597,53 @@ NsRosettaRequestDepth NsRosetta::request_depth(uint32_t egress_id,
     return depth;
 }
 
+void NsRosetta::reserve_ordered_route(const NsRosettaEndpointPair& pair,
+                                      uint32_t egress_id,
+                                      mem_b wire_bytes) {
+    if (pair.source == pair.destination) {
+        throw std::invalid_argument("ns-rosetta ordered route reservation requires distinct nodes");
+    }
+    if (wire_bytes <= 0) {
+        throw std::invalid_argument("ns-rosetta ordered route reservation must be positive");
+    }
+    EgressState& egress = egress_state(egress_id);
+    if (egress.ordered_route_reserved_bytes > std::numeric_limits<mem_b>::max() - wire_bytes) {
+        throw std::overflow_error("ns-rosetta ordered route reservation overflow");
+    }
+    auto [reservation, inserted] =
+        _ordered_route_reservations.emplace(pair, OrderedRouteReservation{egress_id, wire_bytes});
+    (void)reservation;
+    if (!inserted) {
+        throw std::logic_error("ns-rosetta endpoint pair already has a route reservation");
+    }
+    egress.ordered_route_reserved_bytes += wire_bytes;
+}
+
+void NsRosetta::consume_ordered_route_reservation(const NsRosettaEndpointPair& pair,
+                                                  uint32_t egress_id) {
+    auto reservation = _ordered_route_reservations.find(pair);
+    if (reservation == _ordered_route_reservations.end()) {
+        return;
+    }
+    if (reservation->second.egress_id != egress_id) {
+        throw std::logic_error("ns-rosetta ordered pair " + std::to_string(pair.source) + "->" +
+                               std::to_string(pair.destination) + " arrived on egress " +
+                               std::to_string(egress_id) +
+                               " while its DATA reservation targets egress " +
+                               std::to_string(reservation->second.egress_id));
+    }
+    EgressState& egress = egress_state(egress_id);
+    if (egress.ordered_route_reserved_bytes < reservation->second.wire_bytes) {
+        throw std::logic_error("ns-rosetta ordered route reservation accounting underflow");
+    }
+    egress.ordered_route_reserved_bytes -= reservation->second.wire_bytes;
+    _ordered_route_reservations.erase(reservation);
+}
+
+mem_b NsRosetta::ordered_route_reserved_bytes(uint32_t egress_id) const {
+    return egress_state(egress_id).ordered_route_reserved_bytes;
+}
+
 NsRosettaPathLoad NsRosetta::sample_path_load(uint32_t egress_id) const {
     const EgressState& egress = egress_state(egress_id);
     std::set<uint32_t> requesting_ingresses;
@@ -600,8 +657,13 @@ NsRosettaPathLoad NsRosetta::sample_path_load(uint32_t egress_id) const {
         }
     }
     const mem_b in_service = egress.serializer->in_service_bytes();
+    if (egress.buffered_bytes >
+        std::numeric_limits<mem_b>::max() - egress.ordered_route_reserved_bytes) {
+        throw std::overflow_error("ns-rosetta sampled route reservation overflow");
+    }
+    const mem_b waiting_bytes = egress.buffered_bytes + egress.ordered_route_reserved_bytes;
     const simtime_picosec buffered_delay =
-        egress.serializer->serialization_delay_for_bytes(egress.buffered_bytes);
+        egress.serializer->serialization_delay_for_bytes(waiting_bytes);
     const simtime_picosec remaining_service = egress.serializer->remaining_service_time_ps();
     if (remaining_service > std::numeric_limits<simtime_picosec>::max() - buffered_delay) {
         throw std::overflow_error("ns-rosetta sampled path-load delay overflow");
@@ -612,7 +674,8 @@ NsRosettaPathLoad NsRosetta::sample_path_load(uint32_t egress_id) const {
                              queued_packets,
                              egress.buffered_bytes,
                              in_service,
-                             egress.buffered_bytes + in_service,
+                             egress.ordered_route_reserved_bytes,
+                             waiting_bytes + in_service,
                              remaining_service + buffered_delay,
                              _shared_buffer_occupancy,
                              _shared_buffer_capacity};

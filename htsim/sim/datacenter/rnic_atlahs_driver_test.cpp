@@ -141,18 +141,23 @@ TEST(RnicAtlahsDriverTest, CollectiveManifestNamesPhysicalModelExactly) {
     EXPECT_NE(manifest.find("word_extraction=prestep-lsb-block64-lsb-first"), std::string::npos);
     EXPECT_NE(manifest.find("lfsr_steps_per_word=64"), std::string::npos);
     EXPECT_NE(manifest.find("bounded_draw=nonzero-rejection-modulo-v1"), std::string::npos);
-    EXPECT_NE(manifest.find("recovery=selective-gap-nack"), std::string::npos);
-    EXPECT_NE(manifest.find("gap_decision=next-strict-ring-tick"), std::string::npos);
+    EXPECT_NE(manifest.find("recovery=deterministic-gap-nack-retransmission"), std::string::npos);
+    EXPECT_NE(manifest.find("gap_decision=post-resequence-same-timestamp"), std::string::npos);
     EXPECT_NE(manifest.find("early_admission=hard-error"), std::string::npos);
     EXPECT_NE(manifest.find("overflow_admission=hard-error"), std::string::npos);
     EXPECT_NE(manifest.find("gap_nack_priority=high"), std::string::npos);
-    EXPECT_NE(manifest.find("repair_priority=low"), std::string::npos);
-    EXPECT_NE(manifest.find("repair_arbitration=per-flow-head-in-node-prbs-lottery"),
+    EXPECT_NE(manifest.find("retransmission_priority=low"), std::string::npos);
+    EXPECT_NE(manifest.find("retransmission_arbitration=per-flow-head-in-node-prbs-lottery"),
               std::string::npos);
-    EXPECT_NE(manifest.find("repair_prbs_draw=true"), std::string::npos);
-    EXPECT_NE(manifest.find("repair_rate_accounting=substitutes-fresh-granted-service"),
+    EXPECT_NE(manifest.find("retransmission_prbs_draw=true"), std::string::npos);
+    EXPECT_NE(manifest.find("retransmission_rate_accounting=substitutes-fresh-granted-service"),
               std::string::npos);
-    EXPECT_NE(manifest.find("maximum_repair_retries=8"), std::string::npos);
+    EXPECT_NE(manifest.find("maximum_retransmissions=8"), std::string::npos);
+    EXPECT_NE(manifest.find("retransmission_rto_ps=50000000000"), std::string::npos);
+    EXPECT_NE(manifest.find("retransmission_rto_epoch=physical-retry-serialization-end"),
+              std::string::npos);
+    EXPECT_NE(manifest.find("control_loss=fatal-no-control-recovery"), std::string::npos);
+    EXPECT_NE(manifest.find("retire_deadline=max-original-release"), std::string::npos);
     EXPECT_NE(manifest.find("retirement_gate=exact-rx-ledger-and-no-gap"), std::string::npos);
 }
 
@@ -169,6 +174,12 @@ TEST(RnicAtlahsDriverTest, SlingshotLikeManifestNamesOpenPhysicalModel) {
     EXPECT_NE(manifest.find("model=open-slingshot-like-comparator"), std::string::npos);
     EXPECT_NE(manifest.find("proprietary_threshold_claim=false"), std::string::npos);
     EXPECT_NE(manifest.find("path_candidates=deterministic-four-of-eight"), std::string::npos);
+    EXPECT_NE(manifest.find("local_path_score=source-leaf-backlog-delay"), std::string::npos);
+    EXPECT_NE(manifest.find("equal_cost_tie=hashed-candidate-order"), std::string::npos);
+    EXPECT_NE(manifest.find("ordered_startup_reservation="
+                            "one-data-envelope-until-first-data-arrival"),
+              std::string::npos);
+    EXPECT_NE(manifest.find("reservation_buffer_residency=false"), std::string::npos);
     EXPECT_NE(manifest.find("global_sender_state=false"), std::string::npos);
     EXPECT_NE(manifest.find("ack=per-data-packet-sack128"), std::string::npos);
     EXPECT_NE(manifest.find("routing=ordered-endpoint-pair"), std::string::npos);

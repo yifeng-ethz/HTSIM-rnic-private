@@ -239,6 +239,69 @@ TEST(NsTm3DcqcnPolicyTest, MarksEcnAndDeliversSerializedPhysicalPauseAndResume) 
     EXPECT_EQ(counters.resume_frames, 1U);
 }
 
+TEST(NsTm3DcqcnPolicyTest, PfcMetersIngressesIndependentlyWhileEcnSeesAggregateEgressBacklog) {
+    EventList& event_list = EventList::getTheEventList();
+    SwitchHarness harness(event_list);
+    auto* second_ingress = dynamic_cast<NsTm3IngressPort*>(
+        harness.traffic_manager->create_physical_ingress("policy-ingress-1"));
+    ASSERT_NE(second_ingress, nullptr);
+    harness.traffic_manager->configure_dcqcn_policy(
+        NsTm3DcqcnPolicyConfig{true, 250, 300, 1000000, 1, true, 100, 250, kLinkRate});
+
+    RecordingUpstream upstream_0(event_list);
+    RecordingUpstream upstream_1(event_list);
+    Pipe wire_0(timeFromNs(1u), event_list);
+    Pipe wire_1(timeFromNs(1u), event_list);
+    RecordingSink sink;
+    Route route_0;
+    route_0.push_back(&upstream_0);
+    route_0.push_back(&wire_0);
+    route_0.push_back(harness.ingress);
+    route_0.push_back(&harness.egress);
+    route_0.push_back(&sink);
+    Route route_1;
+    route_1.push_back(&upstream_1);
+    route_1.push_back(&wire_1);
+    route_1.push_back(second_ingress);
+    route_1.push_back(&harness.egress);
+    route_1.push_back(&sink);
+    PacketFlow flow_0(nullptr);
+    PacketFlow flow_1(nullptr);
+    flow_0.set_flowid(40);
+    flow_1.set_flowid(41);
+    PolicyTestPacket first_0(flow_0, route_0, 1, Packet::PRIO_LO);
+    PolicyTestPacket second_0(flow_0, route_0, 2, Packet::PRIO_LO);
+    PolicyTestPacket first_1(flow_1, route_1, 3, Packet::PRIO_LO);
+    PolicyTestPacket second_1(flow_1, route_1, 4, Packet::PRIO_LO);
+
+    // Hold DATA at the shared egress so each ingress contributes 200 bytes.
+    // Neither ingress reaches the 250-byte PFC threshold, while the aggregate
+    // 400-byte egress backlog is above ECN Kmax.
+    harness.egress.receivePacket(*EthPausePacket::newpkt(1, 0));
+    first_0.sendOn();
+    second_0.sendOn();
+    first_1.sendOn();
+    second_1.sendOn();
+    drainEvents();
+
+    const NsTm3DcqcnPolicy* policy = harness.traffic_manager->dcqcn_policy();
+    ASSERT_NE(policy, nullptr);
+    EXPECT_EQ(policy->ingress_buffered_bytes(0), 200);
+    EXPECT_EQ(policy->ingress_buffered_bytes(1), 200);
+    EXPECT_EQ(harness.traffic_manager->egress_buffered_bytes(0), 400);
+    EXPECT_EQ(harness.traffic_manager->shared_buffer_occupancy(), 400);
+    EXPECT_EQ(policy->counters().pause_frames, 0U);
+    EXPECT_TRUE(upstream_0.pauses.empty());
+    EXPECT_TRUE(upstream_1.pauses.empty());
+
+    harness.egress.receivePacket(*EthPausePacket::newpkt(0, 0));
+    drainEvents();
+    ASSERT_EQ(sink.flags.size(), 4U);
+    EXPECT_NE(sink.flags.front() & ECN_CE, 0U);
+    EXPECT_EQ(policy->ingress_buffered_bytes(0), 0);
+    EXPECT_EQ(policy->ingress_buffered_bytes(1), 0);
+}
+
 TEST(NsTm3DcqcnPolicyTest, DataPauseWaitsForPacketBoundaryAndDoesNotBlockControl) {
     EventList& event_list = EventList::getTheEventList();
     SwitchHarness harness(event_list);

@@ -45,7 +45,8 @@ struct RnicAtlahsCollectiveCliOptions {
     std::uint64_t ring_release_tick_ps = 16000;
     std::uint64_t ring_wire_capacity_bytes = UINT64_C(1) << 20;
     std::uint64_t ns_tm3_shared_buffer_bytes = UINT64_C(1) << 20;
-    std::uint32_t maximum_repair_retries = 8;
+    std::uint32_t maximum_retransmissions = 8;
+    std::uint64_t retransmission_rto_ps = UINT64_C(50000000000);
 };
 
 // Public-mechanism parameters for the open rnic-ss comparator.  None of these
@@ -92,7 +93,8 @@ struct RnicAtlahsExplicitCliOptions {
     bool ns_tm3_shared_buffer_bytes = false;
     bool cn_queue_trace_csv = false;
     bool cn_state_trace_csv = false;
-    bool cn_maximum_repair_retries = false;
+    bool cn_maximum_retransmissions = false;
+    bool cn_retransmission_rto_ps = false;
 
     bool ss_control_wire_bytes = false;
     bool ss_state_trace_csv = false;

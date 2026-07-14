@@ -264,6 +264,29 @@ TEST(RnicSsPathSelectorTest, SamplesFourDistinctPathsDeterministically) {
         std::all_of(first.begin(), first.end(), [](std::uint8_t path) { return path < 8; }));
 }
 
+TEST(RnicSsPathSelectorTest, EqualScoresPreserveHashedOrderAndCoverEverySpine) {
+    RnicSsPathSelectionConfig config;
+    config.unknown_path_queue_delay_ps = 0;
+    RnicSsHystereticPathSelector selector(config);
+    const auto decision = selector.select(kPair, 1234, 0);
+    EXPECT_EQ(decision.selected_path, decision.candidates[0]);
+
+    std::array<std::uint64_t, 8> first_choice_counts{};
+    for (std::uint32_t source = 0; source < 64; ++source) {
+        for (std::uint32_t destination = 0; destination < 64; ++destination) {
+            if (source == destination) {
+                continue;
+            }
+            const auto candidates =
+                RnicSsHystereticPathSelector::sampleFourOfEight({source, destination}, 1234);
+            ++first_choice_counts[candidates[0]];
+        }
+    }
+    const auto bounds = std::minmax_element(first_choice_counts.begin(), first_choice_counts.end());
+    EXPECT_GT(*bounds.first, 0U);
+    EXPECT_LT(*bounds.second - *bounds.first, 100U);
+}
+
 TEST(RnicSsPathSelectorTest, UsesOnlyIngestedDelayedSamplesAndHysteresis) {
     RnicSsPathSelectionConfig config;
     config.hysteresis_queue_delay_ps = 20;

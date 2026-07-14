@@ -2,12 +2,14 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -229,57 +231,104 @@ TEST(RnicSsRuntimeTest, CanonicalAnalyticalBoundIncludesForwardDataAndSerialized
     EXPECT_LT(stats.analytical_queue_bound_bytes, 32U << 20);
 }
 
-TEST(RnicSsRuntimeTest, SpineHotspotUsesPhysicalPairSelectiveDomainsWithoutOverflow) {
+TEST(RnicSsRuntimeTest, ImmediateLocalReservationPressuresNextSimultaneousBinding) {
     EventList& event_list = testEventList();
     RnicSsRuntimeConfig config = runtimeConfig(false);
-    config.q_hi_bytes = 512U << 10;
-    config.q_lo_bytes = 256U << 10;
-    config.credit_quantum_packets = 4;
     const std::uint64_t routing_seed = config.routing_seed;
     auto session = makeRnicAtlahsRuntime(event_list, RnicProfile::SlingshotLike, std::move(config),
-                                         topologyConfig(24 << 20));
+                                         topologyConfig());
+    auto* runtime = dynamic_cast<RnicSsRuntime*>(&session->implementation());
+    ASSERT_NE(runtime, nullptr);
+    runtime->setup(kNodeCount, [](AtlahsFlowId) {});
+
+    // Find two pairs sourced by different nodes on one leaf whose hashed
+    // first choice is the same spine.  Their source serializers are
+    // independent, so both bindings happen before either packet reaches the
+    // leaf.  Only the source-leaf reservation can pressure the second choice.
+    std::array<std::optional<RnicSsEndpointPair>, 8> first_pair_by_path{};
+    std::optional<RnicSsEndpointPair> first_pair;
+    std::optional<RnicSsEndpointPair> second_pair;
+    std::uint8_t shared_first_choice = 0;
+    for (std::uint32_t source = 0; source < 8 && !second_pair.has_value(); ++source) {
+        for (std::uint32_t destination = 8; destination < kNodeCount; ++destination) {
+            const RnicSsEndpointPair pair{source, destination};
+            const auto candidates =
+                RnicSsHystereticPathSelector::sampleFourOfEight(pair, routing_seed);
+            auto& previous = first_pair_by_path[candidates[0]];
+            if (previous.has_value() && previous->source != pair.source) {
+                first_pair = *previous;
+                second_pair = pair;
+                shared_first_choice = candidates[0];
+                break;
+            }
+            if (!previous.has_value()) {
+                previous = pair;
+            }
+        }
+    }
+    ASSERT_TRUE(first_pair.has_value());
+    ASSERT_TRUE(second_pair.has_value());
+
+    runtime->send({UINT64_C(0x600000001), first_pair->source, first_pair->destination, 64U << 10,
+                   EventList::now(), 0});
+    ASSERT_TRUE(EventList::doNextEvent());
+    ASSERT_EQ(runtime->statistics().ordered_path_bindings, 1U);
+    ASSERT_EQ(runtime->statistics().ordered_path_bindings_by_path[shared_first_choice], 1U);
+
+    runtime->send({UINT64_C(0x600000002), second_pair->source, second_pair->destination, 64U << 10,
+                   EventList::now(), 1});
+    ASSERT_TRUE(EventList::doNextEvent());
+    const RnicSsRuntimeStatistics& pressured = runtime->statistics();
+    EXPECT_EQ(pressured.ordered_path_bindings, 2U);
+    // With no packet arrival or telemetry event between sends, leaving this
+    // count at one proves that the second pair saw the immediate local
+    // reservation and selected another candidate.
+    EXPECT_EQ(pressured.ordered_path_bindings_by_path[shared_first_choice], 1U);
+
+    drain(*runtime);
+    runtime->validateQuiescent();
+}
+
+TEST(RnicSsRuntimeTest, SimultaneousOrderedPairsCoverAllSpinesWithBoundedLeafSkew) {
+    EventList& event_list = testEventList();
+    RnicSsRuntimeConfig config = runtimeConfig(false);
+    config.q_hi_bytes = 4U << 20;
+    config.q_lo_bytes = 2U << 20;
+    config.credit_quantum_packets = 4;
+    auto session = makeRnicAtlahsRuntime(event_list, RnicProfile::SlingshotLike, std::move(config),
+                                         topologyConfig());
     auto* runtime = dynamic_cast<RnicSsRuntime*>(&session->implementation());
     ASSERT_NE(runtime, nullptr);
     std::size_t completions = 0;
     runtime->setup(kNodeCount, [&completions](AtlahsFlowId) { ++completions; });
 
-    // Every selected pair chooses spine 0 in the ordered, initially unloaded
-    // four-of-eight decision.  Destinations span one leaf, so seven source
-    // leaf links contend for the same spine downlink.  The legacy
-    // destination-leaf-only observer overflowed this switch-shared buffer.
-    std::size_t flows = 0;
+    // One cross-leaf pair per node becomes eligible at the same timestamp.
+    // The node-to-leaf cable has not delivered DATA yet, so only immediate
+    // source-leaf route reservations can make these choices visible to one
+    // another.  Eight choices per leaf should exercise every spine without
+    // recreating the old lowest-numeric-spine startup hotspot.
     for (std::uint32_t source = 0; source < kNodeCount; ++source) {
-        if (source >= 16 && source < 24) {
-            continue;
-        }
-        for (std::uint32_t destination = 16; destination < 24; ++destination) {
-            const RnicSsEndpointPair pair{source, destination};
-            const auto candidates =
-                RnicSsHystereticPathSelector::sampleFourOfEight(pair, routing_seed);
-            if (*std::min_element(candidates.begin(), candidates.end()) != 0) {
-                continue;
-            }
-            runtime->send({UINT64_C(0x500000000) + flows, source, destination, 6U << 20,
-                           EventList::now(), static_cast<std::uint32_t>(flows)});
-            ++flows;
-            break;
-        }
+        const std::uint32_t destination = (source + 8) % kNodeCount;
+        runtime->send({UINT64_C(0x500000000) + source, source, destination, 64U << 10,
+                       EventList::now(), source});
     }
-    ASSERT_GE(flows, 48U);
-    drain(*runtime, 4000000);
+    drain(*runtime, 1000000);
 
-    EXPECT_EQ(completions, flows);
+    EXPECT_EQ(completions, kNodeCount);
     runtime->validateQuiescent();
     const RnicSsRuntimeStatistics& stats = runtime->statistics();
+    EXPECT_EQ(stats.ordered_path_bindings, kNodeCount);
+    const auto bounds = std::minmax_element(stats.ordered_path_bindings_by_path.begin(),
+                                            stats.ordered_path_bindings_by_path.end());
+    EXPECT_GT(*bounds.first, 0U);
+    EXPECT_LE(*bounds.second - *bounds.first, 3U);
+    EXPECT_LE(stats.ordered_path_binding_max_leaf_skew, 2U);
     EXPECT_EQ(stats.fabric_drops, 0U);
     EXPECT_EQ(stats.rto_retransmissions, 0U);
-    EXPECT_GT(stats.spine_egress_bp_enable_events, 0U);
-    EXPECT_GE(stats.maximum_active_credit_domains, 2U);
-    EXPECT_LT(stats.maximum_observed_shared_buffer_bytes, 24U << 20);
-    for (Switch* base : session->physicalTopology()->switches_up) {
-        const auto* spine = dynamic_cast<const NsRosetta*>(base);
-        ASSERT_NE(spine, nullptr);
-        EXPECT_EQ(spine->buffer_counters().dropped_packets, 0U);
+    for (Switch* base : session->physicalTopology()->switches_lp) {
+        const auto* leaf = dynamic_cast<const NsRosetta*>(base);
+        ASSERT_NE(leaf, nullptr);
+        EXPECT_EQ(leaf->active_ordered_route_reservations(), 0U);
     }
 }
 

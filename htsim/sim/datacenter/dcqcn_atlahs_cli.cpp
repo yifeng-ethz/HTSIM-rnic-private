@@ -52,6 +52,7 @@ DcqcnAtlahsCliOptions parseDcqcnAtlahsCli(int argc, const char* const argv[]) {
     }
     DcqcnAtlahsCliOptions options;
     bool ecn_seed_explicit = false;
+    bool egress_buffer_explicit = false;
     for (int index = 1; index < argc; ++index) {
         const std::string option = argv[index] == nullptr ? "" : argv[index];
         if (index + 1 >= argc || argv[index + 1] == nullptr) {
@@ -87,6 +88,10 @@ DcqcnAtlahsCliOptions parseDcqcnAtlahsCli(int argc, const char* const argv[]) {
         } else if (option == "-shared_buffer_bytes") {
             options.runtime.ns_tm3_shared_buffer_bytes =
                 checkedValue<mem_b>(option, parseUnsigned(option, value));
+        } else if (option == "-egress_buffer_bytes") {
+            options.runtime.ns_tm3_egress_buffer_bytes =
+                checkedValue<mem_b>(option, parseUnsigned(option, value));
+            egress_buffer_explicit = true;
         } else if (option == "-ecn_kmin_bytes") {
             options.runtime.ecn_kmin_bytes =
                 checkedValue<mem_b>(option, parseUnsigned(option, value));
@@ -126,6 +131,13 @@ DcqcnAtlahsCliOptions parseDcqcnAtlahsCli(int argc, const char* const argv[]) {
     if (!ecn_seed_explicit) {
         options.runtime.ecn_seed = options.runtime.ecmp_seed;
     }
+    // Preserve the historical single-buffer CLI contract. The new
+    // per-egress domain is independent only when its option is explicit;
+    // otherwise it inherits the final shared-pool value regardless of option
+    // order.
+    if (!egress_buffer_explicit) {
+        options.runtime.ns_tm3_egress_buffer_bytes = options.runtime.ns_tm3_shared_buffer_bytes;
+    }
     return options;
 }
 
@@ -149,7 +161,7 @@ std::string dcqcnAtlahsCliUsage(const std::string& program_name) {
            " [-goal_rank_mapping auto|gpu-rank|unique-nic]"
            " [-seed N] [-link_bps N]"
            " [-max_wire_packet_bytes N] [-data_header_bytes N]"
-           " [-shared_buffer_bytes N]"
+           " [-shared_buffer_bytes N] [-egress_buffer_bytes N]"
            " [-ecn_kmin_bytes N] [-ecn_kmax_bytes N]"
            " [-ecn_pmax_ppm N] [-ecn_seed N]"
            " [-pfc_low_bytes N] [-pfc_high_bytes N]"

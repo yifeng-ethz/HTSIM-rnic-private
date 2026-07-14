@@ -30,6 +30,10 @@ TEST(DcqcnAtlahsCliTest, AcceptsCanonicalCompletionAndModelOptions) {
                                                  "gpu-rank",
                                                  "-seed",
                                                  "17",
+                                                 "-shared_buffer_bytes",
+                                                 "67108864",
+                                                 "-egress_buffer_bytes",
+                                                 "1048576",
                                                  "-ecn_kmin_bytes",
                                                  "65536",
                                                  "-ecn_kmax_bytes",
@@ -53,6 +57,8 @@ TEST(DcqcnAtlahsCliTest, AcceptsCanonicalCompletionAndModelOptions) {
     EXPECT_EQ(options.goal_rank_mapping, DcqcnGoalRankMapping::GpuRank);
     EXPECT_EQ(options.runtime.topology_file, "clos.topo");
     EXPECT_EQ(options.runtime.ecmp_seed, 17U);
+    EXPECT_EQ(options.runtime.ns_tm3_shared_buffer_bytes, 67108864);
+    EXPECT_EQ(options.runtime.ns_tm3_egress_buffer_bytes, 1048576);
     EXPECT_EQ(options.runtime.ecn_kmin_bytes, 65536);
     EXPECT_EQ(options.runtime.ecn_kmax_bytes, 655360);
     EXPECT_EQ(options.runtime.ecn_pmax_ppm, 250000U);
@@ -83,7 +89,34 @@ TEST(DcqcnAtlahsCliTest, DefaultsToThePinned400GComparisonProfile) {
     EXPECT_EQ(options.runtime.ecn_seed, options.runtime.ecmp_seed);
     EXPECT_EQ(options.runtime.pfc_low_threshold_bytes, 520000);
     EXPECT_EQ(options.runtime.pfc_high_threshold_bytes, 720000);
+    EXPECT_EQ(options.runtime.ns_tm3_egress_buffer_bytes,
+              options.runtime.ns_tm3_shared_buffer_bytes);
     EXPECT_EQ(options.runtime.dcqcn_min_rate_bps, UINT64_C(100000000));
+}
+
+TEST(DcqcnAtlahsCliTest, OmittedEgressBufferInheritsTheFinalSharedPoolValue) {
+    const DcqcnAtlahsCliOptions larger = parse({"dcqcn", "-goal", "flat.bin", "-topology",
+                                                "clos.topo", "-shared_buffer_bytes", "67108864"});
+    EXPECT_EQ(larger.runtime.ns_tm3_shared_buffer_bytes, 67108864);
+    EXPECT_EQ(larger.runtime.ns_tm3_egress_buffer_bytes, 67108864);
+
+    const DcqcnAtlahsCliOptions smaller = parse({"dcqcn", "-goal", "flat.bin", "-topology",
+                                                 "clos.topo", "-shared_buffer_bytes", "1048576"});
+    EXPECT_EQ(smaller.runtime.ns_tm3_shared_buffer_bytes, 1048576);
+    EXPECT_EQ(smaller.runtime.ns_tm3_egress_buffer_bytes, 1048576);
+}
+
+TEST(DcqcnAtlahsCliTest, ExplicitEgressBufferDoesNotDependOnOptionOrder) {
+    const DcqcnAtlahsCliOptions egress_first =
+        parse({"dcqcn", "-goal", "flat.bin", "-topology", "clos.topo", "-egress_buffer_bytes",
+               "1048576", "-shared_buffer_bytes", "67108864"});
+    const DcqcnAtlahsCliOptions shared_first =
+        parse({"dcqcn", "-goal", "flat.bin", "-topology", "clos.topo", "-shared_buffer_bytes",
+               "67108864", "-egress_buffer_bytes", "1048576"});
+    EXPECT_EQ(egress_first.runtime.ns_tm3_egress_buffer_bytes, 1048576);
+    EXPECT_EQ(shared_first.runtime.ns_tm3_egress_buffer_bytes, 1048576);
+    EXPECT_EQ(egress_first.runtime.ns_tm3_shared_buffer_bytes, 67108864);
+    EXPECT_EQ(shared_first.runtime.ns_tm3_shared_buffer_bytes, 67108864);
 }
 
 TEST(DcqcnAtlahsCliTest, RequiresGoalAndTopologyAndRejectsLegacyAliases) {
@@ -102,6 +135,7 @@ TEST(DcqcnAtlahsCliTest, UsageNamesSeparateComparatorExecutable) {
     EXPECT_NE(usage.find("-completion_csv FILE"), std::string::npos);
     EXPECT_NE(usage.find("-state_trace_csv FILE"), std::string::npos);
     EXPECT_NE(usage.find("-ecn_kmin_bytes N"), std::string::npos);
+    EXPECT_NE(usage.find("-egress_buffer_bytes N"), std::string::npos);
     EXPECT_NE(usage.find("-dcqcn_min_rate_bps N"), std::string::npos);
     EXPECT_EQ(usage.find("rnic-"), std::string::npos);
 }

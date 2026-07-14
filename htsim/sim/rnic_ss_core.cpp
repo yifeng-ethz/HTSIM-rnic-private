@@ -642,9 +642,10 @@ RnicSsPathDecision RnicSsHystereticPathSelector::select(
         const auto [load, fresh] = loadFor(decision.candidates[i], now_ps);
         decision.candidate_queue_delay_ps[i] = load;
         decision.candidate_had_fresh_sample[i] = fresh;
-        if (i != 0 && (load < decision.candidate_queue_delay_ps[best_index] ||
-                       (load == decision.candidate_queue_delay_ps[best_index] &&
-                        decision.candidates[i] < decision.candidates[best_index]))) {
+        // sampleFourOfEight already supplies a deterministic hashed order.
+        // Preserve that order for equal scores instead of biasing every empty
+        // decision toward the numerically lowest spine.
+        if (i != 0 && load < decision.candidate_queue_delay_ps[best_index]) {
             best_index = i;
         }
     }

@@ -372,6 +372,10 @@ TEST(NsTm3SwitchTest, DropsOnlyWhenSharedBufferCapacityIsExceeded) {
     EXPECT_EQ(counters.admitted_packets, 2);
     EXPECT_EQ(counters.dropped_packets, 1);
     EXPECT_EQ(counters.dropped_bytes, 100);
+    EXPECT_EQ(counters.shared_pool_dropped_packets, 1);
+    EXPECT_EQ(counters.shared_pool_dropped_bytes, 100);
+    EXPECT_EQ(counters.egress_domain_dropped_packets, 0);
+    EXPECT_EQ(counters.egress_domain_dropped_bytes, 0);
     EXPECT_TRUE(dropped.dropped);
     EXPECT_EQ(harness.traffic_manager->shared_buffer_occupancy(), 100);
     EXPECT_EQ(counters.admitted_bytes - counters.dequeued_bytes,
@@ -379,6 +383,66 @@ TEST(NsTm3SwitchTest, DropsOnlyWhenSharedBufferCapacityIsExceeded) {
 
     NsTm3Harness::drain_all_events();
     EXPECT_EQ(arrival_order(sink), (std::vector<packetid_t>{1, 2}));
+}
+
+TEST(NsTm3SwitchTest, CapsOneEgressDomainWithoutRelabelingTheSwitchSharedPool) {
+    NsTm3Harness harness(400);
+    harness.traffic_manager->set_egress_buffer_capacity(100);
+    NsTm3EgressSerializer& congested_egress = harness.add_egress();
+    NsTm3EgressSerializer& independent_egress = harness.add_egress();
+    NsTm3IngressPort& ingress = harness.add_ingress("ingress-0");
+    RecordingSink sink;
+    Route congested_route = route_via(congested_egress, sink);
+    Route independent_route = route_via(independent_egress, sink);
+    PacketFlow flow(nullptr);
+    TestPacket in_service(flow, congested_route, 1, Packet::PRIO_LO);
+    TestPacket fills_egress_domain(flow, congested_route, 2, Packet::PRIO_LO);
+    TestPacket exceeds_egress_domain(flow, congested_route, 3, Packet::PRIO_LO);
+    TestPacket other_egress(flow, independent_route, 4, Packet::PRIO_LO);
+
+    ingress.receivePacket(in_service);
+    ingress.receivePacket(fills_egress_domain);
+    ingress.receivePacket(exceeds_egress_domain);
+    ingress.receivePacket(other_egress);
+    ASSERT_TRUE(EventList::doNextEvent());
+    ASSERT_TRUE(EventList::doNextEvent());
+    ASSERT_TRUE(EventList::doNextEvent());
+    ASSERT_TRUE(EventList::doNextEvent());
+
+    const NsTm3BufferCounters& counters = harness.traffic_manager->buffer_counters();
+    EXPECT_TRUE(exceeds_egress_domain.dropped);
+    EXPECT_FALSE(other_egress.dropped);
+    EXPECT_EQ(counters.dropped_packets, 1);
+    EXPECT_EQ(counters.shared_pool_dropped_packets, 0);
+    EXPECT_EQ(counters.egress_domain_dropped_packets, 1);
+    EXPECT_EQ(counters.egress_domain_dropped_bytes, 100);
+    EXPECT_EQ(harness.traffic_manager->shared_buffer_capacity(), 400);
+    EXPECT_EQ(harness.traffic_manager->egress_buffer_capacity(), 100);
+    EXPECT_EQ(congested_egress.maxsize(), 100);
+    EXPECT_EQ(independent_egress.maxsize(), 100);
+
+    NsTm3Harness::drain_all_events();
+    EXPECT_EQ(sink.arrivals.size(), 3U);
+    EXPECT_EQ(sink.arrival_time(1), sink.arrival_time(4));
+    EXPECT_LT(sink.arrival_time(1), sink.arrival_time(2));
+}
+
+TEST(NsTm3SwitchTest, RejectsInvalidOrMidFlightEgressDomainChanges) {
+    NsTm3Harness harness(400);
+    EXPECT_THROW(harness.traffic_manager->set_egress_buffer_capacity(0), std::invalid_argument);
+    EXPECT_THROW(harness.traffic_manager->set_egress_buffer_capacity(401), std::invalid_argument);
+    harness.traffic_manager->set_egress_buffer_capacity(200);
+
+    NsTm3EgressSerializer& egress = harness.add_egress();
+    NsTm3IngressPort& ingress = harness.add_ingress("ingress-0");
+    RecordingSink sink;
+    Route route = route_via(egress, sink);
+    PacketFlow flow(nullptr);
+    TestPacket packet(flow, route, 1, Packet::PRIO_LO);
+    ingress.receivePacket(packet);
+
+    EXPECT_THROW(harness.traffic_manager->set_egress_buffer_capacity(100), std::logic_error);
+    NsTm3Harness::drain_all_events();
 }
 
 TEST(NsTm3SwitchTest, RejectsRoutesThatBypassTheTrafficManager) {

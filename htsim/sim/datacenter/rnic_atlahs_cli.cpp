@@ -136,9 +136,10 @@ void validateCollectiveOptions(const RnicAtlahsCliOptions& options) {
     requirePositive(options.collective.ring_release_tick_ps, "-rnic_cn_ring_tick_ps");
     requirePositive(options.collective.ring_wire_capacity_bytes, "-rnic_cn_ring_capacity_bytes");
     requirePositive(options.collective.ns_tm3_shared_buffer_bytes, "-rnic_cn_ns_tm3_buffer_bytes");
-    if (options.collective.maximum_repair_retries == 0) {
-        throw std::invalid_argument("-rnic_cn_max_repair_retries: value must be positive");
+    if (options.collective.maximum_retransmissions == 0) {
+        throw std::invalid_argument("-rnic_cn_max_retransmissions: value must be positive");
     }
+    requirePositive(options.collective.retransmission_rto_ps, "-rnic_cn_retransmission_rto_ps");
     if (options.collective.ns_tm3_shared_buffer_bytes >
         static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
         throw std::invalid_argument("-rnic_cn_ns_tm3_buffer_bytes: value exceeds HTSIM mem_b");
@@ -239,7 +240,8 @@ void rejectCrossProfileOptions(const RnicAtlahsCliOptions& options) {
         supplied.control_wire_bytes || supplied.ring_delay_window_ps ||
         supplied.ring_release_tick_ps || supplied.ring_wire_capacity_bytes ||
         supplied.ns_tm3_shared_buffer_bytes || supplied.cn_queue_trace_csv ||
-        supplied.cn_state_trace_csv || supplied.cn_maximum_repair_retries;
+        supplied.cn_state_trace_csv || supplied.cn_maximum_retransmissions ||
+        supplied.cn_retransmission_rto_ps;
     if (options.profile != RnicProfile::CollectiveNetwork && supplied_collective) {
         throw std::invalid_argument("physical Clos/control options are valid only for rnic-cn");
     }
@@ -382,9 +384,12 @@ RnicAtlahsCliOptions parseRnicAtlahsCli(int argc, const char* const argv[]) {
             }
             options.collective.state_trace_csv = value;
             options.explicitly_supplied.cn_state_trace_csv = true;
-        } else if (option == "-rnic_cn_max_repair_retries") {
-            options.collective.maximum_repair_retries = parseUnsigned32(option, value);
-            options.explicitly_supplied.cn_maximum_repair_retries = true;
+        } else if (option == "-rnic_cn_max_retransmissions") {
+            options.collective.maximum_retransmissions = parseUnsigned32(option, value);
+            options.explicitly_supplied.cn_maximum_retransmissions = true;
+        } else if (option == "-rnic_cn_retransmission_rto_ps") {
+            options.collective.retransmission_rto_ps = parseUnsigned(option, value);
+            options.explicitly_supplied.cn_retransmission_rto_ps = true;
         } else if (option == "-rnic_ss_state_trace_csv") {
             if (value.empty()) {
                 throw optionError(option, "path must be nonempty");
@@ -513,7 +518,8 @@ std::string rnicAtlahsCliUsage(const std::string& program_name) {
              " [-rnic_cn_ring_tick_ps PS]"
              " [-rnic_cn_ring_capacity_bytes BYTES]"
              " [-rnic_cn_ns_tm3_buffer_bytes BYTES]"
-             " [-rnic_cn_max_repair_retries N]"
+             " [-rnic_cn_max_retransmissions N]"
+             " [-rnic_cn_retransmission_rto_ps PS]"
              " [-rnic_cn_queue_trace_csv FILE]"
              " [-rnic_cn_state_trace_csv FILE]\n"
           << "rnic-ss: [-topo FILE]"

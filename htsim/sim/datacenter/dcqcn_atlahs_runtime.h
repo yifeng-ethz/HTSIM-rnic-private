@@ -21,6 +21,7 @@ struct DcqcnAtlahsRuntimeConfig {
     std::uint16_t max_wire_packet_bytes{4096};
     std::uint16_t data_header_bytes{64};
     mem_b ns_tm3_shared_buffer_bytes{32 * 1024 * 1024};
+    mem_b ns_tm3_egress_buffer_bytes{32 * 1024 * 1024};
     mem_b ecn_kmin_bytes{65536};
     mem_b ecn_kmax_bytes{655360};
     std::uint32_t ecn_pmax_ppm{250000};
@@ -59,6 +60,8 @@ public:
     std::uint64_t pfc_pause_count() const noexcept;
     std::uint64_t pfc_resume_count() const noexcept;
     std::uint64_t dropped_packet_count() const noexcept;
+    std::uint64_t shared_pool_dropped_packet_count() const noexcept;
+    std::uint64_t egress_domain_dropped_packet_count() const noexcept;
     std::size_t state_trace_row_count() const noexcept;
     void writeStateTraceCsv() const;
 
