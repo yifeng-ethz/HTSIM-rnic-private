@@ -50,7 +50,21 @@ TEST(RnicRingCamTest, ClassifiesEveryAdmissionBoundary) {
     {
         RnicRingCam cam = makeCam();
         const auto result = cam.processArrival({1, 10, 100, 200, {100, 100}});
+        ASSERT_EQ(result.admission, Admission::Admitted);
+        ASSERT_EQ(result.logical_release_ps, 200u);
+        EXPECT_EQ(cam.wireOccupancyBytes(), 100u);
+
+        const auto releases = cam.advanceTo(200);
+        ASSERT_EQ(releases.size(), 1u);
+        EXPECT_EQ(releases.front().packet.packet_id, 1u);
+        EXPECT_EQ(releases.front().logical_release_ps, 200u);
+        EXPECT_EQ(cam.wireOccupancyBytes(), 0u);
+    }
+    {
+        RnicRingCam cam = makeCam();
+        const auto result = cam.processArrival({1, 10, 100, 201, {100, 100}});
         EXPECT_EQ(result.admission, Admission::Late);
+        EXPECT_FALSE(result.logical_release_ps.has_value());
         EXPECT_EQ(cam.wireOccupancyBytes(), 0u);
     }
 }
@@ -196,7 +210,7 @@ TEST(RnicRingCamModuloTimestampTest, ExhaustivelyClassifiesAcrossSmallWrap) {
         for (uint64_t eta = 0; eta < modulus; ++eta) {
             const uint64_t age = now >= eta ? now - eta : modulus - (eta - now);
             RnicModuloTimestampRelation expected;
-            if (age < window) {
+            if (age <= window) {
                 expected = RnicModuloTimestampRelation::Admitted;
             } else if (age < half_range) {
                 expected = RnicModuloTimestampRelation::Late;
@@ -215,6 +229,10 @@ TEST(RnicRingCamModuloTimestampTest, ExhaustivelyClassifiesAcrossSmallWrap) {
 
     EXPECT_EQ(classifyRnicModuloTimestampAge(0, 15, bits, window).relation,
               RnicModuloTimestampRelation::Admitted);
+    EXPECT_EQ(classifyRnicModuloTimestampAge(4, 0, bits, window).relation,
+              RnicModuloTimestampRelation::Admitted);
+    EXPECT_EQ(classifyRnicModuloTimestampAge(5, 0, bits, window).relation,
+              RnicModuloTimestampRelation::Late);
     EXPECT_EQ(classifyRnicModuloTimestampAge(15, 0, bits, window).relation,
               RnicModuloTimestampRelation::Early);
 }

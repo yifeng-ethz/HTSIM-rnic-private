@@ -70,7 +70,7 @@ RnicRingCamArrivalResult RnicRingCam::processArrival(const RnicRingCamPacket& pa
         admission = RnicRingCamAdmission::Early;
     } else {
         const uint64_t age_ps = packet.arrival_ps - packet.eta_ps;
-        if (age_ps >= config_.delay_window_ps) {
+        if (age_ps > config_.delay_window_ps) {
             admission = RnicRingCamAdmission::Late;
         } else {
             const uint64_t release_edge_ps = checkedAdd(
@@ -127,7 +127,7 @@ RnicModuloTimestampAge classifyRnicModuloTimestampAge(
     const uint64_t age_ticks = now_ticks >= eta_ticks
                                    ? now_ticks - eta_ticks
                                    : modulus - (eta_ticks - now_ticks);
-    if (age_ticks < window_ticks) {
+    if (age_ticks <= window_ticks) {
         return {RnicModuloTimestampRelation::Admitted, age_ticks};
     }
     if (age_ticks < half_range) {

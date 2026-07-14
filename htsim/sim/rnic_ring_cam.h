@@ -20,7 +20,8 @@ struct RnicRingCamPacket {
 
 struct RnicRingCamConfig {
     // The admission window Delta. A packet is admitted exactly when
-    // 0 <= arrival_ps - eta_ps < delay_window_ps.
+    // 0 <= arrival_ps - eta_ps <= delay_window_ps.  The lower timestamp
+    // edge is both admissible and release-eligible.
     uint64_t delay_window_ps;
 
     // The logical release quantum delta.
@@ -103,7 +104,7 @@ struct RnicModuloTimestampAge {
 
 // Classifies a finite-width timestamp with the usual half-range rule.
 // window_ticks must be positive and strictly smaller than half the counter
-// range. A modular age in [0, window_ticks) is admitted; an older timestamp
+// range. A modular age in [0, window_ticks] is admitted; an older timestamp
 // below the half range is late; a timestamp in the forward half is early;
 // the exactly-half-range case is explicitly ambiguous.
 RnicModuloTimestampAge classifyRnicModuloTimestampAge(
