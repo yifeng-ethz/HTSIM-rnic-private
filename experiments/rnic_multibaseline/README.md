@@ -139,11 +139,15 @@ profile,seed,status,reason,completion_csv,q_hi_bytes,q_lo_bytes,telemetry_delay_
 `status=complete` requires a `completion_csv`, which may be absolute or relative
 to the manifest.  `status=expected-invalid` requires an empty `completion_csv`
 and a nonempty reason; the analyzer validates the parameters but excludes that
-row from statistics and plotting.  The canonical 16 MiB `rnic-ss` buffer point
-uses this status because it is below the checked analytical envelope.  Every
-executed parameter combination must contain the same paired seeds, and all
-completion files must have the same flow/payload contract.  Generate plotting
-inputs with:
+row from statistics and plotting.  The 16 MiB `rnic-ss` buffer point uses this
+status because it is below the checked analytical envelope.  The analytical
+predicate admits 32 MiB, but seeds 1 and 3 observed physical loss in the
+canonical four-seed campaign at model commit `0fa128d`; the runner therefore also records
+32 MiB as `expected-invalid` and excludes all four paired seeds rather than
+averaging only the successful runs.  The canonical executed lossless point is
+64 MiB.  Every executed parameter combination must contain the same paired
+seeds, and all completion files must have the same flow/payload contract.
+Generate plotting inputs with:
 
 ```sh
 python3 experiments/rnic_multibaseline/analyze_fct.py scan \

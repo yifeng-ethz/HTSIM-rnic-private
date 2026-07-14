@@ -36,11 +36,13 @@ class RnicSsScanTest(unittest.TestCase):
         )
         self.assertEqual(invalid_buffer.expected_status, "expected-invalid")
         self.assertIn("below", invalid_buffer.expected_reason)
-        valid_buffer = next(
+        unsafe_buffer = next(
             point for point in points if point.label == "buffer-32m"
         )
-        self.assertEqual(valid_buffer.expected_status, "complete")
-        self.assertEqual(valid_buffer.expected_reason, "")
+        self.assertEqual(unsafe_buffer.expected_status, "expected-invalid")
+        self.assertIn("seeds 1 and 3", unsafe_buffer.expected_reason)
+        self.assertIn("0fa128d", unsafe_buffer.expected_reason)
+        self.assertIn("64 MiB", unsafe_buffer.expected_reason)
 
     def test_every_requested_debug_axis_is_present(self) -> None:
         axes = {point.axis for point in scan.scan_points(runner.ExperimentParameters())}

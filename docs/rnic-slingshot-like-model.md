@@ -156,13 +156,21 @@ covers phase-quantized packets already distributed across upstream paths when
 the switch-wide observation occurs.  A run is invalid if the per-egress peak
 exceeds the shared buffer, if the aggregate headroom cannot fit, or if the
 derived shared hysteresis collapses.  With the canonical four-packet credit
-quantum, 16 MiB is rejected and 32 MiB is accepted.  The manifest emits the
-port/pair counts, both reaction bounds, derived shared thresholds, observed
-high watermark, leaf/spine pressure events, and maximum simultaneous sender
-domains.  This sizing rule is not asserted as a proof for arbitrary topologies,
-link rates, priority schedulers, or proprietary Slingshot hardware.  Queue
-plots use `q/C` in microseconds so thresholds remain comparable across link
-rates.
+quantum, this analytical predicate rejects 16 MiB and admits 32 MiB.  Admission
+is not a losslessness proof: seeds 1 and 3 observed physical loss at 32 MiB in
+the canonical four-seed campaign at model commit `0fa128d`.  The paired analysis
+therefore excludes every 32 MiB seed, and 64 MiB remains the canonical lossless
+buffer.  A seed-1 loss-stress replay reached the 33,554,432 B cap exactly and
+recorded 482 fabric drops, 468 SACK retransmissions, and three RTO
+retransmissions; seed 3 independently failed the lossless invariant.  The
+printed 20,502,208 B envelope is therefore non-conservative for this measured
+shared-buffer interaction.  The manifest emits the port/pair counts, both
+reaction bounds, derived shared thresholds, observed high watermark,
+leaf/spine pressure events, and maximum simultaneous sender domains.  This
+sizing rule is not asserted as a
+proof for arbitrary topologies, link rates, priority schedulers, or proprietary
+Slingshot hardware.  Queue plots use `q/C` in microseconds so thresholds remain
+comparable across link rates.
 
 The hysteresis gap is not public.  The default is selected from the physical
 feedback/service time, then reported with a mandatory sweep:
@@ -170,8 +178,11 @@ feedback/service time, then reported with a mandatory sweep:
 - `Q_hi`: 1, 2, 4, and 8 MiB;
 - `Q_lo / Q_hi`: 0.25, 0.50, and 0.75;
 - shared buffer: 16, 32, and 64 MiB.  On the canonical 64-node parameters,
-  16 MiB is retained in the scan manifest as `expected-invalid` rather than
-  executed as though it were a valid lossless point;
+  16 MiB is retained in the scan manifest as analytically
+  `expected-invalid`.  The 32 MiB point is also `expected-invalid` because the
+  canonical seed-1 and seed-3 runs observed physical loss; it is excluded for
+  all paired seeds instead of reporting a survivor-biased average.  The 64 MiB
+  default is the executed lossless point;
 - extra telemetry delay: 0, 1, 2, and 4 microseconds in addition to physical
   packet delay;
 - path-selection hysteresis: 0, 0.5, 1, and 2 microseconds of reported

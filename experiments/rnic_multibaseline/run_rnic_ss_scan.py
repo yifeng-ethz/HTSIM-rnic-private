@@ -14,9 +14,15 @@ import run_multibaseline as runner
 
 
 MIB = 1 << 20
-EXPECTED_INVALID_BUFFER_REASON = (
+ANALYTICAL_INVALID_BUFFER_REASON = (
     "16 MiB is below the canonical 64-node controlled-Clos analytical "
     "network-calculus envelope"
+)
+OBSERVED_UNSAFE_BUFFER_REASON = (
+    "observed-invalid: 32 MiB is excluded from paired analysis after seeds 1 "
+    "and 3 observed physical loss in the canonical four-seed campaign at "
+    "model commit 0fa128d; "
+    "64 MiB remains the canonical lossless buffer"
 )
 
 
@@ -86,15 +92,19 @@ def scan_points(base: runner.ExperimentParameters) -> tuple[ScanPoint, ...]:
             )
         )
     for buffer_mib in (16, 32):
-        expected_invalid = buffer_mib == 16
+        expected_reason = (
+            ANALYTICAL_INVALID_BUFFER_REASON
+            if buffer_mib == 16
+            else OBSERVED_UNSAFE_BUFFER_REASON
+        )
         points.append(
             ScanPoint(
                 f"buffer-{buffer_mib}m",
                 "buffer_mib",
                 str(buffer_mib),
                 replace(base, physical_buffer_bytes=buffer_mib * MIB),
-                "expected-invalid" if expected_invalid else "complete",
-                EXPECTED_INVALID_BUFFER_REASON if expected_invalid else "",
+                "expected-invalid",
+                expected_reason,
             )
         )
 
