@@ -234,6 +234,11 @@ void rejectCrossProfileOptions(const RnicAtlahsCliOptions& options) {
     if (!isPhysicalClosProfile(options.profile) && supplied_physical) {
         throw std::invalid_argument("physical Clos options are valid only for rnic-cn or rnic-ss");
     }
+    if (!isPhysicalClosProfile(options.profile) &&
+        (supplied.goodput_trace_csv || supplied.goodput_trace_bin_ps)) {
+        throw std::invalid_argument(
+            "receive-goodput tracing is valid only for rnic-cn or rnic-ss");
+    }
 
     const bool supplied_collective =
         supplied.global_prbs_seed || supplied.control_deadline_ps || supplied.margin_ppm ||
@@ -265,6 +270,12 @@ void validateResolvedOptions(const RnicAtlahsCliOptions& options) {
         throw optionError("-goal", "path must be nonempty");
     }
     requirePositive(options.link_capacity_bps, "-linkspeed_bps");
+
+    if (options.goodput_trace_csv.has_value() != (options.goodput_trace_bin_ps != 0)) {
+        throw std::invalid_argument(
+            "RNIC goodput trace requires -rnic_goodput_trace_csv and positive "
+            "-rnic_goodput_trace_bin_ps together");
+    }
 
     rejectCrossProfileOptions(options);
     if (isPacketProfile(options.profile)) {
@@ -336,6 +347,15 @@ RnicAtlahsCliOptions parseRnicAtlahsCli(int argc, const char* const argv[]) {
         } else if (option == "-rnic_nn_propagation_ps") {
             options.manifold.fixed_propagation_delay_ps = parseUnsigned(option, value);
             options.explicitly_supplied.fixed_propagation_delay_ps = true;
+        } else if (option == "-rnic_goodput_trace_csv") {
+            if (value.empty()) {
+                throw optionError(option, "path must be nonempty");
+            }
+            options.goodput_trace_csv = value;
+            options.explicitly_supplied.goodput_trace_csv = true;
+        } else if (option == "-rnic_goodput_trace_bin_ps") {
+            options.goodput_trace_bin_ps = parseUnsigned(option, value);
+            options.explicitly_supplied.goodput_trace_bin_ps = true;
         } else if (option == "-topo") {
             if (value.empty()) {
                 throw optionError(option, "path must be nonempty");
@@ -506,6 +526,8 @@ std::string rnicAtlahsCliUsage(const std::string& program_name) {
           << "Packet profiles:"
              " [-rnic_max_wire_bytes BYTES]"
              " [-rnic_data_header_bytes BYTES]\n"
+          << "Physical profiles:"
+             " [-rnic_goodput_trace_csv FILE -rnic_goodput_trace_bin_ps PS]\n"
           << "NN profiles: [-rnic_nn_propagation_ps PS]\n"
           << "rnic-cn: [-topo FILE]"
              " [-rnic_hop_latency_ps PS]"

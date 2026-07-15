@@ -180,6 +180,26 @@ void writeRequestedStateTrace(AtlahsHtsimApi& api, const RnicAtlahsCliOptions& o
     runtime->writeStateTraceCsv();
 }
 
+void writeRequestedGoodputTrace(AtlahsHtsimApi& api, const RnicAtlahsCliOptions& options) {
+    if (!options.goodput_trace_csv.has_value()) {
+        return;
+    }
+    auto* assembly = dynamic_cast<RnicAtlahsRuntimeAssembly*>(api.getFlowRuntime());
+    if (assembly == nullptr) {
+        throw std::logic_error("RNIC goodput trace runtime is not an assembled profile");
+    }
+    if (auto* runtime =
+            dynamic_cast<RnicCollectiveNetworkRuntime*>(&assembly->implementation())) {
+        runtime->writeGoodputTraceCsv();
+        return;
+    }
+    if (auto* runtime = dynamic_cast<RnicSsRuntime*>(&assembly->implementation())) {
+        runtime->writeGoodputTraceCsv();
+        return;
+    }
+    throw std::logic_error("RNIC goodput trace requested for a nonphysical profile");
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -231,6 +251,7 @@ int main(int argc, char* argv[]) {
         }
         validateRuntimeQuiescence(api);
         writeRequestedStateTrace(api, options);
+        writeRequestedGoodputTrace(api, options);
         if (options.completion_csv.has_value()) {
             writeCompletionCsv(*options.completion_csv, options.profile, api.completedFlows());
         }

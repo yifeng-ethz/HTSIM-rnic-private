@@ -228,6 +228,39 @@ class CommandBuilderTest(unittest.TestCase):
                 Path("/state.csv"),
             )
 
+    def test_join_exit_goodput_trace_flags_use_the_common_10us_bin(self) -> None:
+        for scheme, path_flag, bin_flag in (
+            ("dcqcn", "-goodput_trace_csv", "-goodput_trace_bin_ps"),
+            ("rnic-cn", "-rnic_goodput_trace_csv", "-rnic_goodput_trace_bin_ps"),
+            ("rnic-ss", "-rnic_goodput_trace_csv", "-rnic_goodput_trace_bin_ps"),
+        ):
+            command = runner.build_simulator_command(
+                self.tools,
+                scheme,
+                Path("/w.bin"),
+                Path("/flows.csv"),
+                Path("/clos.topo"),
+                1,
+                self.parameters,
+                Path("/state.csv"),
+                Path("/goodput.csv"),
+            )
+            self.assertEqual(command[command.index(path_flag) + 1], "/goodput.csv")
+            self.assertEqual(command[command.index(bin_flag) + 1], "10000000")
+
+        with self.assertRaisesRegex(runner.OrchestrationError, "not implemented"):
+            runner.build_simulator_command(
+                self.tools,
+                "rnic-nn",
+                Path("/w.bin"),
+                Path("/flows.csv"),
+                Path("/clos.topo"),
+                1,
+                self.parameters,
+                None,
+                Path("/goodput.csv"),
+            )
+
 
 def write_completion(
     path: Path,
@@ -287,6 +320,44 @@ class CompletionValidationTest(unittest.TestCase):
                 writer.writerow({**common, "time_ps": 100, "event": "completion"})
             self.assertEqual(
                 runner.validate_state_trace_csv(path, completion), 2
+            )
+
+    def test_goodput_trace_requires_exact_order_rate_and_payload_ledger(self) -> None:
+        transfer = runner.Transfer(0, 2, 0, 10)
+        completion = runner.CompletionSummary(
+            (runner.CompletionRow("dcqcn", 7, transfer, 0, 200, 200),)
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "goodput.csv"
+            with path.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(
+                    handle, fieldnames=runner.REQUIRED_GOODPUT_TRACE_COLUMNS
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "bin_start_ps": 0,
+                        "bin_end_ps": 100,
+                        "flow_id": 7,
+                        "source": 0,
+                        "destination": 2,
+                        "delivered_payload_bytes": 4,
+                        "goodput_bps": 320_000_000_000,
+                    }
+                )
+                writer.writerow(
+                    {
+                        "bin_start_ps": 100,
+                        "bin_end_ps": 200,
+                        "flow_id": 7,
+                        "source": 0,
+                        "destination": 2,
+                        "delivered_payload_bytes": 6,
+                        "goodput_bps": 480_000_000_000,
+                    }
+                )
+            self.assertEqual(
+                runner.validate_goodput_trace_csv(path, completion, 100), 2
             )
     def test_partial_success_csv_is_rejected(self) -> None:
         transfers = (
@@ -426,6 +497,29 @@ class EndToEndOrchestrationTest(unittest.TestCase):
                                     'completion', 400000000000, 400000000000,
                                     '', 'false', 1, 0, 1,
                                 ])
+                    goodput_flag = (
+                        '-goodput_trace_csv' if '-goodput_trace_csv' in args
+                        else '-rnic_goodput_trace_csv'
+                        if '-rnic_goodput_trace_csv' in args else None
+                    )
+                    if goodput_flag is not None:
+                        bin_flag = (
+                            '-goodput_trace_bin_ps'
+                            if goodput_flag == '-goodput_trace_csv'
+                            else '-rnic_goodput_trace_bin_ps'
+                        )
+                        width = int(args[args.index(bin_flag) + 1])
+                        trace = pathlib.Path(args[args.index(goodput_flag) + 1])
+                        trace.parent.mkdir(parents=True, exist_ok=True)
+                        fields = {runner.REQUIRED_GOODPUT_TRACE_COLUMNS!r}
+                        with trace.open('w', newline='') as handle:
+                            writer = csv.writer(handle)
+                            writer.writerow(fields)
+                            for flow_id, (source, destination, tag, payload) in enumerate(sends):
+                                writer.writerow([
+                                    0, width, flow_id, source, destination, payload,
+                                    payload * 8 * 1000000000000 // width,
+                                ])
                     with pathlib.Path({str(counter)!r}).open('a') as handle:
                         handle.write(scheme + '\\n')
                     """
@@ -469,6 +563,13 @@ class EndToEndOrchestrationTest(unittest.TestCase):
             self.assertEqual(run_manifest["state_trace_rows"], 16)
             self.assertEqual(
                 run_manifest["state_trace_sha256"], runner.sha256_file(trace)
+            )
+            goodput = trace.parent / "goodputTrace.csv"
+            self.assertTrue(goodput.is_file())
+            self.assertEqual(run_manifest["goodput_trace_bin_ps"], 10_000_000)
+            self.assertEqual(run_manifest["goodput_trace_rows"], 8)
+            self.assertEqual(
+                run_manifest["goodput_trace_sha256"], runner.sha256_file(goodput)
             )
 
     def test_stale_partial_conversion_requires_force(self) -> None:

@@ -26,6 +26,10 @@ TEST(DcqcnAtlahsCliTest, AcceptsCanonicalCompletionAndModelOptions) {
                                                  "flows.csv",
                                                  "-state_trace_csv",
                                                  "state.csv",
+                                                 "-goodput_trace_csv",
+                                                 "goodput.csv",
+                                                 "-goodput_trace_bin_ps",
+                                                 "10000000",
                                                  "-goal_rank_mapping",
                                                  "gpu-rank",
                                                  "-seed",
@@ -54,6 +58,9 @@ TEST(DcqcnAtlahsCliTest, AcceptsCanonicalCompletionAndModelOptions) {
     EXPECT_EQ(*options.completion_csv, "flows.csv");
     ASSERT_TRUE(options.runtime.state_trace_csv.has_value());
     EXPECT_EQ(*options.runtime.state_trace_csv, "state.csv");
+    ASSERT_TRUE(options.runtime.goodput_trace_csv.has_value());
+    EXPECT_EQ(*options.runtime.goodput_trace_csv, "goodput.csv");
+    EXPECT_EQ(options.runtime.goodput_trace_bin_ps, UINT64_C(10000000));
     EXPECT_EQ(options.goal_rank_mapping, DcqcnGoalRankMapping::GpuRank);
     EXPECT_EQ(options.runtime.topology_file, "clos.topo");
     EXPECT_EQ(options.runtime.ecmp_seed, 17U);
@@ -129,11 +136,25 @@ TEST(DcqcnAtlahsCliTest, RequiresGoalAndTopologyAndRejectsLegacyAliases) {
                  std::invalid_argument);
 }
 
+TEST(DcqcnAtlahsCliTest, GoodputTraceRequiresPathAndPositiveBinTogether) {
+    EXPECT_THROW(parse({"dcqcn", "-goal", "flat.bin", "-topology", "clos.topo",
+                        "-goodput_trace_csv", "goodput.csv"}),
+                 std::invalid_argument);
+    EXPECT_THROW(parse({"dcqcn", "-goal", "flat.bin", "-topology", "clos.topo",
+                        "-goodput_trace_bin_ps", "10000000"}),
+                 std::invalid_argument);
+    EXPECT_THROW(parse({"dcqcn", "-goal", "flat.bin", "-topology", "clos.topo",
+                        "-goodput_trace_csv", "goodput.csv", "-goodput_trace_bin_ps", "0"}),
+                 std::invalid_argument);
+}
+
 TEST(DcqcnAtlahsCliTest, UsageNamesSeparateComparatorExecutable) {
     const std::string usage = dcqcnAtlahsCliUsage("htsim_dcqcn_atlahs");
     EXPECT_NE(usage.find("htsim_dcqcn_atlahs"), std::string::npos);
     EXPECT_NE(usage.find("-completion_csv FILE"), std::string::npos);
     EXPECT_NE(usage.find("-state_trace_csv FILE"), std::string::npos);
+    EXPECT_NE(usage.find("-goodput_trace_csv FILE -goodput_trace_bin_ps PS"),
+              std::string::npos);
     EXPECT_NE(usage.find("-ecn_kmin_bytes N"), std::string::npos);
     EXPECT_NE(usage.find("-egress_buffer_bytes N"), std::string::npos);
     EXPECT_NE(usage.find("-dcqcn_min_rate_bps N"), std::string::npos);

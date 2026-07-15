@@ -37,6 +37,14 @@ TEST(DcqcnAtlahsRuntimeTest, CompletesPacketizedFlowOnTheSharedNsTm3Clos) {
     std::filesystem::remove(state_trace);
     std::filesystem::remove(state_trace.string() + ".tmp");
     config.state_trace_csv = state_trace.string();
+    const std::filesystem::path goodput_trace =
+        std::filesystem::temp_directory_path() /
+        ("dcqcn-atlahs-goodput-" +
+         std::to_string(reinterpret_cast<std::uintptr_t>(&event_list)) + ".csv");
+    std::filesystem::remove(goodput_trace);
+    std::filesystem::remove(goodput_trace.string() + ".tmp");
+    config.goodput_trace_csv = goodput_trace.string();
+    config.goodput_trace_bin_ps = 10000000;
     DcqcnAtlahsRuntime runtime(event_list, config, 64);
     EXPECT_EQ(DCQCNSrc::minRate(), config.dcqcn_min_rate_bps);
     std::vector<AtlahsFlowId> completed;
@@ -60,7 +68,9 @@ TEST(DcqcnAtlahsRuntimeTest, CompletesPacketizedFlowOnTheSharedNsTm3Clos) {
     EXPECT_EQ(runtime.pfc_pause_count(), runtime.pfc_resume_count());
     EXPECT_FALSE(runtime.hasPendingPhysicalWork());
     EXPECT_GT(runtime.state_trace_row_count(), 16U);
+    EXPECT_GT(runtime.goodput_trace_row_count(), 0U);
     runtime.writeStateTraceCsv();
+    runtime.writeGoodputTraceCsv();
     EXPECT_TRUE(std::filesystem::is_regular_file(state_trace));
     EXPECT_FALSE(std::filesystem::exists(state_trace.string() + ".tmp"));
     std::ifstream trace_input(state_trace);
@@ -71,12 +81,20 @@ TEST(DcqcnAtlahsRuntimeTest, CompletesPacketizedFlowOnTheSharedNsTm3Clos) {
     EXPECT_NE(trace_text.find(",completion,"), std::string::npos);
     EXPECT_NE(trace_text.find(",pause,"), std::string::npos);
     EXPECT_NE(trace_text.find(",resume,"), std::string::npos);
+    std::ifstream goodput_input(goodput_trace);
+    const std::string goodput_text((std::istreambuf_iterator<char>(goodput_input)),
+                                   std::istreambuf_iterator<char>());
+    EXPECT_NE(goodput_text.find("bin_start_ps,bin_end_ps,flow_id,source,destination,"),
+              std::string::npos);
+    EXPECT_FALSE(std::filesystem::exists(goodput_trace.string() + ".tmp"));
     std::filesystem::remove(state_trace);
+    std::filesystem::remove(goodput_trace);
     const std::string manifest =
         renderDcqcnAtlahsManifest(config, 64, "flat.bin", "flows.csv", "state.csv", "gpu-rank");
     EXPECT_NE(manifest.find("profile=dcqcn"), std::string::npos);
     EXPECT_NE(manifest.find("switch=ns-tm3"), std::string::npos);
     EXPECT_NE(manifest.find("state_trace_csv=state.csv"), std::string::npos);
+    EXPECT_NE(manifest.find("goodput_trace_bin_ps=10000000"), std::string::npos);
     EXPECT_NE(manifest.find("shared_buffer_bytes=1048576"), std::string::npos);
     EXPECT_NE(manifest.find("shared_buffer_scope=switch-wide"), std::string::npos);
     EXPECT_NE(manifest.find("egress_buffer_bytes=1048576"), std::string::npos);

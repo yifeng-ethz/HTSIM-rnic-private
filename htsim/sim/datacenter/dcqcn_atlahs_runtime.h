@@ -32,6 +32,8 @@ struct DcqcnAtlahsRuntimeConfig {
     linkspeed_bps dcqcn_min_rate_bps{UINT64_C(100000000)};
     std::uint64_t ecmp_seed{1};
     std::optional<std::string> state_trace_csv;
+    std::optional<std::string> goodput_trace_csv;
+    simtime_picosec goodput_trace_bin_ps{0};
 };
 
 class DcqcnAtlahsRuntime final : public AtlahsFlowRuntime {
@@ -64,6 +66,8 @@ public:
     std::uint64_t egress_domain_dropped_packet_count() const noexcept;
     std::size_t state_trace_row_count() const noexcept;
     void writeStateTraceCsv() const;
+    std::size_t goodput_trace_row_count() const noexcept;
+    void writeGoodputTraceCsv() const;
 
 private:
     class Impl;

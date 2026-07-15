@@ -148,8 +148,16 @@ TEST(RnicSsRuntimeTest, StateTraceUsesPhysicalCreditFeedbackAndInstallsAtQuiesce
         ("rnic-ss-state-" + std::to_string(reinterpret_cast<std::uintptr_t>(&event_list)) + ".csv");
     std::filesystem::remove(trace);
     std::filesystem::remove(trace.string() + ".tmp");
+    const std::filesystem::path goodput =
+        std::filesystem::temp_directory_path() /
+        ("rnic-ss-goodput-" +
+         std::to_string(reinterpret_cast<std::uintptr_t>(&event_list)) + ".csv");
+    std::filesystem::remove(goodput);
+    std::filesystem::remove(goodput.string() + ".tmp");
     RnicSsRuntimeConfig config = runtimeConfig(false);
     config.state_trace_csv = trace.string();
+    config.goodput_trace_csv = goodput.string();
+    config.goodput_trace_bin_ps = 10000000;
     auto session = makeRnicAtlahsRuntime(event_list, RnicProfile::SlingshotLike, std::move(config),
                                          topologyConfig());
     auto* runtime = dynamic_cast<RnicSsRuntime*>(&session->implementation());
@@ -160,11 +168,14 @@ TEST(RnicSsRuntimeTest, StateTraceUsesPhysicalCreditFeedbackAndInstallsAtQuiesce
             {UINT64_C(0x210000001) + source, source, 63, 2U << 20, EventList::now(), source});
     }
     EXPECT_THROW(runtime->writeStateTraceCsv(), std::logic_error);
+    EXPECT_THROW(runtime->writeGoodputTraceCsv(), std::logic_error);
     drain(*runtime);
 
     runtime->validateQuiescent();
     EXPECT_GT(runtime->stateTraceRowCount(), 2U);
+    EXPECT_GT(runtime->goodputTraceRowCount(), 0U);
     runtime->writeStateTraceCsv();
+    runtime->writeGoodputTraceCsv();
     EXPECT_TRUE(std::filesystem::is_regular_file(trace));
     EXPECT_FALSE(std::filesystem::exists(trace.string() + ".tmp"));
     std::ifstream input(trace);
@@ -173,7 +184,13 @@ TEST(RnicSsRuntimeTest, StateTraceUsesPhysicalCreditFeedbackAndInstallsAtQuiesce
     EXPECT_NE(text.find(",flow-start,"), std::string::npos);
     EXPECT_NE(text.find(",service-rate-change,"), std::string::npos);
     EXPECT_NE(text.find(",completion,"), std::string::npos);
+    std::ifstream goodput_input(goodput);
+    const std::string goodput_text((std::istreambuf_iterator<char>(goodput_input)),
+                                   std::istreambuf_iterator<char>());
+    EXPECT_NE(goodput_text.find("delivered_payload_bytes,goodput_bps"), std::string::npos);
+    EXPECT_FALSE(std::filesystem::exists(goodput.string() + ".tmp"));
     std::filesystem::remove(trace);
+    std::filesystem::remove(goodput);
 }
 
 TEST(RnicSsRuntimeTest, ExplicitUnorderedSensitivityStillQuiesces) {

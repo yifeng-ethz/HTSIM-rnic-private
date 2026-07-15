@@ -108,6 +108,8 @@ RnicAtlahsRuntimeConfig collectiveRuntimeConfig(const RnicAtlahsCliOptions& opti
         options.collective.state_trace_csv,
         options.collective.maximum_retransmissions,
         options.collective.retransmission_rto_ps,
+        options.goodput_trace_csv,
+        options.goodput_trace_bin_ps,
     };
 }
 
@@ -131,6 +133,8 @@ RnicAtlahsRuntimeConfig slingshotRuntimeConfig(const RnicAtlahsCliOptions& optio
         options.slingshot.unordered_packet_routing,
         options.slingshot.allow_loss_stress,
         options.slingshot.state_trace_csv,
+        options.goodput_trace_csv,
+        options.goodput_trace_bin_ps,
     };
 }
 
@@ -196,6 +200,9 @@ std::string renderRnicAtlahsModelManifest(const RnicAtlahsCliOptions& options,
     manifest << "[RNIC manifest] goal=" << options.goal_file << " completion_csv="
              << (options.completion_csv.has_value() ? *options.completion_csv : "off")
              << " state_trace_csv=" << (state_trace_csv.has_value() ? *state_trace_csv : "off")
+             << " goodput_trace_csv="
+             << (options.goodput_trace_csv.has_value() ? *options.goodput_trace_csv : "off")
+             << " goodput_trace_bin_ps=" << options.goodput_trace_bin_ps
              << " requested_rank_mapping="
              << rnicAtlahsGoalRankMappingName(options.goal_rank_mapping)
              << " resolved_rank_mapping=" << resolvedGoalRankMappingName(goal_layout.rank_mapping)

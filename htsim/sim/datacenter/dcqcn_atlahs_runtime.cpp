@@ -1,6 +1,7 @@
 // -*- c-basic-offset: 4; indent-tabs-mode: nil -*-
 #include "dcqcn_atlahs_runtime.h"
 
+#include "atlahs_goodput_trace.h"
 #include "atlahs_state_trace.h"
 #include "cnppacket.h"
 #include "dcqcn.h"
@@ -231,6 +232,45 @@ private:
     bool _completion_notified{false};
 };
 
+class DcqcnAtlahsSink final : public DCQCNSink {
+public:
+    DcqcnAtlahsSink(EventList& event_list,
+                    AtlahsFlowId atlahs_flow_id,
+                    std::uint32_t source,
+                    std::uint32_t destination,
+                    AtlahsGoodputTrace* goodput_trace)
+        : DCQCNSink(event_list),
+          _atlahs_flow_id(atlahs_flow_id),
+          _source(source),
+          _destination(destination),
+          _goodput_trace(goodput_trace) {}
+
+    void receivePacket(Packet& packet) override {
+        if (packet.type() != ROCE) {
+            DCQCNSink::receivePacket(packet);
+            return;
+        }
+        const auto& data = static_cast<const RocePacket&>(packet);
+        const bool newly_delivered = data.seqno() == _cumulative_ack + 1;
+        if (packet.size() < RocePacket::ACKSIZE) {
+            throw std::logic_error("DCQCN DATA is smaller than its wire header");
+        }
+        const std::uint64_t payload_bytes =
+            static_cast<std::uint64_t>(packet.size() - RocePacket::ACKSIZE);
+        DCQCNSink::receivePacket(packet);
+        if (newly_delivered) {
+            _goodput_trace->record(EventList::now(), _atlahs_flow_id, _source, _destination,
+                                   payload_bytes);
+        }
+    }
+
+private:
+    AtlahsFlowId _atlahs_flow_id;
+    std::uint32_t _source;
+    std::uint32_t _destination;
+    AtlahsGoodputTrace* _goodput_trace;
+};
+
 std::uint32_t checkedWireFlowId(std::uint64_t value) {
     if (value == 0 || value > std::numeric_limits<std::uint32_t>::max()) {
         throw std::overflow_error("DCQCN wire flow-id space exhausted");
@@ -247,7 +287,8 @@ public:
           event_list(event_list),
           config(std::move(config)),
           physical_node_count(physical_node_count),
-          state_trace(this->config.state_trace_csv.has_value()) {
+          state_trace(this->config.state_trace_csv.has_value()),
+          goodput_trace(this->config.goodput_trace_bin_ps) {
         validate_config();
 
         Packet::set_packet_size(
@@ -354,7 +395,8 @@ public:
             event_list, config.endpoint_link_bps, request.flow_id, request.source,
             request.destination, &state_trace,
             [this, flow_id = request.flow_id]() { complete(flow_id); });
-        auto sink = std::make_unique<DCQCNSink>(event_list);
+        auto sink = std::make_unique<DcqcnAtlahsSink>(
+            event_list, request.flow_id, request.source, request.destination, &goodput_trace);
         source->setName("dcqcn-" + std::to_string(request.source) + "-" +
                         std::to_string(request.destination) + "-" +
                         std::to_string(request.flow_id));
@@ -474,6 +516,7 @@ public:
     std::uint64_t completed_flows{0};
     std::uint64_t silent_rtos{0};
     AtlahsStateTrace state_trace;
+    AtlahsGoodputTrace goodput_trace;
 
 private:
     void validate_config() const {
@@ -493,6 +536,14 @@ private:
             config.silent_loss_rto_ps == 0 || config.dcqcn_min_rate_bps == 0 ||
             config.dcqcn_min_rate_bps > config.endpoint_link_bps) {
             throw std::invalid_argument("invalid DCQCN ATLAHS model config");
+        }
+        if (config.goodput_trace_csv.has_value() !=
+            (config.goodput_trace_bin_ps != 0)) {
+            throw std::invalid_argument(
+                "DCQCN goodput trace requires both path and positive bin width");
+        }
+        if (config.goodput_trace_csv.has_value() && config.goodput_trace_csv->empty()) {
+            throw std::invalid_argument("DCQCN goodput trace CSV path must be nonempty");
         }
     }
 
@@ -660,6 +711,20 @@ void DcqcnAtlahsRuntime::writeStateTraceCsv() const {
     _impl->state_trace.writeCsvAtomically(*_impl->config.state_trace_csv);
 }
 
+std::size_t DcqcnAtlahsRuntime::goodput_trace_row_count() const noexcept {
+    return _impl->goodput_trace.size();
+}
+
+void DcqcnAtlahsRuntime::writeGoodputTraceCsv() const {
+    if (!_impl->config.goodput_trace_csv.has_value()) {
+        throw std::logic_error("DCQCN goodput trace was not requested");
+    }
+    if (_impl->has_pending_physical_work()) {
+        throw std::logic_error("DCQCN goodput trace may only be written at quiescence");
+    }
+    _impl->goodput_trace.writeCsvAtomically(*_impl->config.goodput_trace_csv);
+}
+
 std::string renderDcqcnAtlahsManifest(const DcqcnAtlahsRuntimeConfig& config,
                                       std::uint32_t physical_node_count,
                                       const std::string& goal_file,
@@ -672,6 +737,9 @@ std::string renderDcqcnAtlahsManifest(const DcqcnAtlahsRuntimeConfig& config,
              << " goal=" << goal_file
              << " completion_csv=" << (completion_csv.empty() ? "off" : completion_csv)
              << " state_trace_csv=" << (state_trace_csv.empty() ? "off" : state_trace_csv)
+             << " goodput_trace_csv="
+             << (config.goodput_trace_csv.has_value() ? *config.goodput_trace_csv : "off")
+             << " goodput_trace_bin_ps=" << config.goodput_trace_bin_ps
              << " resolved_rank_mapping=" << resolved_rank_mapping
              << " physical_nodes=" << physical_node_count << '\n';
     manifest << "[DCQCN manifest] topology=" << config.topology_file

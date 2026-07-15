@@ -79,6 +79,8 @@ struct RnicAtlahsExplicitCliOptions {
     bool max_wire_packet_bytes = false;
     bool data_header_bytes = false;
     bool fixed_propagation_delay_ps = false;
+    bool goodput_trace_csv = false;
+    bool goodput_trace_bin_ps = false;
 
     bool topology_file = false;
     bool hop_latency_ps = false;
@@ -122,6 +124,8 @@ struct RnicAtlahsCliOptions {
     std::uint32_t node_count;
     std::uint64_t link_capacity_bps;
     RnicProfile profile;
+    std::optional<std::string> goodput_trace_csv;
+    std::uint64_t goodput_trace_bin_ps{0};
 
     RnicAtlahsPacketCliOptions packet;
     RnicAtlahsManifoldCliOptions manifold;

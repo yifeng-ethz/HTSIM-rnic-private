@@ -218,6 +218,21 @@ pause state, and packet counters).  ACK progress remains real trace evidence
 but is collapsed when plotting unchanged rate state; no periodic rate samples
 are synthesized.
 
+The same three physical profiles also produce `goodputTrace.csv`. Successful
+logical payload delivery is counted exactly once at the receiver: newly
+accepted in-order DATA for DCQCN, the first SACK-scoreboard acceptance for
+`rnic-ss`, and the post-Ring-CAM in-order delivery ledger for `rnic-cn`.
+Duplicates and failed attempts therefore contribute no bytes. Rows are sparse,
+simulation-epoch-aligned bins with schema
+`bin_start_ps,bin_end_ps,flow_id,source,destination,delivered_payload_bytes,goodput_bps`;
+`goodput_bps` is the integer floor of `bytes * 8 * 10^12 / bin_width_ps`.
+The join/exit runner defaults to 10-us bins and accepts
+`--goodput-trace-bin-ps` for an explicit alternative. It verifies ordering,
+alignment, the derived rate, endpoints, and exact per-flow payload totals,
+then records the path, row count, bin width, and SHA-256 in the v3 run manifest.
+Both simulator CLIs keep tracing off unless a path and a positive bin width
+are supplied together, and install the CSV atomically only after quiescence.
+
 For `rnic-ss`, the effective rate is sender-local evidence rather than a
 central allocation.  It is the access-link rate before pair-selective
 backpressure, zero while a new credit epoch has no returned service sample,
@@ -255,7 +270,8 @@ python3 experiments/rnic_multibaseline/run_multibaseline.py \
   --output-root /path/to/results \
   --seeds 1-10 \
   --schemes all \
-  --workloads all
+  --workloads all \
+  --goodput-trace-bin-ps 10000000
 ```
 
 Render the overall, 1-to-2 join, and actual 2-to-1 exit rate panels from one

@@ -575,6 +575,22 @@ Control packets use an explicit priority class without bypassing serialization.
 Buffer limits, drop accounting, and any pause behavior are properties of this
 switch model and must not be confused with endpoint resequencing capacity.
 
+### Receive-goodput observability
+
+The physical profiles expose an optional, read-only delivered-payload trace.
+It observes the existing receiver ledger and never supplies state to routing,
+pacing, CCA, recovery, or switch arbitration. A logical payload extent is
+counted once: on DCQCN's first in-order acceptance, on `rnic-ss`'s first SACK
+scoreboard acceptance, or on `rnic-cn`'s post-Ring-CAM in-order delivery.
+Retries rejected by the receiver and duplicate copies add no bytes.
+
+Bins are aligned to the simulation epoch, not to individual flow starts, and
+empty per-flow bins are omitted. The CSV records both exact payload bytes and
+the derived integer rate `floor(bytes * 8 * 10^12 / bin_width_ps)`. The path
+and positive bin width must be configured together; otherwise the observer is
+disabled. A requested trace remains memory-resident until physical quiescence
+and is then installed by an atomic rename.
+
 ## Reproducibility and acceptance gates
 
 Every reported run records the resolved profile dimensions, link rates, fixed

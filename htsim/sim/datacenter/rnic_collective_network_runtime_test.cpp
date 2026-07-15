@@ -271,17 +271,28 @@ TEST(RnicCollectiveNetworkRuntimeTest, StateTraceIsSparseAndInstalledOnlyAfterQu
         ("rnic-cn-state-" + std::to_string(reinterpret_cast<std::uintptr_t>(&fixture)) + ".csv");
     std::filesystem::remove(trace);
     std::filesystem::remove(trace.string() + ".tmp");
+    const std::filesystem::path goodput =
+        std::filesystem::temp_directory_path() /
+        ("rnic-cn-goodput-" + std::to_string(reinterpret_cast<std::uintptr_t>(&fixture)) +
+         ".csv");
+    std::filesystem::remove(goodput);
+    std::filesystem::remove(goodput.string() + ".tmp");
     RnicCollectiveNetworkConfig config = fixture.runtimeConfig();
     config.state_trace_csv = trace.string();
+    config.goodput_trace_csv = goodput.string();
+    config.goodput_trace_bin_ps = 10000000;
     RnicCollectiveNetworkRuntime runtime(fixture.events, *fixture.topology, std::move(config));
     std::vector<AtlahsFlowId> completions;
     runtime.setup(32, [&](AtlahsFlowId flow_id) { completions.push_back(flow_id); });
     runtime.send({91, 0, 31, 1000, EventList::now(), 1});
     EXPECT_THROW(runtime.writeStateTraceCsv(), std::logic_error);
+    EXPECT_THROW(runtime.writeGoodputTraceCsv(), std::logic_error);
     fixture.drainRuntime(runtime);
     ASSERT_EQ(completions, (std::vector<AtlahsFlowId>{91}));
     EXPECT_GE(runtime.stateTraceRowCount(), 8U);
+    EXPECT_EQ(runtime.goodputTraceRowCount(), 1U);
     runtime.writeStateTraceCsv();
+    runtime.writeGoodputTraceCsv();
     EXPECT_TRUE(std::filesystem::is_regular_file(trace));
     EXPECT_FALSE(std::filesystem::exists(trace.string() + ".tmp"));
     std::ifstream input(trace);
@@ -294,7 +305,13 @@ TEST(RnicCollectiveNetworkRuntimeTest, StateTraceIsSparseAndInstalledOnlyAfterQu
     EXPECT_NE(text.find(",completion,"), std::string::npos);
     EXPECT_NE(text.find(",membership-exit-wave,"), std::string::npos);
     EXPECT_NE(text.find(",retired,"), std::string::npos);
+    std::ifstream goodput_input(goodput);
+    const std::string goodput_text((std::istreambuf_iterator<char>(goodput_input)),
+                                   std::istreambuf_iterator<char>());
+    EXPECT_NE(goodput_text.find(",91,0,31,1000,"), std::string::npos);
+    EXPECT_FALSE(std::filesystem::exists(goodput.string() + ".tmp"));
     std::filesystem::remove(trace);
+    std::filesystem::remove(goodput);
 }
 
 TEST(RnicCollectiveNetworkRuntimeTest, ZeroPayloadUsesPhysicalDeclareAcceptAndRetireWithoutData) {

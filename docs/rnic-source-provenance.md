@@ -24,7 +24,7 @@ All paths below are local to the development machine.
 
 | Source | Path | Relevant pointers |
 | --- | --- | --- |
-| Current simulator contract | `/Users/yifengw/Documents/bp/HTSIM/docs/rnic-simulation-model.md` | Source precedence; public profiles; network-calculus contract; CN control; PRBS; Ring-CAM; `ns-tm3` Clos |
+| Current simulator contract | `/Users/yifengw/Documents/sigcomm/htsim/docs/rnic-simulation-model.md` | Source precedence; public profiles; network-calculus contract; CN control; PRBS; Ring-CAM; `ns-tm3` Clos |
 | Patent | `/Users/yifengw/Documents/sigcomm/doc/patent-summary-time-regulated-transport.pdf` | pp. 3--5, Sections 3.3--3.5 and Figure 2: timestamp window and release; p. 9, Equations 9--13 and Appendix B: envelope restoration and PRBS; pp. 11--12, Appendix C.1: superseded rate-control design; p. 14, Appendices E--F: PRBS aggregation and shared sender pacer |
 | Current paper | `/Users/yifengw/Documents/sigcomm/paper/main.pdf` | pp. 2--3, Sections 2.1--2.2: physical null manifold and packet ledger; pp. 4--6, Sections 3--4 and Figures 1--3: datapath, RB, direct grant and startup; pp. 8--9, Section 5 and Figure 7: spray/RB scaling; p. 10, Section 6.3 and Figure 8: Ring-CAM; pp. 12--13, Section 8: RTT claims excluded below; pp. 16--17, Appendix B: service curves, packetization and RB bounds |
 | Paper source for precise anchors | `/Users/yifengw/Documents/sigcomm/paper/sections/02-motivation.tex` | Section 2.1 at line 62: null/empty networks, axioms and max-min convention; Section 2.2 at line 166: packet ledger |
@@ -39,7 +39,7 @@ All paths below are local to the development machine.
 | NERSC presentation | `/Users/yifengw/Documents/sigcomm/slides/collective-network-intro-vinay-nersc-new.pptx` | Slide 3: standard switch and TM3+ spraying statement; slide 4: historical FCT, TTOP and incast trends |
 | Slide-4 testbench | `/Users/yifengw/Documents/sigcomm/experiments/cn_vs_dcqcn_testbench/README.md` | Lines 10--20: topology and historical CN model; lines 24--47: results; lines 49--57: caveats |
 | Ring-CAM presentation | `/Users/yifengw/Documents/sigcomm/doc/slides-ringcam-resequencer-ieee-rt26.pdf` | Slides 9--11: arrival-write/timestamp-read and depth; slides 12--14: burst/storage/stacking trends; slides 15--16: prototype configuration and occupancy |
-| Legacy alleged TM3 model | `/Users/yifengw/Documents/bp/htsim_clos_voq/README.md` | Lines 28--29 explicitly describe a lossless-input/lossless-output abstraction rather than a true Tomahawk 3 model |
+| Legacy alleged TM3 model | archived `htsim_clos_voq` checkout (deprecated; not used for simulation) | Its README lines 28--29 explicitly describe a lossless-input/lossless-output abstraction rather than a true Tomahawk 3 model |
 
 ## Invariants and their provenance
 

@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "fat_tree_topology.h"
+#include "atlahs_goodput_trace.h"
 #include "ns_rosetta_switch.h"
 #include "rnic_prbs_pacer.h"
 #include "rnic_ss_packet.h"
@@ -66,6 +67,13 @@ void RnicSsRuntimeConfig::validate() const {
     }
     if (state_trace_csv.has_value() && state_trace_csv->empty()) {
         throw std::invalid_argument("rnic-ss state trace CSV path must be nonempty");
+    }
+    if (goodput_trace_csv.has_value() != (goodput_trace_bin_ps != 0)) {
+        throw std::invalid_argument(
+            "rnic-ss goodput trace requires both path and positive bin width");
+    }
+    if (goodput_trace_csv.has_value() && goodput_trace_csv->empty()) {
+        throw std::invalid_argument("rnic-ss goodput trace CSV path must be nonempty");
     }
 }
 
@@ -262,7 +270,8 @@ struct RnicSsRuntime::Impl {
           route_provider(topology),
           packet_observer(std::make_shared<PacketObserver>(*this)),
           control_flow(nullptr),
-          state_trace(config.state_trace_csv.has_value()) {
+          state_trace(config.state_trace_csv.has_value()),
+          goodput_trace(config.goodput_trace_bin_ps) {
         config.validate();
         validateSwitchBufferThresholds();
         control_flow.set_flowid(0);
@@ -1185,6 +1194,8 @@ struct RnicSsRuntime::Impl {
                 checkedAdd(flow.delivered_payload_bytes, data->payload_bytes,
                            "rnic-ss delivered payload overflow");
             flow.delivered_data_packets++;
+            goodput_trace.record(EventList::now(), flow.request.flow_id, flow.request.source,
+                                 flow.request.destination, data->payload_bytes);
             if (flow.delivered_payload_bytes > flow.request.payload_bytes) {
                 throw std::logic_error("rnic-ss receiver exceeded the flow payload ledger");
             }
@@ -1821,6 +1832,7 @@ struct RnicSsRuntime::Impl {
     packetid_t next_packet_id{1};
     RnicSsRuntimeStatistics statistics;
     AtlahsStateTrace state_trace;
+    AtlahsGoodputTrace goodput_trace;
     std::vector<std::unique_ptr<Endpoint>> endpoints;
     std::vector<std::unique_ptr<SourcePacerState>> source_pacers;
     std::vector<std::vector<PairState*>> source_pairs;
@@ -1890,6 +1902,18 @@ void RnicSsRuntime::writeStateTraceCsv() const {
     }
     _impl->validateQuiescent();
     _impl->state_trace.writeCsvAtomically(*_impl->config.state_trace_csv);
+}
+
+std::size_t RnicSsRuntime::goodputTraceRowCount() const noexcept {
+    return _impl->goodput_trace.size();
+}
+
+void RnicSsRuntime::writeGoodputTraceCsv() const {
+    if (!_impl->config.goodput_trace_csv.has_value()) {
+        throw std::logic_error("rnic-ss goodput trace was not requested");
+    }
+    _impl->validateQuiescent();
+    _impl->goodput_trace.writeCsvAtomically(*_impl->config.goodput_trace_csv);
 }
 
 void RnicSsRuntime::doNextEvent() {

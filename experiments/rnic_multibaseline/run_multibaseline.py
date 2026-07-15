@@ -30,7 +30,7 @@ import generate_allreduce_goal
 import generate_join_exit_goal
 
 
-SCHEMA_VERSION = "rnic-multibaseline-run-v2"
+SCHEMA_VERSION = "rnic-multibaseline-run-v3"
 SCHEMES = ("dcqcn", "rnic-cn", "rnic-ss", "rnic-nn", "rnic-nn-fluid")
 WORKLOADS = ("flat32m", "dag32m", "join-exit")
 RNIC_SCHEMES = frozenset(SCHEMES) - {"dcqcn"}
@@ -62,6 +62,16 @@ REQUIRED_STATE_TRACE_COLUMNS = (
     "new_packets_sent",
     "rtx_packets_sent",
     "acked_packets",
+)
+
+REQUIRED_GOODPUT_TRACE_COLUMNS = (
+    "bin_start_ps",
+    "bin_end_ps",
+    "flow_id",
+    "source",
+    "destination",
+    "delivered_payload_bytes",
+    "goodput_bps",
 )
 
 RANK_RE = re.compile(r"^rank\s+(\d+)\s*\{$")
@@ -125,6 +135,7 @@ class ExperimentParameters:
     dcqcn_egress_buffer_bytes: int = 4 << 20
     dcqcn_min_rate_bps: int = 100_000_000
     dcqcn_silent_rto_us: int = 50_000
+    goodput_trace_bin_ps: int = 10_000_000
 
     def validate(self) -> None:
         positive = {
@@ -400,6 +411,7 @@ def build_dcqcn_command(
     seed: int,
     parameters: ExperimentParameters,
     state_trace_csv: Path | None = None,
+    goodput_trace_csv: Path | None = None,
 ) -> list[str]:
     command = [
         str(executable),
@@ -423,6 +435,11 @@ def build_dcqcn_command(
     ]
     if state_trace_csv is not None:
         command += ["-state_trace_csv", str(state_trace_csv)]
+    if goodput_trace_csv is not None:
+        command += [
+            "-goodput_trace_csv", str(goodput_trace_csv),
+            "-goodput_trace_bin_ps", str(parameters.goodput_trace_bin_ps),
+        ]
     return command
 
 
@@ -435,9 +452,14 @@ def build_rnic_command(
     seed: int,
     parameters: ExperimentParameters,
     state_trace_csv: Path | None = None,
+    goodput_trace_csv: Path | None = None,
 ) -> list[str]:
     if scheme not in RNIC_SCHEMES:
         raise OrchestrationError(f"{scheme!r} is not an RNIC profile")
+    if goodput_trace_csv is not None and scheme not in PHYSICAL_SCHEMES:
+        raise OrchestrationError(
+            f"goodput tracing is not implemented for RNIC profile {scheme!r}"
+        )
     command = [
         str(executable),
         "-goal", str(goal_binary),
@@ -451,6 +473,11 @@ def build_rnic_command(
         command += [
             "-rnic_max_wire_bytes", str(parameters.max_wire_packet_bytes),
             "-rnic_data_header_bytes", str(parameters.data_header_bytes),
+        ]
+    if goodput_trace_csv is not None:
+        command += [
+            "-rnic_goodput_trace_csv", str(goodput_trace_csv),
+            "-rnic_goodput_trace_bin_ps", str(parameters.goodput_trace_bin_ps),
         ]
     if scheme == "rnic-cn":
         command += [
@@ -510,6 +537,7 @@ def build_simulator_command(
     seed: int,
     parameters: ExperimentParameters,
     state_trace_csv: Path | None = None,
+    goodput_trace_csv: Path | None = None,
 ) -> list[str]:
     if scheme == "dcqcn":
         return build_dcqcn_command(
@@ -520,6 +548,7 @@ def build_simulator_command(
             seed,
             parameters,
             state_trace_csv,
+            goodput_trace_csv,
         )
     return build_rnic_command(
         tools.rnic_simulator,
@@ -530,6 +559,7 @@ def build_simulator_command(
         seed,
         parameters,
         state_trace_csv,
+        goodput_trace_csv,
     )
 
 
@@ -863,6 +893,86 @@ def validate_state_trace_csv(
     return row_count
 
 
+def validate_goodput_trace_csv(
+    path: Path,
+    completion: CompletionSummary,
+    bin_width_ps: int,
+) -> int:
+    """Validate exact sparse receiver-delivery bins against flow ledgers."""
+    if bin_width_ps <= 0:
+        raise OrchestrationError("goodput trace bin width must be positive")
+    try:
+        handle = path.open("r", encoding="utf-8-sig", newline="")
+    except OSError as exc:
+        raise OrchestrationError(f"cannot read goodput trace CSV {path}: {exc}") from exc
+    completed = {row.flow_id: row for row in completion.rows}
+    delivered_by_flow = Counter()
+    previous_key: tuple[int, int, int, int] | None = None
+    row_count = 0
+    with handle:
+        reader = csv.DictReader(handle)
+        if tuple(reader.fieldnames or ()) != REQUIRED_GOODPUT_TRACE_COLUMNS:
+            raise OrchestrationError(
+                f"{path}: goodput trace header must be exactly "
+                + ",".join(REQUIRED_GOODPUT_TRACE_COLUMNS)
+            )
+        for line_number, raw in enumerate(reader, start=2):
+            context = f"{path}:{line_number}"
+            start = parse_uint(raw["bin_start_ps"], f"{context} bin_start_ps")
+            end = parse_uint(raw["bin_end_ps"], f"{context} bin_end_ps")
+            if start % bin_width_ps != 0 or end - start != bin_width_ps:
+                raise OrchestrationError(
+                    f"{context}: bin is not aligned to {bin_width_ps} ps"
+                )
+            flow_id = parse_uint(raw["flow_id"], f"{context} flow_id")
+            if flow_id not in completed:
+                raise OrchestrationError(f"{context}: unknown flow_id {flow_id}")
+            flow = completed[flow_id]
+            source = parse_uint(raw["source"], f"{context} source")
+            destination = parse_uint(raw["destination"], f"{context} destination")
+            if (source, destination) != (
+                flow.transfer.source,
+                flow.transfer.destination,
+            ):
+                raise OrchestrationError(
+                    f"{context}: endpoints disagree with completion CSV"
+                )
+            key = (start, flow_id, source, destination)
+            if previous_key is not None and key <= previous_key:
+                raise OrchestrationError(
+                    f"{context}: bins are duplicated or not deterministically ordered"
+                )
+            previous_key = key
+            payload = parse_uint(
+                raw["delivered_payload_bytes"],
+                f"{context} delivered_payload_bytes",
+            )
+            if payload == 0:
+                raise OrchestrationError(f"{context}: sparse row has zero payload")
+            rate = parse_uint(raw["goodput_bps"], f"{context} goodput_bps")
+            expected_rate = payload * 8 * 1_000_000_000_000 // bin_width_ps
+            if rate != expected_rate:
+                raise OrchestrationError(
+                    f"{context}: goodput {rate} does not match payload/bin {expected_rate}"
+                )
+            if end <= flow.start_time_ps or start > flow.completion_time_ps:
+                raise OrchestrationError(
+                    f"{context}: delivery bin is outside the completed flow lifetime"
+                )
+            delivered_by_flow[flow_id] += payload
+            row_count += 1
+    if row_count == 0:
+        raise OrchestrationError(f"{path}: goodput trace has no rows")
+    for flow_id, flow in completed.items():
+        delivered = delivered_by_flow[flow_id]
+        if delivered != flow.transfer.payload_bytes:
+            raise OrchestrationError(
+                f"{path}: flow {flow_id} delivered {delivered} traced bytes, "
+                f"expected {flow.transfer.payload_bytes}"
+            )
+    return row_count
+
+
 def _run_signature(
     command: Sequence[str],
     tools: ToolPaths,
@@ -908,8 +1018,13 @@ def run_one(
     trace_requested = (
         artifact.name == "join-exit" and scheme in STATE_TRACE_SCHEMES
     )
+    goodput_trace_requested = (
+        artifact.name == "join-exit" and scheme in PHYSICAL_SCHEMES
+    )
     state_trace = run_directory / "stateTrace.csv"
     state_trace_partial = run_directory / "stateTrace.partial.csv"
+    goodput_trace = run_directory / "goodputTrace.csv"
+    goodput_trace_partial = run_directory / "goodputTrace.partial.csv"
     stdout_path = run_directory / "stdout.log"
     stderr_path = run_directory / "stderr.log"
     manifest_path = run_directory / "run_manifest.json"
@@ -922,6 +1037,7 @@ def run_one(
         seed,
         parameters,
         state_trace_partial if trace_requested else None,
+        goodput_trace_partial if goodput_trace_requested else None,
     )
     signature = _run_signature(
         command, tools, scheme, artifact, topology, parameters
@@ -944,10 +1060,22 @@ def run_one(
                     == sha256_file(state_trace)
                 )
             )
+            and (
+                not goodput_trace_requested
+                or (
+                    goodput_trace.is_file()
+                    and manifest.get("goodput_trace_sha256")
+                    == sha256_file(goodput_trace)
+                )
+            )
         ):
             result = read_completion_csv(completion, scheme, artifact.transfers)
             if trace_requested:
                 validate_state_trace_csv(state_trace, result)
+            if goodput_trace_requested:
+                validate_goodput_trace_csv(
+                    goodput_trace, result, parameters.goodput_trace_bin_ps
+                )
             print(f"REUSED    {artifact.name}/{scheme}/seed-{seed}")
             return result
         raise OrchestrationError(
@@ -960,6 +1088,8 @@ def run_one(
             partial,
             state_trace,
             state_trace_partial,
+            goodput_trace,
+            goodput_trace_partial,
             manifest_path,
         )
     ):
@@ -971,6 +1101,8 @@ def run_one(
         partial,
         state_trace,
         state_trace_partial,
+        goodput_trace,
+        goodput_trace_partial,
         stdout_path,
         stderr_path,
         manifest_path,
@@ -1005,6 +1137,7 @@ def run_one(
             )
         result = read_completion_csv(partial, scheme, artifact.transfers)
         state_trace_rows: int | None = None
+        goodput_trace_rows: int | None = None
         if trace_requested:
             if not state_trace_partial.is_file():
                 raise OrchestrationError(
@@ -1014,9 +1147,20 @@ def run_one(
             state_trace_rows = validate_state_trace_csv(
                 state_trace_partial, result
             )
+        if goodput_trace_requested:
+            if not goodput_trace_partial.is_file():
+                raise OrchestrationError(
+                    f"{scheme} seed {seed} returned success without "
+                    f"{goodput_trace_partial}"
+                )
+            goodput_trace_rows = validate_goodput_trace_csv(
+                goodput_trace_partial, result, parameters.goodput_trace_bin_ps
+            )
         os.replace(partial, completion)
         if trace_requested:
             os.replace(state_trace_partial, state_trace)
+        if goodput_trace_requested:
+            os.replace(goodput_trace_partial, goodput_trace)
     except Exception as exc:
         atomic_write_json(
             manifest_path,
@@ -1055,6 +1199,16 @@ def run_one(
             if trace_requested
             else None,
             "state_trace_rows": state_trace_rows,
+            "goodput_trace_csv": str(goodput_trace)
+            if goodput_trace_requested
+            else None,
+            "goodput_trace_sha256": sha256_file(goodput_trace)
+            if goodput_trace_requested
+            else None,
+            "goodput_trace_rows": goodput_trace_rows,
+            "goodput_trace_bin_ps": parameters.goodput_trace_bin_ps
+            if goodput_trace_requested
+            else None,
             "stdout_log": str(stdout_path),
             "stderr_log": str(stderr_path),
             "return_code": return_code,
@@ -1136,6 +1290,10 @@ def dry_run_plan(
                     run_directory / "stateTrace.partial.csv"
                     if workload == "join-exit"
                     and scheme in STATE_TRACE_SCHEMES
+                    else None,
+                    run_directory / "goodputTrace.partial.csv"
+                    if workload == "join-exit"
+                    and scheme in PHYSICAL_SCHEMES
                     else None,
                 )
                 print("DRY-RUN  " + shlex.join(command))
@@ -1268,6 +1426,12 @@ def build_parser(repo_root: Path) -> argparse.ArgumentParser:
             "the switch-wide shared pool remains physical_buffer_bytes"
         ),
     )
+    parser.add_argument(
+        "--goodput-trace-bin-ps",
+        type=positive_int,
+        default=ExperimentParameters().goodput_trace_bin_ps,
+        help="receive-side delivered-payload goodput bin width for join/exit runs",
+    )
     return parser
 
 
@@ -1288,6 +1452,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         cn_margin_ppm=args.cn_margin_ppm,
         cn_retransmission_rto_ps=args.cn_retransmission_rto_ps,
         dcqcn_egress_buffer_bytes=args.dcqcn_egress_buffer_bytes,
+        goodput_trace_bin_ps=args.goodput_trace_bin_ps,
     )
     try:
         orchestrate(

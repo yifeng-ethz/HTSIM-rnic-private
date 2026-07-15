@@ -1,6 +1,7 @@
 // -*- c-basic-offset: 4; indent-tabs-mode: nil -*-
 #include "rnic_collective_network_runtime.h"
 
+#include "atlahs_goodput_trace.h"
 #include <algorithm>
 #include <deque>
 #include <exception>
@@ -448,7 +449,8 @@ struct RnicCollectiveNetworkRuntime::Impl {
           events(event_list),
           topology(clos),
           config(std::move(runtime_config)),
-          state_trace(config.state_trace_csv.has_value()) {
+          state_trace(config.state_trace_csv.has_value()),
+          goodput_trace(config.goodput_trace_bin_ps) {
         validateConfiguration();
         const std::uint32_t count = topology.cfg().no_of_servers();
         nodes.reserve(count);
@@ -590,6 +592,7 @@ struct RnicCollectiveNetworkRuntime::Impl {
     std::uint64_t gap_resolved_dispatched{0};
     std::uint64_t gap_resolved_received{0};
     AtlahsStateTrace state_trace;
+    AtlahsGoodputTrace goodput_trace;
 };
 
 void RnicCollectiveNetworkRuntime::Impl::traceFlow(const FlowState& flow, const char* event) {
@@ -678,6 +681,13 @@ void RnicCollectiveNetworkRuntime::Impl::validateConfiguration() const {
     }
     if (config.packetization.maxWirePacketBytes() > std::numeric_limits<std::uint16_t>::max()) {
         throw std::invalid_argument("rnic-cn DATA extent must fit exactly in uint16_t");
+    }
+    if (config.goodput_trace_csv.has_value() != (config.goodput_trace_bin_ps != 0)) {
+        throw std::invalid_argument(
+            "rnic-cn goodput trace requires both path and positive bin width");
+    }
+    if (config.goodput_trace_csv.has_value() && config.goodput_trace_csv->empty()) {
+        throw std::invalid_argument("rnic-cn goodput trace CSV path must be nonempty");
     }
 
     // Distinct full-envelope boundaries must not collapse onto one simulator
@@ -2077,6 +2087,8 @@ void RnicCollectiveNetworkRuntime::Impl::drainReadyPackets(FlowState& flow,
         flow.delivered_payload_bytes = next_payload;
         flow.delivered_wire_bytes = next_wire;
         flow.delivered_data_packets = next_packets;
+        goodput_trace.record(EventList::now(), flow.request.flow_id, flow.request.source,
+                             flow.request.destination, packet.data.extent.payloadBytes());
         if (next_packets != flow.final_ledger.total_data_packets) {
             continue;
         }
@@ -2798,6 +2810,18 @@ void RnicCollectiveNetworkRuntime::writeStateTraceCsv() const {
     }
     _impl->validateQuiescent();
     _impl->state_trace.writeCsvAtomically(*_impl->config.state_trace_csv);
+}
+
+std::size_t RnicCollectiveNetworkRuntime::goodputTraceRowCount() const noexcept {
+    return _impl->goodput_trace.size();
+}
+
+void RnicCollectiveNetworkRuntime::writeGoodputTraceCsv() const {
+    if (!_impl->config.goodput_trace_csv.has_value()) {
+        throw std::logic_error("rnic-cn goodput trace was not requested");
+    }
+    _impl->validateQuiescent();
+    _impl->goodput_trace.writeCsvAtomically(*_impl->config.goodput_trace_csv);
 }
 
 void RnicCollectiveNetworkRuntime::doNextEvent() {

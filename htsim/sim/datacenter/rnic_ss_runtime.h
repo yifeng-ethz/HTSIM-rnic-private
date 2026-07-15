@@ -38,6 +38,8 @@ struct RnicSsRuntimeConfig {
     // Optional sparse, event-driven sender state trace.  The runtime buffers
     // rows and installs the CSV only after physical quiescence.
     std::optional<std::string> state_trace_csv;
+    std::optional<std::string> goodput_trace_csv;
+    std::uint64_t goodput_trace_bin_ps{0};
 
     void validate() const;
 };
@@ -126,6 +128,8 @@ public:
     void validateQuiescent() const;
     std::size_t stateTraceRowCount() const noexcept;
     void writeStateTraceCsv() const;
+    std::size_t goodputTraceRowCount() const noexcept;
+    void writeGoodputTraceCsv() const;
 
 private:
     struct Impl;

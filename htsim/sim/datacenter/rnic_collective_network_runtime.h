@@ -45,6 +45,8 @@ struct RnicCollectiveNetworkConfig {
     // Sender-visible overtime for a retry that receives neither a subsequent
     // exact-gap NACK nor a physical GAP_RESOLVED closure.
     std::uint64_t retransmission_rto_ps{50000000000ULL};
+    std::optional<std::string> goodput_trace_csv;
+    std::uint64_t goodput_trace_bin_ps{0};
 };
 
 struct RnicCollectiveRecoveryStatistics {
@@ -124,6 +126,8 @@ public:
     void validateQuiescent() const;
     std::size_t stateTraceRowCount() const noexcept;
     void writeStateTraceCsv() const;
+    std::size_t goodputTraceRowCount() const noexcept;
+    void writeGoodputTraceCsv() const;
 
 private:
     struct Impl;

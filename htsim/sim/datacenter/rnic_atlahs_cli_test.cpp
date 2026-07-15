@@ -207,6 +207,29 @@ TEST(RnicAtlahsCliTest, AcceptsOptionalCollectiveStateTracePath) {
     EXPECT_THROW(parse(std::move(nn)), std::invalid_argument);
 }
 
+TEST(RnicAtlahsCliTest, GoodputTraceIsPairedAndLimitedToPhysicalProfiles) {
+    for (const std::string& profile : {"rnic-cn", "rnic-ss"}) {
+        std::vector<std::string> arguments = baseArguments(profile);
+        append(arguments, "-rnic_goodput_trace_csv", "results/goodput.csv");
+        append(arguments, "-rnic_goodput_trace_bin_ps", "10000000");
+        const RnicAtlahsCliOptions options = parse(std::move(arguments));
+        ASSERT_TRUE(options.goodput_trace_csv.has_value());
+        EXPECT_EQ(*options.goodput_trace_csv, "results/goodput.csv");
+        EXPECT_EQ(options.goodput_trace_bin_ps, UINT64_C(10000000));
+        EXPECT_TRUE(options.explicitly_supplied.goodput_trace_csv);
+        EXPECT_TRUE(options.explicitly_supplied.goodput_trace_bin_ps);
+    }
+
+    std::vector<std::string> path_only = baseArguments("rnic-cn");
+    append(path_only, "-rnic_goodput_trace_csv", "goodput.csv");
+    EXPECT_THROW(parse(std::move(path_only)), std::invalid_argument);
+
+    std::vector<std::string> nn = baseArguments("rnic-nn");
+    append(nn, "-rnic_goodput_trace_csv", "goodput.csv");
+    append(nn, "-rnic_goodput_trace_bin_ps", "10000000");
+    EXPECT_THROW(parse(std::move(nn)), std::invalid_argument);
+}
+
 TEST(RnicAtlahsCliTest, ResolvesPacketizedManifoldOverrides) {
     std::vector<std::string> arguments = baseArguments("rnic-nn");
     arguments[4] = "7";
@@ -500,6 +523,8 @@ TEST(RnicAtlahsCliTest, UsageNamesOnlyCanonicalProfilesAndExactUnits) {
     EXPECT_NE(usage.find("-rnic_cn_state_trace_csv FILE"), std::string::npos);
     EXPECT_NE(usage.find("-rnic_ss_ns_rosetta_buffer_bytes"), std::string::npos);
     EXPECT_NE(usage.find("-rnic_ss_state_trace_csv FILE"), std::string::npos);
+    EXPECT_NE(usage.find("-rnic_goodput_trace_csv FILE -rnic_goodput_trace_bin_ps PS"),
+              std::string::npos);
     EXPECT_NE(usage.find("-rnic_ss_routing unordered|ordered"), std::string::npos);
     EXPECT_EQ(usage.find("-rnic_cn_tomahawk3_buffer_bytes"), std::string::npos);
     EXPECT_EQ(usage.find("rnic-cc"), std::string::npos);

@@ -128,6 +128,9 @@ int main(int argc, char* argv[]) {
         if (options.runtime.state_trace_csv.has_value()) {
             installed_runtime->writeStateTraceCsv();
         }
+        if (options.runtime.goodput_trace_csv.has_value()) {
+            installed_runtime->writeGoodputTraceCsv();
+        }
         std::cout << "[DCQCN manifest] completed_flows="
                   << installed_runtime->completed_flow_count()
                   << " silent_rtos=" << installed_runtime->silent_rto_count()

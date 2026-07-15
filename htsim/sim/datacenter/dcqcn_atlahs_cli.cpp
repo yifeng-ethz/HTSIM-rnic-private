@@ -73,6 +73,13 @@ DcqcnAtlahsCliOptions parseDcqcnAtlahsCli(int argc, const char* const argv[]) {
                 throw std::invalid_argument("-state_trace_csv: path must be nonempty");
             }
             options.runtime.state_trace_csv = value;
+        } else if (option == "-goodput_trace_csv") {
+            if (value.empty()) {
+                throw std::invalid_argument("-goodput_trace_csv: path must be nonempty");
+            }
+            options.runtime.goodput_trace_csv = value;
+        } else if (option == "-goodput_trace_bin_ps") {
+            options.runtime.goodput_trace_bin_ps = parseUnsigned(option, value);
         } else if (option == "-goal_rank_mapping") {
             options.goal_rank_mapping = parseRankMapping(value);
         } else if (option == "-seed") {
@@ -138,6 +145,12 @@ DcqcnAtlahsCliOptions parseDcqcnAtlahsCli(int argc, const char* const argv[]) {
     if (!egress_buffer_explicit) {
         options.runtime.ns_tm3_egress_buffer_bytes = options.runtime.ns_tm3_shared_buffer_bytes;
     }
+    if (options.runtime.goodput_trace_csv.has_value() !=
+        (options.runtime.goodput_trace_bin_ps != 0)) {
+        throw std::invalid_argument(
+            "DCQCN goodput trace requires -goodput_trace_csv and positive "
+            "-goodput_trace_bin_ps together");
+    }
     return options;
 }
 
@@ -158,6 +171,7 @@ std::string dcqcnAtlahsCliUsage(const std::string& program_name) {
            " -goal FILE -topology FILE"
            " [-completion_csv FILE]"
            " [-state_trace_csv FILE]"
+           " [-goodput_trace_csv FILE -goodput_trace_bin_ps PS]"
            " [-goal_rank_mapping auto|gpu-rank|unique-nic]"
            " [-seed N] [-link_bps N]"
            " [-max_wire_packet_bytes N] [-data_header_bytes N]"

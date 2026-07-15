@@ -1,5 +1,6 @@
 # List of common source files shared among executables.
 set(LIB_SOURCES
+    atlahs_goodput_trace.cpp
     atlahs_state_trace.cpp
     firstfit.cpp
     vl2_topology.cpp
@@ -92,6 +93,14 @@ foreach(EXECUTABLE ${ALL_EXECUTABLES})
 endforeach()
 
 if ( ENABLE_TESTS )
+    add_executable(atlahs_goodput_trace_test atlahs_goodput_trace_test.cpp)
+    target_link_libraries(
+        atlahs_goodput_trace_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(atlahs_goodput_trace_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
     add_executable(fat_tree_topology_cfg_test fat_tree_topology_cfg_test.cpp)
     target_link_libraries(fat_tree_topology_cfg_test PRIVATE htsim_dc htsim gtest_main)
     gtest_discover_tests(fat_tree_topology_cfg_test
