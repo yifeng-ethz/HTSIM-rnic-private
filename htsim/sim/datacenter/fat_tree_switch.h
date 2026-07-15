@@ -101,6 +101,7 @@ public:
     virtual void receivePacket(Packet& pkt);
     virtual Route* getNextHop(Packet& pkt, BaseQueue* ingress_port);
     virtual uint32_t getType() {return _type;}
+    virtual PacketSink* create_physical_ingress(const string&) { return this; }
 
     uint32_t adaptive_route(vector<FibEntry*>* ecmp_set, int8_t (*cmp)(FibEntry*,FibEntry*));
     uint32_t replace_worst_choice(vector<FibEntry*>* ecmp_set, int8_t (*cmp)(FibEntry*,FibEntry*),uint32_t my_choice);
@@ -132,6 +133,10 @@ public:
     static double _speculative_threshold_fraction;
     static uint16_t _trim_size;
     static bool _disable_trim;
+protected:
+    void schedule_through_switch_pipeline(Packet& pkt) {
+        _pipe->receivePacket(pkt);
+    }
 private:
     switch_type _type;
     Pipe* _pipe;
