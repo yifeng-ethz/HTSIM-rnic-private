@@ -10,6 +10,11 @@ set(LIB_SOURCES
     multihomed_fat_tree_topology.cpp
     star_topology.cpp
     fat_tree_switch.cpp
+    fat_tree_switch_factory.cpp
+    fat_tree_switch_model.cpp
+    ns_tm3_dcqcn_policy.cpp
+    ns_tm3_switch.cpp
+    ns_rosetta_switch.cpp
     dragon_fly_topology.cpp
     slimfly_topology.cpp
     slimfly_switch.cpp
@@ -71,3 +76,36 @@ foreach(EXECUTABLE ${ALL_EXECUTABLES})
     add_symlink_target(${EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR})
 endforeach()
 
+if ( ENABLE_TESTS )
+    add_executable(fat_tree_switch_factory_test fat_tree_switch_factory_test.cpp)
+    target_link_libraries(fat_tree_switch_factory_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(fat_tree_switch_factory_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
+    add_executable(ns_tm3_switch_test ns_tm3_switch_test.cpp)
+    target_link_libraries(ns_tm3_switch_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(ns_tm3_switch_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
+    add_executable(
+        ns_tm3_dcqcn_policy_test
+        ns_tm3_dcqcn_policy_test.cpp)
+    target_link_libraries(
+        ns_tm3_dcqcn_policy_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(ns_tm3_dcqcn_policy_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
+    add_executable(ns_rosetta_switch_test ns_rosetta_switch_test.cpp)
+    target_link_libraries(
+        ns_rosetta_switch_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(ns_rosetta_switch_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+endif()
