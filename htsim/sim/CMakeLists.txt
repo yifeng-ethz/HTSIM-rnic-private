@@ -105,6 +105,9 @@ set(SOURCE_FILES
     rnic_max_min_allocator.cpp
     rnic_packetized_manifold.cpp
     rnic_packetized_manifold_runtime.cpp
+    rnic_port.cpp
+    rnic_prbs_pacer.cpp
+    rnic_ring_cam.cpp
     rng.cpp
     roce.cpp
     rocepacket.cpp
@@ -154,6 +157,9 @@ if ( ENABLE_TESTS )
         rnic_max_min_allocator_test
         rnic_packetized_manifold_test
         rnic_packetized_manifold_runtime_test
+        rnic_port_test
+        rnic_prbs_pacer_test
+        rnic_ring_cam_test
     )
 
     foreach(UNIT_TEST_FILE ${UNIT_TEST_FILES}) 
