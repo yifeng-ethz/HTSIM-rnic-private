@@ -66,6 +66,7 @@ void RnicSsPacket::initialize(
     _retransmission = retransmission;
     _accumulated_queue_delay_ps = 0;
     _load_observed_at_ps = 0;
+    _has_load_observation = false;
     _observer = std::move(observer);
     _pool_state = PoolState::InFlight;
 }
@@ -73,6 +74,7 @@ void RnicSsPacket::initialize(
 void RnicSsPacket::addQueueResidence(
         std::uint64_t queue_delay_ps,
         std::uint64_t observed_at_ps) noexcept {
+    _has_load_observation = true;
     if (queue_delay_ps
         > std::numeric_limits<std::uint64_t>::max()
               - _accumulated_queue_delay_ps) {

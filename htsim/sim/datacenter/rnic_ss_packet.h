@@ -63,6 +63,7 @@ public:
     std::uint64_t loadObservedAtPs() const noexcept {
         return _load_observed_at_ps;
     }
+    bool hasLoadObservation() const noexcept { return _has_load_observation; }
 
     PktPriority priority() const override;
     void consumeAtEndpoint();
@@ -95,6 +96,7 @@ private:
     bool _retransmission{false};
     std::uint64_t _accumulated_queue_delay_ps{0};
     std::uint64_t _load_observed_at_ps{0};
+    bool _has_load_observation{false};
     std::shared_ptr<RnicSsPacketLifecycleObserver> _observer;
     PoolState _pool_state{PoolState::Recycled};
 

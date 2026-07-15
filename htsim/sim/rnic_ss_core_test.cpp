@@ -324,12 +324,14 @@ TEST(RnicSsPathSelectorTest, IgnoresReorderedTelemetryAndExpiresOldSamples) {
     EXPECT_FALSE(selector.ingestLoadSample({path, 1, 1000, 1}, 1060));
 
     const auto fresh = selector.select(kPair, 7, 1099);
+    const auto exact_age_limit = selector.select(kPair, 7, 1100);
     const auto expired = selector.select(kPair, 7, 1101);
     const auto position = static_cast<std::size_t>(
         std::distance(fresh.candidates.begin(),
                       std::find(fresh.candidates.begin(), fresh.candidates.end(), path)));
     ASSERT_LT(position, 4U);
     EXPECT_TRUE(fresh.candidate_had_fresh_sample[position]);
+    EXPECT_TRUE(exact_age_limit.candidate_had_fresh_sample[position]);
     EXPECT_FALSE(expired.candidate_had_fresh_sample[position]);
     EXPECT_EQ(expired.candidate_queue_delay_ps[position], 999U);
 }

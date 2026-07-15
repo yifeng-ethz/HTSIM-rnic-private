@@ -114,6 +114,8 @@ TEST(RnicSsRuntimeTest, PhysicalAckBackpressureAndCreditsShareTheSourceSerialize
     EXPECT_FALSE(stats.configured_window_below_control_loop);
     EXPECT_EQ(stats.analytical_queue_bound_bytes, 10717864U);
     EXPECT_GT(stats.source_prbs_data_opportunities, 0U);
+    EXPECT_GT(stats.maximum_receiver_load_sample_age_ps, 0U);
+    EXPECT_GT(stats.maximum_sender_load_sample_age_ps, stats.maximum_receiver_load_sample_age_ps);
 
     ASSERT_FALSE(session->physicalTopology()->switches_lp.empty());
     for (Switch* base : session->physicalTopology()->switches_lp) {

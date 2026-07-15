@@ -1205,9 +1205,15 @@ struct RnicSsRuntime::Impl {
         if (pair.telemetry_sequence == std::numeric_limits<std::uint64_t>::max()) {
             throw std::overflow_error("rnic-ss telemetry sequence exhausted");
         }
+        if (!packet.hasLoadObservation() || packet.loadObservedAtPs() > EventList::now()) {
+            throw std::logic_error("rnic-ss DATA lacks a causal physical load observation");
+        }
+        statistics.maximum_receiver_load_sample_age_ps =
+            std::max(statistics.maximum_receiver_load_sample_age_ps,
+                     EventList::now() - packet.loadObservedAtPs());
         ack.returned_load_sample =
             RnicSsDelayedLoadSample{data->path_id, packet.accumulatedQueueDelayPs(),
-                                    EventList::now(), ++pair.telemetry_sequence};
+                                    packet.loadObservedAtPs(), ++pair.telemetry_sequence};
         queueControl(checkedAdd(EventList::now(), config.extra_telemetry_delay_ps,
                                 "rnic-ss telemetry delay overflow"),
                      RnicSsWirePacketMetadata{
@@ -1226,6 +1232,12 @@ struct RnicSsRuntime::Impl {
     void receiveAck(const RnicSsAckSackMetadata& ack) {
         PairState& pair = requirePair(ack.forward_pair);
         if (ack.returned_load_sample.has_value()) {
+            if (ack.returned_load_sample->observed_at_ps > EventList::now()) {
+                throw std::logic_error("rnic-ss ACK returned a future load observation");
+            }
+            statistics.maximum_sender_load_sample_age_ps =
+                std::max(statistics.maximum_sender_load_sample_age_ps,
+                         EventList::now() - ack.returned_load_sample->observed_at_ps);
             pair.selector.ingestLoadSample(*ack.returned_load_sample, EventList::now());
         }
         const RnicSsAckResult result = pair.ledger.applyAck(ack);

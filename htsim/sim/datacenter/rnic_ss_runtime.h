@@ -95,6 +95,12 @@ struct RnicSsRuntimeStatistics {
     std::uint64_t leaf_shared_bp_enable_events{0};
     std::uint64_t spine_shared_bp_enable_events{0};
     std::uint64_t maximum_active_credit_domains{0};
+    // Age of physically returned path-load information at the two endpoints.
+    // The receiver age starts at the last real switch grant, not at DATA
+    // arrival; the sender age additionally includes ACK serialization and
+    // propagation.
+    std::uint64_t maximum_receiver_load_sample_age_ps{0};
+    std::uint64_t maximum_sender_load_sample_age_ps{0};
     bool configured_window_below_control_loop{false};
 };
 
