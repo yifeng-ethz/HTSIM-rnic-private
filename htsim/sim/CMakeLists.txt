@@ -100,6 +100,11 @@ set(SOURCE_FILES
     queue_lossless_input.cpp
     queue_lossless_output.cpp
     randomqueue.cpp
+    rnic_fluid_manifold.cpp
+    rnic_fluid_manifold_runtime.cpp
+    rnic_max_min_allocator.cpp
+    rnic_packetized_manifold.cpp
+    rnic_packetized_manifold_runtime.cpp
     rng.cpp
     roce.cpp
     rocepacket.cpp
@@ -144,6 +149,11 @@ if ( ENABLE_TESTS )
     # Unit tests.
     set(UNIT_TEST_FILES
         pipe_test
+        rnic_fluid_manifold_test
+        rnic_fluid_manifold_runtime_test
+        rnic_max_min_allocator_test
+        rnic_packetized_manifold_test
+        rnic_packetized_manifold_runtime_test
     )
 
     foreach(UNIT_TEST_FILE ${UNIT_TEST_FILES}) 
