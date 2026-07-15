@@ -33,6 +33,13 @@ EventList::getTheEventList()
     return *EventList::_theEventList;
 }
 
+bool
+EventList::hasPendingSourceAt(simtime_picosec when)
+{
+    const auto range = _pendingsources.equal_range(when);
+    return range.first != range.second;
+}
+
 void
 EventList::setEndtime(simtime_picosec endtime)
 {

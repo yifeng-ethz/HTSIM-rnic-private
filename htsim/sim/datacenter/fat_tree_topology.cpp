@@ -198,6 +198,14 @@ mem_b FatTreeTopologyCfg::selected_switch_shared_buffer_capacity(
     throw std::invalid_argument("unknown fat-tree switch model");
 }
 
+linkspeed_bps FatTreeTopologyCfg::downlink_speed(int tier) const {
+    if (tier < TOR_TIER || tier > CORE_TIER ||
+        tier >= static_cast<int>(_tiers)) {
+        throw std::out_of_range("invalid FatTree downlink tier");
+    }
+    return _downlink_speeds[tier];
+}
+
 FatTreeTopologyCfg::FatTreeTopologyCfg(uint32_t tiers, uint32_t no_of_nodes, linkspeed_bps linkspeed, mem_b queuesize,
                                        simtime_picosec latency, simtime_picosec switch_latency, 
                                        queue_type q, queue_type snd):

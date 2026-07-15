@@ -100,6 +100,8 @@ set(SOURCE_FILES
     queue_lossless_input.cpp
     queue_lossless_output.cpp
     randomqueue.cpp
+    rnic_collective_control.cpp
+    rnic_collective_packet.cpp
     rnic_fluid_manifold.cpp
     rnic_fluid_manifold_runtime.cpp
     rnic_max_min_allocator.cpp
@@ -151,7 +153,10 @@ target_link_libraries(parse_output PRIVATE htsim)
 if ( ENABLE_TESTS )
     # Unit tests.
     set(UNIT_TEST_FILES
+        eventlist_microphase_test
         pipe_test
+        rnic_collective_control_test
+        rnic_collective_packet_test
         rnic_fluid_manifold_test
         rnic_fluid_manifold_runtime_test
         rnic_max_min_allocator_test
