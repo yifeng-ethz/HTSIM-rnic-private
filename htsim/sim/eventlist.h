@@ -43,6 +43,10 @@ public:
     static inline int trafficEventCount() {return EventList::_trafficeventcount;}
     static Handle nullHandle() {return _pendingsources.end();}
     static multimap<simtime_picosec, EventSource*> getPendingSources() {return _pendingsources;}
+    // The currently executing source has already been removed. A runtime can
+    // use this query to settle the remaining sources at an exact timestamp
+    // before it makes an endpoint scheduling decision.
+    static bool hasPendingSourceAt(simtime_picosec when);
 
 
     static EventList& getTheEventList();
