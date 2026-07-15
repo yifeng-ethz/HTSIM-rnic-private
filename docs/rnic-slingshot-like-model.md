@@ -34,7 +34,10 @@ shape as the basic study.  Every node has one 400 Gbit/s RNIC directly attached
 to a leaf.  Replacing `ns-tm3` with `ns-rosetta` isolates switch and congestion
 management behavior; 400 Gbit/s is an experiment normalization, not a Rosetta
 hardware-speed claim.  A native Dragonfly study follows only after this
-controlled comparison.
+controlled comparison. It is reported as a separate topology-matched matrix;
+it does not replace the Clos curves or compare `DCQCN/Clos` directly with
+`rnic-ss/Dragonfly` under an algorithm-only claim. See
+`docs/rnic-dragonfly-routing/README.md`.
 
 One traffic class is used.  The normal `rnic-ss` baseline does not use ECN or
 PFC.  Link errors are disabled, so normal runs should be congestion-lossless.
@@ -52,9 +55,11 @@ No sender reads a remote queue or global flow table.
    the most recent physically returned remote-load estimate. Equal costs keep
    the deterministic hashed candidate order; hysteresis prevents route
    flapping.
-3. DATA accumulates path-load metadata as it crosses `ns-rosetta` queues.
-4. The receiver returns that sample in a physical ACK/SACK.  Only ACK arrival
-   updates the source estimate; its age is recorded.
+3. DATA accumulates path-load metadata as it crosses `ns-rosetta` queues. The
+   observation time is the last physical switch grant included in the sample.
+4. The receiver returns that sample in a physical ACK/SACK without refreshing
+   its observation time to receiver arrival. Only ACK arrival updates the
+   source estimate; its age is measured from the switch observation.
 5. Backpressure enable/disable and packet credits are also physical, serialized
    control packets.  They receive strict non-preemptive priority but cannot
    interrupt a DATA packet already on a link.

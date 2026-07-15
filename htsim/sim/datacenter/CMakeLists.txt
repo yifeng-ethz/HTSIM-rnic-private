@@ -32,6 +32,10 @@ set(LIB_SOURCES
     slimfly_switch.cpp
     dragonfly_topology.cpp
     dragonfly_switch.cpp
+    dragonfly_endpoint_placement.cpp
+    dragonfly_progressive_congestion.cpp
+    dragonfly_progressive_routing.cpp
+    dragonfly_route_state_store.cpp
     generic_topology.cpp
 )
 
@@ -181,6 +185,46 @@ if ( ENABLE_TESTS )
     target_link_libraries(
         rnic_ss_runtime_test PRIVATE htsim_dc htsim gtest_main)
     gtest_discover_tests(rnic_ss_runtime_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
+    add_executable(
+        dragonfly_progressive_routing_test
+        dragonfly_progressive_routing_test.cpp)
+    target_link_libraries(
+        dragonfly_progressive_routing_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(dragonfly_progressive_routing_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
+    add_executable(
+        dragonfly_progressive_congestion_test
+        dragonfly_progressive_congestion_test.cpp)
+    target_link_libraries(
+        dragonfly_progressive_congestion_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(dragonfly_progressive_congestion_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
+    add_executable(
+        dragonfly_route_state_store_test
+        dragonfly_route_state_store_test.cpp)
+    target_link_libraries(
+        dragonfly_route_state_store_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(dragonfly_route_state_store_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
+    add_executable(
+        dragonfly_endpoint_placement_test
+        dragonfly_endpoint_placement_test.cpp)
+    target_link_libraries(
+        dragonfly_endpoint_placement_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(dragonfly_endpoint_placement_test
         PROPERTIES LABELS "unit"
         PROPERTIES TIMEOUT 60
     )
