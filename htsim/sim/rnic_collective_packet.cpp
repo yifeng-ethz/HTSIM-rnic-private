@@ -90,8 +90,9 @@ void RnicCollectivePacket::validateData(const RnicCollectiveDataMetadata& metada
 }
 
 void RnicCollectivePacket::validateDeclaration(const RnicCollectiveDeclareMetadata& metadata) {
-    if (metadata.nflow == 0) {
-        throw std::invalid_argument("rnic-cn DECLARE nflow must be nonzero");
+    if (metadata.nflow_ppm == 0 || metadata.nflow_ppm > 1000000) {
+        throw std::invalid_argument(
+            "rnic-cn DECLARE nflow_ppm must be in [1, one flow]");
     }
 }
 

@@ -77,8 +77,8 @@ RnicCollectiveFinalLedger twoPacketLedger() {
     return {1500, 1628, 2};
 }
 
-RnicCollectiveDeclareMetadata declareMetadata(std::uint32_t nflow = 1) {
-    return {nflow};
+RnicCollectiveDeclareMetadata declareMetadata(std::uint32_t nflow_ppm = 1000000) {
+    return {nflow_ppm};
 }
 
 TEST(RnicCollectivePacketTest, CarriesFullAtlahsIdentityAndConsumesDataExplicitly) {
@@ -154,9 +154,9 @@ TEST(RnicCollectivePacketTest, DeclareCarriesOnlyNflow) {
     auto observer = std::make_shared<RecordingObserver>();
 
     RnicCollectivePacket* packet = RnicCollectivePacket::newDeclare(
-        flow, route, 51, 0x100000010ULL, 2, 7, 64, declareMetadata(1), observer);
+        flow, route, 51, 0x100000010ULL, 2, 7, 64, declareMetadata(), observer);
 
-    EXPECT_EQ(packet->declaration().nflow, 1U);
+    EXPECT_EQ(packet->declaration().nflow_ppm, 1000000U);
     EXPECT_THROW(packet->data(), std::logic_error);
     EXPECT_THROW(packet->grant(), std::logic_error);
     packet->sendOn();

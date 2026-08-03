@@ -16,8 +16,8 @@ constexpr std::uint64_t kControlDeadline = 1000;
 
 RnicCollectiveMembershipDelta declare(
         std::uint64_t flow_id,
-        std::uint32_t nflow = 1) {
-    return {{{flow_id, nflow}}, {}};
+        std::uint32_t nflow_ppm = RnicCollectiveController::kFullFlowPpm) {
+    return {{{flow_id, nflow_ppm}}, {}};
 }
 
 RnicSenderGrantGate admittedGate(
@@ -32,31 +32,35 @@ RnicSenderGrantGate admittedGate(
 
 TEST(RnicCollectiveControllerTest, DirectRateUsesDeclaredNflowAndMargin) {
     RnicCollectiveController controller(kCapacity, kControlDeadline);
-    const auto first = controller.updateMembership(declare(11, 3));
+    const auto first = controller.updateMembership(
+        {{{11, RnicCollectiveController::kFullFlowPpm},
+          {12, RnicCollectiveController::kFullFlowPpm},
+          {13, RnicCollectiveController::kFullFlowPpm}},
+         {}});
     ASSERT_TRUE(first.has_value());
     EXPECT_EQ(first->membership_epoch, 1U);
-    EXPECT_EQ(first->n_hat, 3U);
+    EXPECT_EQ(first->n_hat, 3000000U);
     EXPECT_EQ(first->wire_rate_bps, UINT64_C(30000000000));
-    EXPECT_EQ(first->accepted_flow_ids, (std::vector<std::uint64_t>{11}));
+    EXPECT_EQ(first->accepted_flow_ids, (std::vector<std::uint64_t>{11, 12, 13}));
 
-    const auto second = controller.updateMembership(declare(12, 1));
+    const auto second = controller.updateMembership(declare(14));
     ASSERT_TRUE(second.has_value());
     EXPECT_EQ(second->membership_epoch, 2U);
-    EXPECT_EQ(second->n_hat, 4U);
+    EXPECT_EQ(second->n_hat, 4000000U);
     EXPECT_EQ(second->wire_rate_bps, UINT64_C(22500000000));
-    EXPECT_EQ(controller.activeFlowCount(), 2U);
+    EXPECT_EQ(controller.activeFlowCount(), 4U);
     EXPECT_EQ(controller.currentWireRateBps(), second->wire_rate_bps);
 }
 
 TEST(RnicCollectiveControllerTest, MembershipMutationIsTransactionalAndIdempotent) {
     RnicCollectiveController controller(kCapacity, kControlDeadline);
-    ASSERT_TRUE(controller.updateMembership(declare(20, 2)).has_value());
+    ASSERT_TRUE(controller.updateMembership(declare(20, 500000)).has_value());
     const std::uint64_t epoch = controller.membershipEpoch();
 
-    EXPECT_FALSE(controller.updateMembership(declare(20, 2)).has_value());
+    EXPECT_FALSE(controller.updateMembership(declare(20, 500000)).has_value());
     EXPECT_EQ(controller.membershipEpoch(), epoch);
     EXPECT_THROW(
-        controller.updateMembership({{{20, 3}}, {}}),
+        controller.updateMembership({{{20, 600000}}, {}}),
         std::invalid_argument);
     EXPECT_THROW(
         controller.updateMembership({{{21, 1}, {21, 1}}, {}}),
@@ -84,7 +88,7 @@ TEST(RnicCollectiveControllerTest, AcceptAndMarkedAckCarryCurrentRate) {
         controller.acceptFor(30, 10000, 2000, 20000);
     EXPECT_EQ(accept.kind, RnicCollectiveGrantKind::Accept);
     EXPECT_EQ(accept.membership_epoch, 1U);
-    EXPECT_EQ(accept.n_hat, 1U);
+    EXPECT_EQ(accept.n_hat, 1000000U);
     EXPECT_EQ(accept.wire_rate_bps, UINT64_C(90000000000));
     EXPECT_FALSE(accept.marked_data_ack);
 
@@ -93,7 +97,7 @@ TEST(RnicCollectiveControllerTest, AcceptAndMarkedAckCarryCurrentRate) {
         controller.markedFeedbackFor(30, 11000, 12000, 22000);
     EXPECT_EQ(update.kind, RnicCollectiveGrantKind::Update);
     EXPECT_EQ(update.membership_epoch, 2U);
-    EXPECT_EQ(update.n_hat, 2U);
+    EXPECT_EQ(update.n_hat, 2000000U);
     EXPECT_EQ(update.wire_rate_bps, UINT64_C(45000000000));
     EXPECT_TRUE(update.marked_data_ack);
     const RnicCollectiveGrant refresh =
@@ -259,11 +263,54 @@ TEST(RnicCollectiveControlTest, RejectsInvalidParametersAndOverflow) {
     EXPECT_THROW(
         controller.updateMembership(declare(1, 0)),
         std::invalid_argument);
-    ASSERT_TRUE(controller.updateMembership(declare(
-        1, std::numeric_limits<std::uint32_t>::max())).has_value());
     EXPECT_THROW(
-        controller.updateMembership(declare(2, 1)),
+        controller.updateMembership(
+            declare(1, RnicCollectiveController::kFullFlowPpm + 1)),
+        std::invalid_argument);
+    // Fill membership to just under the uint32 feedback field, then push the
+    // accumulated ppm total over it with one more whole flow.
+    RnicCollectiveMembershipDelta bulk;
+    for (std::uint64_t id = 1; id <= 4294; ++id) {
+        bulk.declarations.push_back(
+            {id, RnicCollectiveController::kFullFlowPpm});
+    }
+    ASSERT_TRUE(controller.updateMembership(bulk).has_value());
+    EXPECT_THROW(
+        controller.updateMembership(
+            declare(5000, RnicCollectiveController::kFullFlowPpm)),
         std::overflow_error);
 }
 
 }  // namespace
+
+TEST(RnicCollectiveControllerTest, FractionalDeclarationsReleaseUnusedShare) {
+    RnicCollectiveController controller(UINT64_C(100000000000), 10000000);
+
+    // One full flow plus one quarter flow: n_hat = 1.25 flows in ppm, so the
+    // grant is margin * C / 1.25 instead of margin * C / 2.
+    RnicCollectiveMembershipDelta delta;
+    delta.declarations = {{1, RnicCollectiveController::kFullFlowPpm},
+                          {2, 250000}};
+    const auto update = controller.updateMembership(delta);
+    ASSERT_TRUE(update.has_value());
+    EXPECT_EQ(update->n_hat, 1250000U);
+    EXPECT_EQ(update->wire_rate_bps, UINT64_C(72000000000));
+
+    // Retiring the fractional member restores the full-flow grant exactly.
+    RnicCollectiveMembershipDelta retire;
+    retire.retired_flow_ids = {2};
+    const auto after = controller.updateMembership(retire);
+    ASSERT_TRUE(after.has_value());
+    EXPECT_EQ(after->n_hat, 1000000U);
+    EXPECT_EQ(after->wire_rate_bps, UINT64_C(90000000000));
+}
+
+TEST(RnicCollectiveControllerTest, RejectsDeclarationsOutsidePpmDomain) {
+    RnicCollectiveController controller(UINT64_C(100000000000), 10000000);
+    RnicCollectiveMembershipDelta zero;
+    zero.declarations = {{1, 0}};
+    EXPECT_THROW(controller.updateMembership(zero), std::invalid_argument);
+    RnicCollectiveMembershipDelta beyond;
+    beyond.declarations = {{1, RnicCollectiveController::kFullFlowPpm + 1}};
+    EXPECT_THROW(controller.updateMembership(beyond), std::invalid_argument);
+}

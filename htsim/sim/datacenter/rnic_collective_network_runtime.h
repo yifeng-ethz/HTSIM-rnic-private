@@ -37,6 +37,11 @@ struct RnicCollectiveNetworkConfig {
     // Sender-visible overtime for a retry that receives neither a subsequent
     // exact-gap NACK nor a physical GAP_RESOLVED closure.
     std::uint64_t retransmission_rto_ps{50000000000ULL};
+    // When true, a sender whose whole transfer fits inside one control round
+    // trip of granted service declares a proportionally smaller membership
+    // contribution (in ppm of a flow), so the unused bottleneck share stays
+    // grantable to the other members. Off keeps every DECLARE at one flow.
+    bool fractional_nflow{false};
 };
 
 struct RnicCollectiveRecoveryStatistics {

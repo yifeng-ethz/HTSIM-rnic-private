@@ -86,7 +86,8 @@ struct RnicCollectiveRetireMetadata {
 
 // DECLARE exposes only the receiver's explicit-rate input.
 struct RnicCollectiveDeclareMetadata {
-    std::uint32_t nflow;
+    // Membership contribution in ppm of one flow, in [1, one flow].
+    std::uint32_t nflow_ppm;
 };
 
 // CREATED plus exactly one terminal observation gives the integration a

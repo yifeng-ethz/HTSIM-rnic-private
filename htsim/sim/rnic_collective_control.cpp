@@ -37,12 +37,14 @@ RnicCollectiveController::updateMembership(
     std::map<std::uint64_t, std::uint32_t> declarations;
     for (const RnicCollectiveMembershipDeclaration& declaration :
          delta.declarations) {
-        if (declaration.nflow == 0) {
+        if (declaration.nflow_ppm == 0 ||
+            declaration.nflow_ppm > kFullFlowPpm) {
             throw std::invalid_argument(
-                "rnic-cn membership declaration nflow must be nonzero");
+                "rnic-cn membership declaration nflow_ppm must be in "
+                "[1, one flow]");
         }
         if (!declarations.emplace(
-                 declaration.flow_id, declaration.nflow).second) {
+                 declaration.flow_id, declaration.nflow_ppm).second) {
             throw std::invalid_argument(
                 "rnic-cn membership delta contains duplicate flow ids");
         }
@@ -98,9 +100,8 @@ RnicCollectiveController::updateMembership(
     if (next_n_hat != 0) {
         const std::uint64_t numerator =
             _bottleneck_wire_capacity_bps * _margin_ppm;
-        const std::uint64_t denominator =
-            static_cast<std::uint64_t>(kPartsPerMillion) * next_n_hat;
-        next_rate = numerator / denominator;
+        // next_n_hat is already in ppm of a flow, so no further scaling.
+        next_rate = numerator / next_n_hat;
         if (next_rate == 0) {
             throw std::overflow_error(
                 "rnic-cn active membership produces a zero wire-rate grant");
@@ -187,7 +188,7 @@ bool RnicCollectiveController::contains(std::uint64_t flow_id) const {
     return _active_nflow_by_flow.count(flow_id) != 0;
 }
 
-std::uint32_t RnicCollectiveController::effectiveFlowCount() const {
+std::uint32_t RnicCollectiveController::effectiveFlowPpm() const {
     std::uint64_t result = 0;
     for (const auto& active : _active_nflow_by_flow) {
         result += active.second;
@@ -200,15 +201,13 @@ std::uint32_t RnicCollectiveController::effectiveFlowCount() const {
 }
 
 std::uint64_t RnicCollectiveController::currentWireRateBps() const {
-    const std::uint32_t n_hat = effectiveFlowCount();
-    if (n_hat == 0) {
+    const std::uint32_t n_hat_ppm = effectiveFlowPpm();
+    if (n_hat_ppm == 0) {
         return 0;
     }
     const std::uint64_t numerator =
         _bottleneck_wire_capacity_bps * _margin_ppm;
-    const std::uint64_t denominator =
-        static_cast<std::uint64_t>(kPartsPerMillion) * n_hat;
-    return numerator / denominator;
+    return numerator / n_hat_ppm;
 }
 
 RnicCollectiveGrant RnicCollectiveController::grantFor(
@@ -233,7 +232,7 @@ RnicCollectiveGrant RnicCollectiveController::grantFor(
     }
     return {flow_id,
             _membership_epoch,
-            effectiveFlowCount(),
+            effectiveFlowPpm(),
             wire_rate_bps,
             effective_time_ps,
             kind,

@@ -664,6 +664,37 @@ void RnicCollectiveNetworkRuntime::Impl::setup(std::uint32_t node_count,
     is_setup = true;
 }
 
+namespace {
+
+// Membership contribution of one sender in ppm of a flow. With fractional
+// declarations enabled, a transfer that fits inside one control round trip
+// (2 * one-way deadline) of full granted service reserves only its
+// proportional share, rounded up; everything larger declares a whole flow.
+std::uint32_t declaredNflowPpm(const RnicCollectiveNetworkConfig& config,
+                               std::uint64_t total_wire_bytes) {
+    if (!config.fractional_nflow) {
+        return RnicCollectiveController::kFullFlowPpm;
+    }
+    const std::uint64_t granted_bits_per_second =
+        config.access_wire_capacity_bps / RnicCollectiveController::kPartsPerMillion *
+        config.margin_ppm;
+    const std::uint64_t round_trip_ps = 2 * config.control_deadline_ps;
+    // bytes of granted service in one control round trip
+    const std::uint64_t budget_bytes =
+        granted_bits_per_second / 8 * round_trip_ps / 1000000000000ULL;
+    if (budget_bytes == 0 || total_wire_bytes >= budget_bytes) {
+        return RnicCollectiveController::kFullFlowPpm;
+    }
+    const std::uint64_t ppm =
+        (total_wire_bytes * RnicCollectiveController::kPartsPerMillion +
+         budget_bytes - 1) /
+        budget_bytes;
+    return static_cast<std::uint32_t>(
+        std::max<std::uint64_t>(1, ppm));
+}
+
+}  // namespace
+
 void RnicCollectiveNetworkRuntime::Impl::send(const AtlahsFlowRequest& request) {
     if (!is_setup) {
         throw std::logic_error("rnic-cn runtime has not been set up");
@@ -693,7 +724,8 @@ void RnicCollectiveNetworkRuntime::Impl::send(const AtlahsFlowRequest& request) 
         request.source,
         request.destination,
         config.control_wire_bytes,
-        RnicCollectiveDeclareMetadata{1},
+        RnicCollectiveDeclareMetadata{
+            declaredNflowPpm(config, final_ledger.total_wire_bytes)},
         std::nullopt,
         std::nullopt,
         EventList::now(),
@@ -1151,8 +1183,11 @@ void RnicCollectiveNetworkRuntime::Impl::processEndpointArrivals(
                     throw std::logic_error("rnic-cn receiver observed DECLARE without nflow");
                 }
                 // The current runtime starts one physical L4 flow per request.
-                if (arrival.declaration->nflow != 1) {
-                    throw std::invalid_argument("rnic-cn DECLARE requires nflow=1");
+                if (arrival.declaration->nflow_ppm == 0 ||
+                    arrival.declaration->nflow_ppm >
+                        RnicCollectiveController::kFullFlowPpm) {
+                    throw std::invalid_argument(
+                        "rnic-cn DECLARE nflow_ppm must be in [1, one flow]");
                 }
                 NodeState& receiver =
                     requireNode(flow.request.destination);
@@ -1168,7 +1203,7 @@ void RnicCollectiveNetworkRuntime::Impl::processEndpointArrivals(
                 MembershipChangeSet& change =
                     receiver.membership_changes[now_ps];
                 if (!change.declared_nflow_by_flow
-                         .emplace(flow.request.flow_id, arrival.declaration->nflow)
+                         .emplace(flow.request.flow_id, arrival.declaration->nflow_ppm)
                          .second) {
                     throw std::logic_error(
                         "rnic-cn membership change duplicates DECLARE");
@@ -2101,7 +2136,8 @@ void RnicCollectiveNetworkRuntime::Impl::processGrantLeaseExpiries(TimePs now_ps
              flow.request.source,
              flow.request.destination,
              config.control_wire_bytes,
-             RnicCollectiveDeclareMetadata{1},
+             RnicCollectiveDeclareMetadata{
+                 declaredNflowPpm(config, flow.final_ledger.total_wire_bytes)},
              std::nullopt,
              std::nullopt,
              now_ps,

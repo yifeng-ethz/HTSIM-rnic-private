@@ -33,7 +33,8 @@ struct RnicCollectiveGrant {
 
 struct RnicCollectiveMembershipDeclaration {
     std::uint64_t flow_id;
-    std::uint32_t nflow;
+    // Membership contribution in ppm of one flow, in [1, kFullFlowPpm].
+    std::uint32_t nflow_ppm;
 };
 
 struct RnicCollectiveMembershipDelta {
@@ -52,12 +53,19 @@ struct RnicCollectiveMembershipUpdate {
 };
 
 // Receiver-side membership and direct explicit-rate calculation for rnic-cn.
-// N_hat is the sum of active DECLARE nflow contributions. The runtime carries
-// every declaration and feedback packet in band through the simulated Clos.
+// N_hat is the sum of active DECLARE contributions in ppm of a flow; the
+// grant is margin * C / N_hat, so fractional declarations release unused
+// bottleneck share to the remaining members. The runtime carries every
+// declaration and feedback packet in band through the simulated Clos.
 class RnicCollectiveController {
 public:
     static constexpr std::uint32_t kPartsPerMillion = 1000000;
     static constexpr std::uint32_t kDefaultMarginPpm = 900000;
+    // One whole flow's membership contribution. Declarations carry nflow in
+    // parts-per-million of a flow so a short sender (payload below one
+    // control round trip of granted transfer) can reserve proportionally
+    // less of the bottleneck; N_hat sums these ppm contributions.
+    static constexpr std::uint32_t kFullFlowPpm = 1000000;
 
     explicit RnicCollectiveController(
         std::uint64_t bottleneck_wire_capacity_bps,
@@ -96,7 +104,8 @@ public:
     std::size_t activeFlowCount() const noexcept {
         return _active_nflow_by_flow.size();
     }
-    std::uint32_t effectiveFlowCount() const;
+    // Sum of active contributions, in ppm of a flow.
+    std::uint32_t effectiveFlowPpm() const;
     std::uint64_t currentWireRateBps() const;
     std::uint64_t membershipEpoch() const noexcept { return _membership_epoch; }
     std::uint64_t bottleneckWireCapacityBps() const noexcept {
