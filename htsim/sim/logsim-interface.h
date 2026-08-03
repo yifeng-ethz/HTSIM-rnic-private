@@ -12,6 +12,8 @@
 #include "uec.h"
 #include "atlahs_htsim_api.h"
 #include "atlahs_event.h"
+#include "atlahs_flow_runtime.h"
+#include <functional>
 #include <string>
 #include <unordered_map>
 
@@ -30,6 +32,7 @@ enum ProtocolName {
     UEC_DROP_PROTOCOL,
     EQDS_PROTOCOL,
     SENDER_PROTOCOL,
+    RNIC_PROTOCOL,
 };
 
 /* ... */
@@ -66,6 +69,12 @@ class LogSimInterface {
     void execute_null_compute(graph_node_properties elem, int p);
     void set_protocol(ProtocolName name) { _protocolName = name; };
     ProtocolName get_protocol() { return _protocolName; };
+    void setNetworkTiming(AtlahsNetworkTiming timing) { _network_timing = timing; }
+    AtlahsNetworkTiming getNetworkTiming() const { return _network_timing; }
+    bool runtimeHasPendingPhysicalWork() const noexcept {
+        return htsim_api != nullptr
+               && htsim_api->runtimeHasPendingPhysicalWork();
+    }
     void set_cwd(int cwd);
     void setReuse(bool reuse) { _use_good_entropies = reuse; };
     void setIgnoreEcnAck(bool ignore_ecn_ack) {
@@ -96,7 +105,7 @@ class LogSimInterface {
     std::uint64_t htsim_time = 0;
     bool nic_available[8192] = {true};
 
-    AtlahsHtsimApi* htsim_api;
+    AtlahsHtsimApi* htsim_api = nullptr;
     static int percentage_lgs;
     bool have_more = false;
     std::priority_queue<graph_node_properties,std::vector<graph_node_properties>,aqcompare_func> aq;
@@ -112,26 +121,32 @@ class LogSimInterface {
 
   private:
     bool debug_prints = false;
-    TrafficLoggerSimple *_flow;
-    UecLogger *_logger;
-    EventList *_eventlist;
-    FatTreeTopology *_topo = NULL;
-    std::vector<const Route *> ***_netPaths;
-    int _cwd;
-    ComputeEvent *compute_events_handler;
-    NullEvent *null_events_handler;
-    graph_node_properties *_latest_recv;
+    TrafficLoggerSimple *_flow = nullptr;
+    UecLogger *_logger = nullptr;
+    EventList *_eventlist = nullptr;
+    FatTreeTopology *_topo = nullptr;
+    std::vector<const Route *> ***_netPaths = nullptr;
+    int _cwd = 0;
+    ComputeEvent *compute_events_handler = nullptr;
+    NullEvent *null_events_handler = nullptr;
+    graph_node_properties *_latest_recv = nullptr;
     bool compute_if_finished = false;
     bool time_over = false;
-    ProtocolName _protocolName;
-    int _queuesize;
+    ProtocolName _protocolName = UEC_PROTOCOL;
+    AtlahsNetworkTiming _network_timing = AtlahsNetworkTiming::LegacyLogSimGap;
+    int _queuesize = 0;
     std::unordered_map<int, NdpPullPacer *> _puller_map;
-    bool _use_good_entropies;
-    bool _ignore_ecn_ack;
-    bool _ignore_ecn_data;
-    int _num_entropies;
+    bool _use_good_entropies = false;
+    bool _ignore_ecn_ack = false;
+    bool _ignore_ecn_data = false;
+    int _num_entropies = 0;
     int path_entropy_size = 256;
 };
 
-int start_lgs(std::string, LogSimInterface &);
+using AtlahsGoalLayoutReady =
+    std::function<void(const AtlahsHtsimApi::GoalLayout&)>;
+
+int start_lgs(std::string,
+              LogSimInterface&,
+              AtlahsGoalLayoutReady goal_layout_ready = {});
 #endif /* LOGSIM_HELPER_H */
