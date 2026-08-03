@@ -235,7 +235,7 @@ void rejectCrossProfileOptions(const RnicAtlahsCliOptions& options) {
         supplied.global_prbs_seed || supplied.control_deadline_ps || supplied.margin_ppm ||
         supplied.control_wire_bytes || supplied.ring_delay_window_ps ||
         supplied.ring_release_tick_ps || supplied.ring_wire_capacity_bytes ||
-        supplied.ns_tm3_shared_buffer_bytes || supplied.cn_fractional_nflow ||
+        supplied.ns_tm3_shared_buffer_bytes ||
         supplied.cn_maximum_retransmissions ||
         supplied.cn_retransmission_rto_ps;
     if (options.profile != RnicProfile::CollectiveNetwork && supplied_collective) {
@@ -369,15 +369,6 @@ RnicAtlahsCliOptions parseRnicAtlahsCli(int argc, const char* const argv[]) {
         } else if (option == "-rnic_cn_ns_tm3_buffer_bytes") {
             options.collective.ns_tm3_shared_buffer_bytes = parseUnsigned(option, value);
             options.explicitly_supplied.ns_tm3_shared_buffer_bytes = true;
-        } else if (option == "-rnic_cn_fractional_nflow") {
-            if (value == "on") {
-                options.collective.fractional_nflow = true;
-            } else if (value == "off") {
-                options.collective.fractional_nflow = false;
-            } else {
-                throw optionError(option, "value must be on or off");
-            }
-            options.explicitly_supplied.cn_fractional_nflow = true;
         } else if (option == "-rnic_cn_max_retransmissions") {
             options.collective.maximum_retransmissions = parseUnsigned32(option, value);
             options.explicitly_supplied.cn_maximum_retransmissions = true;
@@ -507,7 +498,6 @@ std::string rnicAtlahsCliUsage(const std::string& program_name) {
              " [-rnic_cn_ring_tick_ps PS]"
              " [-rnic_cn_ring_capacity_bytes BYTES]"
              " [-rnic_cn_ns_tm3_buffer_bytes BYTES]"
-             " [-rnic_cn_fractional_nflow on|off]"
              " [-rnic_cn_max_retransmissions N]"
              " [-rnic_cn_retransmission_rto_ps PS]\n"
           << "rnic-ss: [-topo FILE]"

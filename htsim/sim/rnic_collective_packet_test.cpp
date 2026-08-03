@@ -230,7 +230,7 @@ TEST(RnicCollectivePacketTest, CarriesTypedGrantMetadataAtHighPriority) {
     auto observer = std::make_shared<RecordingObserver>();
     const RnicCollectiveGrant grant{
         0xabcdef0123456789ULL, 11, 37, 8000000000ULL, 123456,
-        RnicCollectiveGrantKind::Update, 124000, 130000, true,
+        RnicCollectiveGrantKind::Update, 0, 0,
     };
 
     RnicCollectivePacket* packet =
@@ -244,7 +244,9 @@ TEST(RnicCollectivePacketTest, CarriesTypedGrantMetadataAtHighPriority) {
     EXPECT_EQ(packet->grant().wire_rate_bps, 8000000000ULL);
     EXPECT_EQ(packet->grant().effective_time_ps, 123456U);
     EXPECT_EQ(packet->grant().kind, RnicCollectiveGrantKind::Update);
-    EXPECT_TRUE(packet->grant().marked_data_ack);
+    // Vestigial lease-era fields stay on the wire, pinned to zero.
+    EXPECT_EQ(packet->grant().feedback_deadline_ps, 0U);
+    EXPECT_EQ(packet->grant().lease_expiry_ps, 0U);
 
     packet->sendOn();
     ASSERT_EQ(observer->observations.size(), 2U);
@@ -253,13 +255,12 @@ TEST(RnicCollectivePacketTest, CarriesTypedGrantMetadataAtHighPriority) {
 
     const RnicCollectiveGrant accept{
         grant.flow_id, 12, 38, 7000000000ULL, 223456,
-        RnicCollectiveGrantKind::Accept, 200000, 300000, false,
+        RnicCollectiveGrantKind::Accept, 0, 0,
     };
     RnicCollectivePacket* accept_packet =
         RnicCollectivePacket::newAccept(flow, route, 93, 9, 4, 80, accept, observer);
     EXPECT_EQ(accept_packet->kind(), RnicCollectivePacketKind::ACCEPT);
     EXPECT_EQ(accept_packet->grant().kind, RnicCollectiveGrantKind::Accept);
-    EXPECT_FALSE(accept_packet->grant().marked_data_ack);
     accept_packet->sendOn();
     ASSERT_EQ(observer->observations.size(), 4U);
     EXPECT_EQ(observer->observations[3].lifecycle,
@@ -370,9 +371,15 @@ TEST(RnicCollectivePacketTest, RejectsLossyWireAndLedgerConversions) {
         std::invalid_argument);
 
     RnicCollectiveGrant wrong_kind{
-        1, 1, 1, 1, 10, RnicCollectiveGrantKind::Accept, 5, 20, false};
+        1, 1, 1, 1, 10, RnicCollectiveGrantKind::Accept, 0, 0};
     EXPECT_THROW(
         RnicCollectivePacket::newGrantUpdate(flow, route, 1, 1, 0, 64, wrong_kind, observer),
+        std::invalid_argument);
+    // The vestigial lease-era wire fields must stay zero.
+    RnicCollectiveGrant vestigial{
+        1, 1, 1, 1, 10, RnicCollectiveGrantKind::Update, 5, 20};
+    EXPECT_THROW(
+        RnicCollectivePacket::newGrantUpdate(flow, route, 1, 1, 0, 64, vestigial, observer),
         std::invalid_argument);
     EXPECT_TRUE(observer->observations.empty());
 }

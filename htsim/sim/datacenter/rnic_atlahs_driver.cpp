@@ -73,7 +73,6 @@ RnicAtlahsRuntimeConfig collectiveRuntimeConfig(const RnicAtlahsCliOptions& opti
         {},
         options.collective.maximum_retransmissions,
         options.collective.retransmission_rto_ps,
-        options.collective.fractional_nflow,
     };
 }
 
@@ -170,14 +169,16 @@ std::string renderRnicAtlahsModelManifest(const RnicAtlahsCliOptions& options,
             manifest << " latency_source=topology-file";
         }
         manifest << '\n';
-        manifest << "[RNIC manifest] declaration_gate=physical-accept"
+        manifest << "[RNIC manifest] declaration_gate=declare-and-go"
                  << " declare_cca_field=nflow_ppm"
-                 << " fractional_nflow="
-                 << (options.collective.fractional_nflow ? "on" : "off")
+                 << " fractional_nflow=always"
                  << " declare_debug_fields=collective_id,expected_fan_in"
                  << " declare_debug_affects_rx_cca=false"
-                 << " grant=margin*C/n_hat"
+                 << " grant=margin*C/n_hat-scaled-by-own-nflow"
                  << " n_hat=sum-active-declare-nflow"
+                 << " rate_feedback=every-resequenced-ack-window-frozen-snapshot"
+                 << " rate_effect=receiver-boundary-k-plus-2"
+                 << " startup_rate=full-reservation-ledger-allocation"
                  << " margin_ppm=" << options.collective.margin_ppm
                  << " control_deadline_ps=" << options.collective.control_deadline_ps
                  << " control_wire_bytes=" << options.collective.control_wire_bytes

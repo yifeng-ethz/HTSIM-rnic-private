@@ -54,6 +54,10 @@ public:
         runtime.replayResolvedGapNackForTesting(flow_id, packet_index);
     }
 
+    static void redeclareFlow(RnicCollectiveNetworkRuntime& runtime, AtlahsFlowId flow_id) {
+        runtime.redeclareFlowForTesting(flow_id);
+    }
+
     static std::uint64_t maxOriginalRelease(const RnicCollectiveNetworkRuntime& runtime,
                                             AtlahsFlowId flow_id) {
         return runtime.maxOriginalReleaseForTesting(flow_id);
@@ -87,13 +91,6 @@ public:
                                                       std::uint32_t transmission_attempt) {
         return runtime.retryDispatchForTesting(flow_id, transmission_attempt);
     }
-
-    static bool markFreshData(RnicCollectiveNetworkRuntime& runtime,
-                              AtlahsFlowId flow_id,
-                              std::uint64_t eta_ps) {
-        return runtime.markFreshDataForTesting(flow_id, eta_ps);
-    }
-
 };
 
 namespace {
@@ -172,7 +169,7 @@ private:
     std::function<void()> callback_;
 };
 
-TEST(RnicCollectiveNetworkRuntimeTest, PhysicalAcceptGatesDataAndRetireWaitsForRxLedger) {
+TEST(RnicCollectiveNetworkRuntimeTest, DeclareAndGoOpensDataImmediatelyAtTheLedgerAllocation) {
     TwoTierCollectiveFixture fixture;
     RnicCollectiveNetworkRuntime runtime(fixture.events, *fixture.topology,
                                          fixture.runtimeConfig());
@@ -188,18 +185,19 @@ TEST(RnicCollectiveNetworkRuntimeTest, PhysicalAcceptGatesDataAndRetireWaitsForR
     runtime.send(request);
     EXPECT_TRUE(runtime.hasPendingPhysicalWork());
     EXPECT_FALSE(runtime.flow(request.flow_id).declaration_dispatched);
+    EXPECT_EQ(runtime.flow(request.flow_id).sender_phase, RnicSenderGrantGate::Phase::Idle);
     EXPECT_EQ(runtime.flow(request.flow_id).source_payload_bytes_dispatched, 0U);
 
-    fixture.stepUntil([&] {
-        return runtime.flow(request.flow_id).sender_phase ==
-               RnicSenderGrantGate::Phase::AcceptPendingEffectiveTime;
-    });
-    const RnicCollectiveFlowSnapshot gated = runtime.flow(request.flow_id);
-    EXPECT_EQ(gated.current_wire_rate_bps, 0U);
-    EXPECT_EQ(gated.source_payload_bytes_dispatched, 0U);
-    EXPECT_FALSE(gated.completion_notified);
+    fixture.stepUntil([&] { return runtime.flow(request.flow_id).declaration_dispatched; });
+    const RnicCollectiveFlowSnapshot declared = runtime.flow(request.flow_id);
+    // Declare-and-go: the gate is Active the moment the DECLARE leaves the
+    // source serializer, at the sole-sender ledger allocation. wire = 2192,
+    // budget = 225000, nflow = 9743; the double integer floor gives
+    // floor(floor(9e16 / 9743) * 9743 / 1e6).
+    EXPECT_EQ(declared.sender_phase, RnicSenderGrantGate::Phase::Active);
+    EXPECT_EQ(declared.current_wire_rate_bps, UINT64_C(89999999999));
 
-    // RETIRE bypasses the DATA Ring-CAM and can arrive first. It must not
+    // RETIRE bypasses the DATA Ring-CAM and arrives first. It must not
     // remove receiver membership until the exact DATA ledger reaches the
     // shared destination serializer boundary.
     fixture.stepUntil([&] { return runtime.flow(request.flow_id).retire_received; });
@@ -208,8 +206,9 @@ TEST(RnicCollectiveNetworkRuntimeTest, PhysicalAcceptGatesDataAndRetireWaitsForR
     EXPECT_FALSE(retired_early.receiver_retired);
     EXPECT_EQ(runtime.receiverActiveFlowCount(request.destination), 1U);
 
+    // Delivery, retirement, and completion may collapse into one event now
+    // that no join gate or lease outlives the exact RX ledger.
     fixture.stepUntil([&] { return runtime.flow(request.flow_id).completion_notified; });
-    EXPECT_TRUE(runtime.hasPendingPhysicalWork());
 
     fixture.drainRuntime(runtime);
     const RnicCollectiveFlowSnapshot completed = runtime.flow(request.flow_id);
@@ -226,13 +225,18 @@ TEST(RnicCollectiveNetworkRuntimeTest, PhysicalAcceptGatesDataAndRetireWaitsForR
     EXPECT_GE(*completed.retirement_completion_time_ps, *completed.delivery_completion_time_ps);
     EXPECT_TRUE(completed.receiver_retired);
     EXPECT_EQ(completed.sender_phase, RnicSenderGrantGate::Phase::Retired);
+    // The whole transfer resequences inside the first dwnd window, whose
+    // boundary snapshot precedes the first admission, so no feedback packet
+    // is generated for it.
+    EXPECT_EQ(completed.rate_feedback_acks_generated, 0U);
+    EXPECT_EQ(completed.rate_feedback_acks_received, 0U);
     EXPECT_FALSE(runtime.node(request.source).txPort().contains(request.flow_id));
     EXPECT_EQ(runtime.receiverActiveFlowCount(request.destination), 0U);
     EXPECT_EQ(runtime.pendingFabricPacketCount(), 0U);
     EXPECT_EQ(runtime.pendingDestinationDataCount(), 0U);
 }
 
-TEST(RnicCollectiveNetworkRuntimeTest, ConcurrentIncastGrantsNeverExceedReceiverMargin) {
+TEST(RnicCollectiveNetworkRuntimeTest, SimultaneousIncastReadsOneLedgerSumWithoutOversend) {
     TwoTierCollectiveFixture fixture;
     RnicCollectiveNetworkRuntime runtime(fixture.events, *fixture.topology,
                                          fixture.runtimeConfig());
@@ -246,6 +250,9 @@ TEST(RnicCollectiveNetworkRuntimeTest, ConcurrentIncastGrantsNeverExceedReceiver
         runtime.send({flow_id, source, 31, 2000000, EventList::now(), source});
     }
 
+    // The whole same-timestamp DECLARE batch registers in the shared
+    // reservation ledger before any gate opens, so all four whole-flow
+    // joiners start at margin * C / 4 with no cold-start overshoot.
     fixture.stepUntil([&] {
         for (const AtlahsFlowId flow_id : flow_ids) {
             if (runtime.flow(flow_id).sender_phase != RnicSenderGrantGate::Phase::Active) {
@@ -256,24 +263,33 @@ TEST(RnicCollectiveNetworkRuntimeTest, ConcurrentIncastGrantsNeverExceedReceiver
     });
     std::uint64_t aggregate_grant = 0;
     for (const AtlahsFlowId flow_id : flow_ids) {
+        EXPECT_EQ(runtime.flow(flow_id).current_wire_rate_bps, UINT64_C(22500000000));
         aggregate_grant += runtime.flow(flow_id).current_wire_rate_bps;
     }
-    EXPECT_LE(aggregate_grant, speedFromGbps(90));
-    EXPECT_EQ(runtime.receiverActiveFlowCount(31), 4U);
+    EXPECT_EQ(aggregate_grant, speedFromGbps(90));
+    // The gates open at DECLARE dispatch; receiver membership follows one
+    // one-way transit later.
+    fixture.stepUntil([&] { return runtime.receiverActiveFlowCount(31) == 4; });
 
     fixture.drainRuntime(runtime);
     EXPECT_EQ(completions.size(), flow_ids.size());
-    std::uint64_t refreshes = 0;
     for (const AtlahsFlowId flow_id : flow_ids) {
         const RnicCollectiveFlowSnapshot flow = runtime.flow(flow_id);
         EXPECT_TRUE(flow.receiver_retired);
-        refreshes += flow.rate_refresh_acks_received;
+        // Feedback rides every resequenced ACK once a nonempty boundary
+        // snapshot exists; each generated ACK is physically delivered.
+        EXPECT_GT(flow.rate_feedback_acks_generated, 0U);
+        EXPECT_EQ(flow.rate_feedback_acks_received, flow.rate_feedback_acks_generated);
+        EXPECT_LE(flow.rate_feedback_acks_generated, flow.delivered_data_packets);
     }
-    EXPECT_GT(refreshes, 0U);
+    // The per-dwnd reservation invariant is observable: no late admission
+    // and no gap NACK in a valid run, including startup.
+    const RnicCollectiveRecoveryStatistics& recovery = runtime.recoveryStatistics();
+    EXPECT_EQ(recovery.late_data_packets, 0U);
+    EXPECT_EQ(recovery.gap_nacks_dispatched, 0U);
 }
 
-TEST(RnicCollectiveNetworkRuntimeTest,
-     IncumbentAppliesMarkedAckRateBeforeTwoWindowJoinGateOpens) {
+TEST(RnicCollectiveNetworkRuntimeTest, IncumbentStepsDownAtADwndBoundaryWhenAJoinerDeclares) {
     TwoTierCollectiveFixture fixture;
     RnicCollectiveNetworkRuntime runtime(
         fixture.events, *fixture.topology, fixture.runtimeConfig());
@@ -283,32 +299,40 @@ TEST(RnicCollectiveNetworkRuntimeTest,
     constexpr AtlahsFlowId joiner = 0x210000002ULL;
     runtime.send({incumbent, 0, 31, 2000000, EventList::now(), 1});
     fixture.stepUntil([&] {
-        return runtime.flow(incumbent).sender_phase == RnicSenderGrantGate::Phase::Active &&
-               runtime.flow(incumbent).marked_rate_acks_received != 0;
+        return runtime.flow(incumbent).sender_phase == RnicSenderGrantGate::Phase::Active;
     });
-    runtime.send({joiner, 1, 31, 2000000, EventList::now(), 2});
-    bool incumbent_stepped_down_while_joiner_gated = false;
+    // A sole whole flow owns the whole margin-derated bottleneck.
+    EXPECT_EQ(runtime.flow(incumbent).current_wire_rate_bps, speedFromGbps(90));
     fixture.stepUntil([&] {
-        const RnicCollectiveFlowSnapshot incumbent_state =
-            runtime.flow(incumbent);
-        const RnicCollectiveFlowSnapshot joiner_state = runtime.flow(joiner);
-        if (joiner_state.sender_phase != RnicSenderGrantGate::Phase::Active &&
-            incumbent_state.membership_epoch == 2 &&
-            incumbent_state.current_wire_rate_bps == speedFromGbps(45)) {
-            incumbent_stepped_down_while_joiner_gated = true;
-        }
-        return joiner_state.sender_phase == RnicSenderGrantGate::Phase::Active;
+        return runtime.flow(incumbent).rate_feedback_acks_received != 0;
     });
-    EXPECT_TRUE(incumbent_stepped_down_while_joiner_gated);
-    EXPECT_EQ(runtime.flow(incumbent).current_wire_rate_bps,
-              speedFromGbps(45));
-    EXPECT_EQ(runtime.flow(joiner).current_wire_rate_bps,
-              speedFromGbps(45));
+
+    // wire = 22472 fits the 225000-byte control-round-trip budget, so the
+    // joiner declares nflow = 99876 ppm and takes only that fraction.
+    runtime.send({joiner, 1, 31, 21000, EventList::now(), 2});
+    fixture.stepUntil([&] { return runtime.flow(joiner).declaration_dispatched; });
+    const RnicCollectiveFlowSnapshot joined = runtime.flow(joiner);
+    EXPECT_EQ(joined.sender_phase, RnicSenderGrantGate::Phase::Active);
+    // floor(floor(9e16 / 1099876) * 99876 / 1e6).
+    EXPECT_EQ(joined.current_wire_rate_bps, UINT64_C(8172594001));
+
+    // The incumbent applies the joined-membership snapshot at a sender-local
+    // dwnd boundary: floor(9e16 / 1099876) scaled by one whole flow.
+    fixture.stepUntil([&] {
+        return runtime.flow(incumbent).current_wire_rate_bps == UINT64_C(81827405998);
+    });
+    // After the joiner retires, later snapshots restore the sole-flow rate.
+    fixture.stepUntil([&] { return runtime.flow(joiner).receiver_retired; });
+    fixture.stepUntil([&] {
+        return runtime.flow(incumbent).current_wire_rate_bps == speedFromGbps(90);
+    });
     fixture.drainRuntime(runtime);
+    const RnicCollectiveRecoveryStatistics& recovery = runtime.recoveryStatistics();
+    EXPECT_EQ(recovery.late_data_packets, 0U);
+    EXPECT_EQ(recovery.gap_nacks_dispatched, 0U);
 }
 
-TEST(RnicCollectiveNetworkRuntimeTest,
-     CompletedFreshPayloadCannotRetryWithAStalePreJoinGrant) {
+TEST(RnicCollectiveNetworkRuntimeTest, RetryProceedsAcrossAMembershipEpochChange) {
     TwoTierCollectiveFixture fixture;
     RnicCollectiveNetworkConfig config = fixture.runtimeConfig();
     config.maximum_retransmissions = 2;
@@ -335,88 +359,70 @@ TEST(RnicCollectiveNetworkRuntimeTest,
                RnicSenderGrantGate::Phase::Active;
     });
 
-    const RnicCollectiveFlowSnapshot at_join_gate = runtime.flow(incumbent);
-    const bool failed_closed =
-        at_join_gate.sender_phase == RnicSenderGrantGate::Phase::LeaseExpired &&
-        at_join_gate.current_wire_rate_bps == 0;
-    const bool already_refreshed =
-        at_join_gate.sender_phase == RnicSenderGrantGate::Phase::Active &&
-        at_join_gate.membership_epoch == 2 &&
-        at_join_gate.current_wire_rate_bps == speedFromGbps(45);
-    EXPECT_TRUE(failed_closed || already_refreshed);
-    EXPECT_EQ(at_join_gate.deterministic_retransmissions, 1U);
-
-    fixture.stepUntil([&] {
-        const RnicCollectiveFlowSnapshot flow = runtime.flow(incumbent);
-        return flow.sender_phase == RnicSenderGrantGate::Phase::Active &&
-               flow.membership_epoch == 2 &&
-               flow.current_wire_rate_bps == speedFromGbps(45) &&
-               flow.rate_refresh_acks_received != 0;
-    });
-    EXPECT_EQ(runtime.flow(incumbent).deterministic_retransmissions, 1U);
-
+    // Membership changed under the incumbent's open gap. DECLAREs never
+    // expire, so nothing gates the bounded watchdog retry: attempt two is
+    // dispatched after the RTO and closes the flow.
     fixture.stepUntil([&] {
         return runtime.flow(incumbent).deterministic_retransmissions == 2;
     });
+    fixture.drainRuntime(runtime);
     const RnicCollectiveFlowSnapshot retried = runtime.flow(incumbent);
-    EXPECT_EQ(retried.membership_epoch, 2U);
-    EXPECT_EQ(retried.current_wire_rate_bps, speedFromGbps(45));
-    EXPECT_GT(retried.rate_refresh_declarations_dispatched, 0U);
-    EXPECT_GT(retried.rate_refresh_acks_generated, 0U);
-    EXPECT_GT(retried.rate_refresh_acks_received, 0U);
-
-    fixture.drainRuntime(runtime);
+    EXPECT_EQ(retried.delivered_payload_bytes, 500U);
+    EXPECT_EQ(retried.deterministic_retransmissions, 2U);
+    EXPECT_EQ(retried.maximum_retry_attempt_observed, 2U);
+    EXPECT_TRUE(retried.receiver_retired);
+    EXPECT_TRUE(runtime.flow(joiner).receiver_retired);
 }
 
-TEST(RnicCollectiveNetworkRuntimeTest,
-     LaterDeclareWaitsBehindPendingJoinGate) {
+TEST(RnicCollectiveNetworkRuntimeTest, DeclareForARetiredFlowIsIgnoredWithoutThrow) {
+    TwoTierCollectiveFixture fixture;
+    RnicCollectiveNetworkRuntime runtime(fixture.events, *fixture.topology,
+                                         fixture.runtimeConfig());
+    std::vector<AtlahsFlowId> completions;
+    runtime.setup(32, [&](AtlahsFlowId flow_id) { completions.push_back(flow_id); });
+
+    constexpr AtlahsFlowId flow_id = 0x230000001ULL;
+    runtime.send({flow_id, 0, 31, 500, EventList::now(), 1});
+    fixture.drainRuntime(runtime);
+    ASSERT_TRUE(runtime.flow(flow_id).receiver_retired);
+    ASSERT_EQ(runtime.recoveryStatistics().stale_declarations_ignored, 0U);
+
+    // A repeat DECLARE for retired membership is counted and dropped; the
+    // receiver never throws and the runtime returns to quiescence.
+    RnicCollectiveNetworkRuntimeTestPeer::redeclareFlow(runtime, flow_id);
+    fixture.drainRuntime(runtime);
+    EXPECT_EQ(runtime.recoveryStatistics().stale_declarations_ignored, 1U);
+    EXPECT_EQ(runtime.receiverActiveFlowCount(31), 0U);
+    EXPECT_EQ(completions, (std::vector<AtlahsFlowId>{flow_id}));
+    EXPECT_EQ(runtime.flow(flow_id).sender_phase, RnicSenderGrantGate::Phase::Retired);
+}
+
+TEST(RnicCollectiveNetworkRuntimeTest, RedeclareForAnActiveFlowIsAnIdempotentFeedbackNoOp) {
     TwoTierCollectiveFixture fixture;
     RnicCollectiveNetworkRuntime runtime(fixture.events, *fixture.topology,
                                          fixture.runtimeConfig());
     runtime.setup(32, [](AtlahsFlowId) {});
-    constexpr AtlahsFlowId first = 0x230000001ULL;
-    constexpr AtlahsFlowId second = 0x230000002ULL;
-    runtime.send({first, 0, 31, 2000000, EventList::now(), 1});
-    fixture.stepUntil([&] {
-        return runtime.flow(first).sender_phase ==
-               RnicSenderGrantGate::Phase::AcceptPendingEffectiveTime;
-    });
-    ASSERT_EQ(runtime.receiverActiveFlowCount(31), 1U);
-    runtime.send({second, 1, 31, 2000000, EventList::now(), 2});
 
-    while (runtime.flow(first).sender_phase != RnicSenderGrantGate::Phase::Active) {
-        ASSERT_TRUE(EventList::doNextEvent());
-        if (runtime.flow(first).sender_phase != RnicSenderGrantGate::Phase::Active) {
-            EXPECT_EQ(runtime.receiverActiveFlowCount(31), 1U);
-        }
-    }
-    const std::uint64_t first_open_ps = EventList::now();
-    EXPECT_NE(runtime.flow(second).sender_phase, RnicSenderGrantGate::Phase::Active);
-    fixture.stepUntil([&] {
-        return runtime.flow(second).sender_phase == RnicSenderGrantGate::Phase::Active;
-    });
-    EXPECT_GT(EventList::now(), first_open_ps);
-    fixture.drainRuntime(runtime);
-}
-
-TEST(RnicCollectiveNetworkRuntimeTest, EmptyWindowsDoNotCreateMarkerBursts) {
-    TwoTierCollectiveFixture fixture;
-    RnicCollectiveNetworkRuntime runtime(fixture.events, *fixture.topology,
-                                         fixture.runtimeConfig());
-    runtime.setup(32, [](AtlahsFlowId) {});
     constexpr AtlahsFlowId flow_id = 0x240000001ULL;
-    const std::uint64_t start = EventList::now();
-    runtime.send({flow_id, 0, 31, 2000000, start, 1});
-    const std::uint64_t window = timeFromUs(4.096);
-    EXPECT_TRUE(RnicCollectiveNetworkRuntimeTestPeer::markFreshData(
-        runtime, flow_id, start + 3 * window - 1));
-    EXPECT_FALSE(RnicCollectiveNetworkRuntimeTestPeer::markFreshData(
-        runtime, flow_id, start + 3 * window - 1));
-    EXPECT_TRUE(RnicCollectiveNetworkRuntimeTestPeer::markFreshData(
-        runtime, flow_id, start + 4 * window - 1));
+    runtime.send({flow_id, 0, 31, 2000000, EventList::now(), 1});
+    // An arrived ACK may still be held for its dwnd boundary; wait until the
+    // snapshot has actually been applied.
+    fixture.stepUntil([&] { return runtime.flow(flow_id).membership_epoch == 1; });
+
+    RnicCollectiveNetworkRuntimeTestPeer::redeclareFlow(runtime, flow_id);
+    fixture.drainRuntime(runtime);
+    // The repeat DECLARE re-sent the current window feedback without any
+    // membership mutation: one epoch, no stale-declaration count, and every
+    // generated ACK was delivered.
+    const RnicCollectiveFlowSnapshot flow = runtime.flow(flow_id);
+    EXPECT_EQ(flow.membership_epoch, 1U);
+    EXPECT_EQ(runtime.recoveryStatistics().stale_declarations_ignored, 0U);
+    EXPECT_EQ(flow.rate_feedback_acks_received, flow.rate_feedback_acks_generated);
+    EXPECT_GT(flow.rate_feedback_acks_generated, 0U);
+    EXPECT_TRUE(flow.receiver_retired);
 }
 
-TEST(RnicCollectiveNetworkRuntimeTest, ZeroPayloadUsesPhysicalDeclareAcceptAndRetireWithoutData) {
+TEST(RnicCollectiveNetworkRuntimeTest, ZeroPayloadUsesPhysicalDeclareAndRetireWithoutData) {
     TwoTierCollectiveFixture fixture;
     RnicCollectiveNetworkRuntime runtime(fixture.events, *fixture.topology,
                                          fixture.runtimeConfig());
@@ -436,6 +442,7 @@ TEST(RnicCollectiveNetworkRuntimeTest, ZeroPayloadUsesPhysicalDeclareAcceptAndRe
     fixture.drainRuntime(runtime);
     EXPECT_EQ(completions, (std::vector<AtlahsFlowId>{request.flow_id}));
     EXPECT_TRUE(runtime.flow(request.flow_id).receiver_retired);
+    EXPECT_EQ(runtime.flow(request.flow_id).rate_feedback_acks_generated, 0U);
 }
 
 TEST(RnicCollectiveNetworkRuntimeTest, CompletionCallbackCanSynchronouslyStartAnotherFlow) {
@@ -505,13 +512,17 @@ TEST(RnicCollectiveNetworkRuntimeTest,
 
     constexpr AtlahsFlowId data_flow_id = 0x500000001ULL;
     constexpr AtlahsFlowId declaration_flow_id = 0x500000002ULL;
+    const std::uint64_t send_time_ps = EventList::now();
     runtime.send({data_flow_id, 0, 31, 6, EventList::now(), 1});
     fixture.stepUntil(
         [&] { return runtime.flow(data_flow_id).source_data_packets_dispatched == 1; });
     const std::uint64_t data_start_ps = EventList::now();
     const std::uint64_t published_data_end_ps =
         runtime.node(0).txPort().physicalSerializerAvailablePs();
+    // Declare-and-go serializes the flow's own DECLARE first, so the DATA
+    // boundary carries the control byte's exact rational residue.
     RnicWireSerializationClock data_clock(capacity_bps);
+    data_clock.serialize(send_time_ps, 1);
     EXPECT_EQ(data_clock.serialize(data_start_ps, 6).end_ps, published_data_end_ps);
 
     CallbackEvent declare_at_boundary(fixture.events, published_data_end_ps, [&] {
@@ -654,8 +665,8 @@ TEST(RnicCollectiveNetworkRuntimeTest, RepeatedLateRetransmissionStopsAtTheConfi
     config.calibrated_transit_ps = [](std::uint32_t, std::uint32_t,
                                       const RnicPacketExtent&) -> std::uint64_t { return 0; };
     config.maximum_retransmissions = 1;
-    // Keep this retry-bound test inside one grant lease. Lease refresh and
-    // stale-grant recovery are exercised independently above.
+    // A loose deadline keeps every recovery event inside the first few dwnd
+    // windows; window snapshots do not participate in this retry bound.
     config.control_deadline_ps = timeFromUs(100.0);
     RnicCollectiveNetworkRuntime runtime(fixture.events, *fixture.topology, std::move(config));
     runtime.setup(32, [](AtlahsFlowId) {});
@@ -898,7 +909,7 @@ TEST(RnicCollectiveNetworkRuntimeTest, PhysicalGapResolvedBeforeAReorderedGapNac
 
     // Inject the stale control only after the successful retry's physical
     // GAP_RESOLVED has reached the sender.  RX state is already gone, so the
-    // surviving TX tombstone—not a receiver-side shortcut—must absorb it.
+    // surviving TX tombstone, not a receiver-side shortcut, must absorb it.
     RnicCollectiveNetworkRuntimeTestPeer::replayResolvedGapNack(runtime, flow_id, 0);
     fixture.drainRuntime(runtime);
 

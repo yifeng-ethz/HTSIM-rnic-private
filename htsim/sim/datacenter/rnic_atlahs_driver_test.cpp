@@ -112,14 +112,18 @@ TEST(RnicAtlahsDriverTest, CollectiveManifestNamesPhysicalModelExactly) {
               std::string::npos);
     EXPECT_NE(manifest.find("voq_key=physical-ingress-x-physical-egress"), std::string::npos);
     EXPECT_NE(manifest.find("pfc=off ecn=off"), std::string::npos);
-    EXPECT_NE(manifest.find("declaration_gate=physical-accept"), std::string::npos);
-    EXPECT_NE(manifest.find("declare_cca_field=nflow_ppm fractional_nflow=off"),
+    EXPECT_NE(manifest.find("declaration_gate=declare-and-go"), std::string::npos);
+    EXPECT_NE(manifest.find("declare_cca_field=nflow_ppm fractional_nflow=always"),
               std::string::npos);
     EXPECT_NE(manifest.find("declare_debug_fields=collective_id,expected_fan_in "
                             "declare_debug_affects_rx_cca=false"),
               std::string::npos);
-    EXPECT_NE(manifest.find("grant=margin*C/n_hat n_hat=sum-active-declare-nflow"),
+    EXPECT_NE(
+        manifest.find("grant=margin*C/n_hat-scaled-by-own-nflow n_hat=sum-active-declare-nflow"),
+        std::string::npos);
+    EXPECT_NE(manifest.find("rate_feedback=every-resequenced-ack-window-frozen-snapshot"),
               std::string::npos);
+    EXPECT_NE(manifest.find("rate_effect=receiver-boundary-k-plus-2"), std::string::npos);
     EXPECT_NE(manifest.find("eta=source-route-injection-plus-packet-specific-no-load-transit"),
               std::string::npos);
     EXPECT_NE(

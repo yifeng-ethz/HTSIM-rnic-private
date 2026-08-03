@@ -116,24 +116,16 @@ void RnicCollectivePacket::validateGrant(const RnicCollectiveGrant& grant,
     if (grant.n_hat == 0 || grant.wire_rate_bps == 0) {
         throw std::invalid_argument("rnic-cn in-band grant requires positive N_hat and wire rate");
     }
-    if (grant.feedback_deadline_ps == 0 ||
-        grant.lease_expiry_ps <= grant.feedback_deadline_ps) {
+    if (grant.effective_time_ps == 0) {
         throw std::invalid_argument(
-            "rnic-cn in-band grant requires a live feedback interval");
+            "rnic-cn in-band grant requires a governed dwnd boundary");
     }
-    if (packet_kind == RnicCollectivePacketKind::ACCEPT) {
-        if (grant.marked_data_ack) {
-            throw std::invalid_argument(
-                "rnic-cn ACCEPT cannot identify a marked DATA ACK");
-        }
-        if (grant.feedback_deadline_ps > grant.effective_time_ps ||
-            grant.lease_expiry_ps <= grant.effective_time_ps) {
-            throw std::invalid_argument(
-                "rnic-cn ACCEPT timing does not contain its join gate");
-        }
-    } else if (grant.feedback_deadline_ps < grant.effective_time_ps) {
+    // feedback_deadline_ps and lease_expiry_ps are vestigial, kept for
+    // wire-format stability; leases were removed and both fields are always
+    // 0. Removal is tracked in the algorithm book (section 3, D2).
+    if (grant.feedback_deadline_ps != 0 || grant.lease_expiry_ps != 0) {
         throw std::invalid_argument(
-            "rnic-cn marked ACK deadline precedes receiver generation");
+            "rnic-cn in-band grant carries nonzero vestigial lease fields");
     }
 }
 

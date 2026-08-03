@@ -37,11 +37,6 @@ struct RnicCollectiveNetworkConfig {
     // Sender-visible overtime for a retry that receives neither a subsequent
     // exact-gap NACK nor a physical GAP_RESOLVED closure.
     std::uint64_t retransmission_rto_ps{50000000000ULL};
-    // When true, a sender whose whole transfer fits inside one control round
-    // trip of granted service declares a proportionally smaller membership
-    // contribution (in ppm of a flow), so the unused bottleneck share stays
-    // grantable to the other members. Off keeps every DECLARE at one flow.
-    bool fractional_nflow{false};
 };
 
 struct RnicCollectiveRecoveryStatistics {
@@ -53,6 +48,9 @@ struct RnicCollectiveRecoveryStatistics {
     std::uint64_t duplicate_gap_nacks_ignored{0};
     std::uint64_t duplicate_data_packets_ignored{0};
     std::uint32_t maximum_retry_attempt_observed{0};
+    // DECLAREs never expire; a repeat DECLARE for a retired flow is counted
+    // here and otherwise ignored.
+    std::uint64_t stale_declarations_ignored{0};
 };
 
 struct RnicCollectiveFlowSnapshot {
@@ -61,13 +59,8 @@ struct RnicCollectiveFlowSnapshot {
     RnicSenderGrantGate::Phase sender_phase;
     std::uint64_t current_wire_rate_bps;
     std::uint64_t membership_epoch;
-    std::uint64_t grant_lease_expiry_ps;
-    std::uint64_t marked_data_packets_dispatched;
-    std::uint64_t marked_rate_acks_generated;
-    std::uint64_t marked_rate_acks_received;
-    std::uint64_t rate_refresh_declarations_dispatched;
-    std::uint64_t rate_refresh_acks_generated;
-    std::uint64_t rate_refresh_acks_received;
+    std::uint64_t rate_feedback_acks_generated;
+    std::uint64_t rate_feedback_acks_received;
     std::uint64_t source_payload_bytes_dispatched;
     std::uint64_t source_wire_bytes_dispatched;
     std::uint64_t source_data_packets_dispatched;
@@ -97,13 +90,14 @@ struct RnicCollectiveFlowSnapshot {
 // Physical packet runtime for the `rnic-cn` profile.  Every flow uses one
 // node-wide PRBS TX port, traverses explicit routes through a two-tier
 // ns-tm3 Clos, and enters one shared Ring-CAM/RX serializer. Receiver
-// membership is changed only by in-band DECLARE/ACCEPT/RETIRE controls.
-// GRANT_UPDATE is normally the reverse-path ACK for one post-resequence
-// marked DATA packet; incumbents apply it independently, while new senders
-// wait K+2*dwnd. A sender whose lease expires closes its DATA gate,
-// re-DECLAREs idempotently, and resumes only after the receiver returns the
-// current explicit rate. The same fail-closed rule applies to bounded
-// retransmissions after fresh payload has been dispatched.
+// membership is changed only by in-band DECLARE (join) and RETIRE (leave)
+// controls; DECLAREs never expire. A sender transmits from the moment its
+// DECLARE leaves the source serializer, at its declared fraction of the
+// margin-derated bottleneck capacity. The receiver freezes one rate
+// snapshot per dwnd window (dwnd = the one-way control deadline) and
+// attaches it to the ACK of every resequenced-and-released DATA packet;
+// the snapshot frozen at window k governs sender transmissions arriving in
+// window k + 2, so every rate change lands at a sender-local dwnd boundary.
 class RnicCollectiveNetworkRuntime final : public AtlahsFlowRuntime, private EventSource {
 public:
     RnicCollectiveNetworkRuntime(EventList& event_list,
@@ -158,7 +152,7 @@ private:
     std::optional<std::uint64_t> firstGapDecisionForTesting(AtlahsFlowId flow_id) const;
     std::optional<std::uint64_t> retryDispatchForTesting(AtlahsFlowId flow_id,
                                                          std::uint32_t transmission_attempt) const;
-    bool markFreshDataForTesting(AtlahsFlowId flow_id, std::uint64_t eta_ps);
+    void redeclareFlowForTesting(AtlahsFlowId flow_id);
     friend class RnicCollectiveNetworkRuntimeTestPeer;
 
     std::unique_ptr<Impl> _impl;

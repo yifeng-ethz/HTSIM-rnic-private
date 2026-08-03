@@ -12,7 +12,9 @@
 namespace {
 
 constexpr std::uint64_t kCapacity = UINT64_C(100000000000);
-constexpr std::uint64_t kControlDeadline = 1000;
+// dwnd: the one-way control deadline anchors the receiver window grid.
+constexpr std::uint64_t kDwnd = 1000;
+constexpr std::uint64_t kMarginDeratedCapacity = UINT64_C(90000000000);
 
 RnicCollectiveMembershipDelta declare(
         std::uint64_t flow_id,
@@ -20,18 +22,17 @@ RnicCollectiveMembershipDelta declare(
     return {{{flow_id, nflow_ppm}}, {}};
 }
 
-RnicSenderGrantGate admittedGate(
-        const RnicCollectiveGrant& accept,
-        std::uint64_t arrival_time_ps) {
-    RnicSenderGrantGate gate(accept.flow_id);
-    gate.declarationDispatched();
-    EXPECT_TRUE(gate.receiveAccept(accept, arrival_time_ps));
-    EXPECT_TRUE(gate.activatePendingAccept(accept.effective_time_ps));
+RnicSenderGrantGate activeGate(
+        std::uint64_t flow_id,
+        std::uint32_t own_nflow_ppm = RnicCollectiveController::kFullFlowPpm,
+        std::uint64_t startup_capacity_bps = kMarginDeratedCapacity) {
+    RnicSenderGrantGate gate(flow_id);
+    gate.declarationDispatched(startup_capacity_bps, own_nflow_ppm, kDwnd);
     return gate;
 }
 
 TEST(RnicCollectiveControllerTest, DirectRateUsesDeclaredNflowAndMargin) {
-    RnicCollectiveController controller(kCapacity, kControlDeadline);
+    RnicCollectiveController controller(kCapacity, kDwnd);
     const auto first = controller.updateMembership(
         {{{11, RnicCollectiveController::kFullFlowPpm},
           {12, RnicCollectiveController::kFullFlowPpm},
@@ -53,7 +54,7 @@ TEST(RnicCollectiveControllerTest, DirectRateUsesDeclaredNflowAndMargin) {
 }
 
 TEST(RnicCollectiveControllerTest, MembershipMutationIsTransactionalAndIdempotent) {
-    RnicCollectiveController controller(kCapacity, kControlDeadline);
+    RnicCollectiveController controller(kCapacity, kDwnd);
     ASSERT_TRUE(controller.updateMembership(declare(20, 500000)).has_value());
     const std::uint64_t epoch = controller.membershipEpoch();
 
@@ -80,186 +81,251 @@ TEST(RnicCollectiveControllerTest, MembershipMutationIsTransactionalAndIdempoten
     EXPECT_FALSE(controller.contains(20));
 }
 
-TEST(RnicCollectiveControllerTest, AcceptAndMarkedAckCarryCurrentRate) {
-    RnicCollectiveController controller(kCapacity, kControlDeadline);
+TEST(RnicCollectiveControllerTest, FeedbackGrantsCarryTheFrozenWindowSnapshot) {
+    RnicCollectiveController controller(kCapacity, kDwnd);
     ASSERT_TRUE(controller.updateMembership(declare(30)).has_value());
+    const RnicCollectiveRateSnapshot frozen = controller.rateSnapshot();
+    EXPECT_EQ(frozen.membership_epoch, 1U);
+    EXPECT_EQ(frozen.n_hat_ppm, 1000000U);
+    EXPECT_EQ(frozen.wire_rate_bps, UINT64_C(90000000000));
 
-    const RnicCollectiveGrant accept =
-        controller.acceptFor(30, 10000, 2000, 20000);
+    const RnicCollectiveGrant accept = controller.acceptFor(30, frozen, 2 * kDwnd);
     EXPECT_EQ(accept.kind, RnicCollectiveGrantKind::Accept);
     EXPECT_EQ(accept.membership_epoch, 1U);
     EXPECT_EQ(accept.n_hat, 1000000U);
     EXPECT_EQ(accept.wire_rate_bps, UINT64_C(90000000000));
-    EXPECT_FALSE(accept.marked_data_ack);
+    EXPECT_EQ(accept.effective_time_ps, 2 * kDwnd);
+    EXPECT_EQ(accept.feedback_deadline_ps, 0U);
+    EXPECT_EQ(accept.lease_expiry_ps, 0U);
 
+    // The frozen snapshot outlives a later mutation: same-window feedback
+    // keeps the boundary numbers while the live snapshot moves on.
     ASSERT_TRUE(controller.updateMembership(declare(31)).has_value());
-    const RnicCollectiveGrant update =
-        controller.markedFeedbackFor(30, 11000, 12000, 22000);
-    EXPECT_EQ(update.kind, RnicCollectiveGrantKind::Update);
-    EXPECT_EQ(update.membership_epoch, 2U);
-    EXPECT_EQ(update.n_hat, 2000000U);
-    EXPECT_EQ(update.wire_rate_bps, UINT64_C(45000000000));
-    EXPECT_TRUE(update.marked_data_ack);
-    const RnicCollectiveGrant refresh =
-        controller.refreshFeedbackFor(30, 11500, 12500, 22500);
-    EXPECT_EQ(refresh.membership_epoch, 2U);
-    EXPECT_EQ(refresh.wire_rate_bps, UINT64_C(45000000000));
-    EXPECT_FALSE(refresh.marked_data_ack);
+    const RnicCollectiveGrant same_window =
+        controller.feedbackFor(30, frozen, 2 * kDwnd);
+    EXPECT_EQ(same_window.kind, RnicCollectiveGrantKind::Update);
+    EXPECT_EQ(same_window.membership_epoch, 1U);
+    EXPECT_EQ(same_window.n_hat, 1000000U);
+    EXPECT_EQ(same_window.wire_rate_bps, UINT64_C(90000000000));
+    const RnicCollectiveRateSnapshot live = controller.rateSnapshot();
+    EXPECT_EQ(live.membership_epoch, 2U);
+    EXPECT_EQ(live.n_hat_ppm, 2000000U);
+    EXPECT_EQ(live.wire_rate_bps, UINT64_C(45000000000));
+
+    EXPECT_THROW(controller.feedbackFor(99, live, 2 * kDwnd), std::out_of_range);
+    EXPECT_THROW(controller.acceptFor(30, {0, 0, 0}, 2 * kDwnd),
+                 std::invalid_argument);
+    EXPECT_THROW(controller.feedbackFor(30, live, 0), std::invalid_argument);
 }
 
-TEST(RnicSenderGrantGateTest, JoinerWaitsForAcceptBoundary) {
-    RnicCollectiveController controller(kCapacity, kControlDeadline);
-    ASSERT_TRUE(controller.updateMembership(declare(40)).has_value());
-    const RnicCollectiveGrant accept =
-        controller.acceptFor(40, 10000, 2000, 20000);
+TEST(RnicSenderGrantGateTest, DeclareOpensDataImmediatelyAtDeclaredFraction) {
+    RnicSenderGrantGate full(40);
+    EXPECT_EQ(full.phase(), RnicSenderGrantGate::Phase::Idle);
+    EXPECT_FALSE(full.dataEligible());
+    full.declarationDispatched(kMarginDeratedCapacity,
+                               RnicCollectiveController::kFullFlowPpm, kDwnd);
+    EXPECT_EQ(full.phase(), RnicSenderGrantGate::Phase::Active);
+    EXPECT_TRUE(full.dataEligible());
+    EXPECT_EQ(full.currentWireRateBps(), kMarginDeratedCapacity);
 
-    RnicSenderGrantGate gate(40);
-    EXPECT_FALSE(gate.dataEligible());
-    gate.declarationDispatched();
-    EXPECT_TRUE(gate.receiveAccept(accept, 1500));
-    EXPECT_EQ(gate.phase(),
-              RnicSenderGrantGate::Phase::AcceptPendingEffectiveTime);
-    EXPECT_EQ(gate.pendingAcceptTimePs(),
-              std::optional<std::uint64_t>(10000));
-    EXPECT_FALSE(gate.dataEligible());
-    EXPECT_THROW(gate.activatePendingAccept(9999), std::invalid_argument);
-    EXPECT_TRUE(gate.activatePendingAccept(10000));
-    EXPECT_TRUE(gate.dataEligible());
-    EXPECT_EQ(gate.currentWireRateBps(), UINT64_C(90000000000));
-}
+    RnicSenderGrantGate quarter(41);
+    quarter.declarationDispatched(kMarginDeratedCapacity, 250000, kDwnd);
+    EXPECT_TRUE(quarter.dataEligible());
+    EXPECT_EQ(quarter.currentWireRateBps(), UINT64_C(22500000000));
+    EXPECT_EQ(quarter.ownNflowPpm(), 250000U);
 
-TEST(RnicSenderGrantGateTest, IncumbentsApplyMarkedAcksIndependently) {
-    RnicCollectiveController controller(kCapacity, kControlDeadline);
-    ASSERT_TRUE(controller.updateMembership({{{50, 1}, {51, 1}}, {}}).has_value());
-    RnicSenderGrantGate first = admittedGate(
-        controller.acceptFor(50, 10000, 2000, 20000), 1500);
-    RnicSenderGrantGate second = admittedGate(
-        controller.acceptFor(51, 10000, 2000, 20000), 1600);
-
-    ASSERT_TRUE(controller.updateMembership(declare(52)).has_value());
-    const RnicCollectiveGrant first_update =
-        controller.markedFeedbackFor(50, 11000, 12000, 22000);
-    const RnicCollectiveGrant second_update =
-        controller.markedFeedbackFor(51, 11500, 12500, 22500);
-    EXPECT_TRUE(first.applyRateFeedback(first_update, 11900));
-    EXPECT_EQ(first.membershipEpoch(), 2U);
-    EXPECT_EQ(second.membershipEpoch(), 1U);
-    EXPECT_TRUE(second.applyRateFeedback(second_update, 12400));
-    EXPECT_EQ(second.membershipEpoch(), 2U);
-}
-
-TEST(RnicSenderGrantGateTest, ReorderedSameEpochAckCannotShortenLease) {
-    RnicCollectiveController controller(kCapacity, kControlDeadline);
-    ASSERT_TRUE(controller.updateMembership(declare(60)).has_value());
-    RnicSenderGrantGate gate = admittedGate(
-        controller.acceptFor(60, 100, 50, 500), 40);
-
-    const RnicCollectiveGrant older =
-        controller.markedFeedbackFor(60, 200, 400, 600);
-    const RnicCollectiveGrant newer =
-        controller.markedFeedbackFor(60, 300, 500, 700);
-    EXPECT_TRUE(gate.applyRateFeedback(newer, 350));
-    EXPECT_EQ(gate.leaseExpiryPs(), 700U);
-    EXPECT_FALSE(gate.applyRateFeedback(older, 360));
-    EXPECT_EQ(gate.leaseExpiryPs(), 700U);
-    EXPECT_EQ(gate.currentWireRateBps(), newer.wire_rate_bps);
-}
-
-TEST(RnicSenderGrantGateTest, DuplicateAckIsIgnoredAndLaterAckRenewsLease) {
-    RnicCollectiveController controller(kCapacity, kControlDeadline);
-    ASSERT_TRUE(controller.updateMembership(declare(70)).has_value());
-    RnicSenderGrantGate gate = admittedGate(
-        controller.acceptFor(70, 100, 50, 500), 40);
-
-    const RnicCollectiveGrant first =
-        controller.markedFeedbackFor(70, 200, 300, 600);
-    EXPECT_TRUE(gate.applyRateFeedback(first, 250));
-    EXPECT_FALSE(gate.applyRateFeedback(first, 260));
-    const RnicCollectiveGrant later =
-        controller.markedFeedbackFor(70, 250, 350, 650);
-    EXPECT_TRUE(gate.applyRateFeedback(later, 300));
-    EXPECT_EQ(gate.leaseExpiryPs(), 650U);
-}
-
-TEST(RnicSenderGrantGateTest, SameTimeRenewalMakesOldExpiryRecordStale) {
-    RnicCollectiveController controller(kCapacity, kControlDeadline);
-    ASSERT_TRUE(controller.updateMembership(declare(80)).has_value());
-    RnicSenderGrantGate gate = admittedGate(
-        controller.acceptFor(80, 100, 50, 500), 40);
-    const RnicCollectiveGrant first =
-        controller.markedFeedbackFor(80, 200, 300, 600);
-    ASSERT_TRUE(gate.applyRateFeedback(first, 250));
-
-    const RnicCollectiveGrant renewal =
-        controller.markedFeedbackFor(80, 500, 600, 900);
-    ASSERT_TRUE(gate.applyRateFeedback(renewal, 600));
-    EXPECT_FALSE(gate.expireLease(1, 600, 600));
-    EXPECT_TRUE(gate.dataEligible());
-    EXPECT_EQ(gate.leaseExpiryPs(), 900U);
-}
-
-TEST(RnicSenderGrantGateTest, RejectsMalformedAndNoncausalFeedbackIntervals) {
-    RnicCollectiveController controller(kCapacity, kControlDeadline);
-    ASSERT_TRUE(controller.updateMembership(declare(90)).has_value());
-    const RnicCollectiveGrant valid_accept =
-        controller.acceptFor(90, 1000, 500, 2000);
-
-    RnicSenderGrantGate malformed_accept(90);
-    malformed_accept.declarationDispatched();
-    RnicCollectiveGrant bad = valid_accept;
-    bad.lease_expiry_ps = bad.feedback_deadline_ps;
+    RnicSenderGrantGate invalid(42);
+    EXPECT_THROW(invalid.declarationDispatched(0, 1, kDwnd),
+                 std::invalid_argument);
+    EXPECT_THROW(invalid.declarationDispatched(kMarginDeratedCapacity, 0, kDwnd),
+                 std::invalid_argument);
     EXPECT_THROW(
-        malformed_accept.receiveAccept(bad, 400),
+        invalid.declarationDispatched(
+            kMarginDeratedCapacity,
+            RnicCollectiveController::kFullFlowPpm + 1, kDwnd),
         std::invalid_argument);
-    EXPECT_EQ(malformed_accept.phase(),
-              RnicSenderGrantGate::Phase::DeclarationInFlight);
-
-    RnicSenderGrantGate gate = admittedGate(valid_accept, 400);
-    const RnicCollectiveGrant update =
-        controller.markedFeedbackFor(90, 1100, 1200, 2000);
     EXPECT_THROW(
-        gate.applyRateFeedback(update, 1099),
-        std::runtime_error);
+        invalid.declarationDispatched(kMarginDeratedCapacity, 1, 0),
+        std::invalid_argument);
+    invalid.declarationDispatched(kMarginDeratedCapacity, 1, kDwnd);
     EXPECT_THROW(
-        gate.applyRateFeedback(update, 1201),
-        std::runtime_error);
-    EXPECT_EQ(gate.membershipEpoch(), 1U);
-    EXPECT_EQ(gate.leaseExpiryPs(), valid_accept.lease_expiry_ps);
+        invalid.declarationDispatched(kMarginDeratedCapacity, 1, kDwnd),
+        std::logic_error);
 }
 
-TEST(RnicSenderGrantGateTest, LeaseExpiryFailsClosedAndRetirementIsTerminal) {
-    RnicCollectiveController controller(kCapacity, kControlDeadline);
+TEST(RnicSenderGrantGateTest, OwnFractionScalesEverySharedRate) {
+    RnicCollectiveController controller(kCapacity, kDwnd);
+    ASSERT_TRUE(
+        controller.updateMembership({{{50, RnicCollectiveController::kFullFlowPpm},
+                                      {51, 250000}},
+                                     {}})
+            .has_value());
+    const RnicCollectiveRateSnapshot snapshot = controller.rateSnapshot();
+    EXPECT_EQ(snapshot.n_hat_ppm, 1250000U);
+    EXPECT_EQ(snapshot.wire_rate_bps, UINT64_C(72000000000));
+
+    RnicSenderGrantGate full = activeGate(50);
+    RnicSenderGrantGate quarter = activeGate(51, 250000);
+    // Arrival past the governed boundary applies the shared snapshot now.
+    EXPECT_EQ(full.applyRateFeedback(
+                  controller.feedbackFor(50, snapshot, 2 * kDwnd), 2 * kDwnd),
+              RnicSenderFeedbackOutcome::AppliedNow);
+    EXPECT_EQ(quarter.applyRateFeedback(
+                  controller.feedbackFor(51, snapshot, 2 * kDwnd), 2 * kDwnd),
+              RnicSenderFeedbackOutcome::AppliedNow);
+    EXPECT_EQ(full.currentWireRateBps(), UINT64_C(72000000000));
+    EXPECT_EQ(quarter.currentWireRateBps(), UINT64_C(18000000000));
+    EXPECT_EQ(full.membershipEpoch(), 1U);
+    EXPECT_EQ(quarter.membershipEpoch(), 1U);
+}
+
+TEST(RnicSenderGrantGateTest, FeedbackActivatesExactlyAtTheGovernedBoundary) {
+    RnicCollectiveController controller(kCapacity, kDwnd);
+    ASSERT_TRUE(controller.updateMembership(declare(60)).has_value());
+    RnicSenderGrantGate gate = activeGate(60, 250000);
+    const std::uint64_t startup_rate = gate.currentWireRateBps();
+
+    // Snapshot of window k = 1 governs receiver boundary 3 * dwnd; the
+    // sender-local boundary is one one-way earlier, at 2 * dwnd.
+    const RnicCollectiveGrant accept =
+        controller.acceptFor(60, controller.rateSnapshot(), 3 * kDwnd);
+    EXPECT_EQ(gate.receiveAccept(accept, 1500),
+              RnicSenderFeedbackOutcome::Scheduled);
+    EXPECT_EQ(gate.currentWireRateBps(), startup_rate);
+    EXPECT_EQ(gate.scheduledActivationTimePs(),
+              std::optional<std::uint64_t>(2 * kDwnd));
+    EXPECT_FALSE(gate.activateScheduledRate(2 * kDwnd - 1));
+    EXPECT_EQ(gate.currentWireRateBps(), startup_rate);
+    EXPECT_TRUE(gate.activateScheduledRate(2 * kDwnd));
+    // margin * C shared by one whole flow, scaled by the own quarter.
+    EXPECT_EQ(gate.currentWireRateBps(), UINT64_C(22500000000));
+    EXPECT_EQ(gate.membershipEpoch(), 1U);
+    EXPECT_FALSE(gate.scheduledActivationTimePs().has_value());
+    EXPECT_FALSE(gate.activateScheduledRate(2 * kDwnd));
+}
+
+TEST(RnicSenderGrantGateTest, SameWindowFeedbackIsIdempotent) {
+    RnicCollectiveController controller(kCapacity, kDwnd);
+    ASSERT_TRUE(controller.updateMembership(declare(70)).has_value());
+    RnicSenderGrantGate gate = activeGate(70);
+    const RnicCollectiveRateSnapshot snapshot = controller.rateSnapshot();
+
+    const RnicCollectiveGrant accept =
+        controller.acceptFor(70, snapshot, 2 * kDwnd);
+    EXPECT_EQ(gate.receiveAccept(accept, 2 * kDwnd),
+              RnicSenderFeedbackOutcome::AppliedNow);
+    // Every ACK generated in one receiver window carries the identical
+    // frozen snapshot; repeats change nothing.
+    const RnicCollectiveGrant same_window =
+        controller.feedbackFor(70, snapshot, 2 * kDwnd);
+    EXPECT_EQ(gate.applyRateFeedback(same_window, 2 * kDwnd + 100),
+              RnicSenderFeedbackOutcome::Ignored);
+    EXPECT_EQ(gate.applyRateFeedback(same_window, 2 * kDwnd + 200),
+              RnicSenderFeedbackOutcome::Ignored);
+    EXPECT_EQ(gate.currentWireRateBps(), UINT64_C(90000000000));
+
+    RnicCollectiveGrant conflicting = same_window;
+    conflicting.wire_rate_bps = UINT64_C(45000000000);
+    EXPECT_THROW(gate.applyRateFeedback(conflicting, 2 * kDwnd + 300),
+                 std::invalid_argument);
+}
+
+TEST(RnicSenderGrantGateTest, StaleWindowIsIgnoredAndLateSnapshotAppliesOnArrival) {
+    RnicCollectiveController controller(kCapacity, kDwnd);
+    ASSERT_TRUE(controller.updateMembership(declare(80)).has_value());
+    RnicSenderGrantGate gate = activeGate(80);
+    const RnicCollectiveRateSnapshot first = controller.rateSnapshot();
+
+    ASSERT_TRUE(controller.updateMembership(declare(81)).has_value());
+    const RnicCollectiveRateSnapshot second = controller.rateSnapshot();
+    const RnicCollectiveGrant newer =
+        controller.feedbackFor(80, second, 4 * kDwnd);
+    // Arrival inside the governed sender window applies immediately rather
+    // than pacing another window on stale state.
+    EXPECT_EQ(gate.applyRateFeedback(newer, 3 * kDwnd + 500),
+              RnicSenderFeedbackOutcome::AppliedNow);
+    EXPECT_EQ(gate.currentWireRateBps(), UINT64_C(45000000000));
+
+    const RnicCollectiveGrant reordered_older =
+        controller.feedbackFor(80, first, 3 * kDwnd);
+    EXPECT_EQ(gate.applyRateFeedback(reordered_older, 3 * kDwnd + 600),
+              RnicSenderFeedbackOutcome::Ignored);
+    EXPECT_EQ(gate.currentWireRateBps(), UINT64_C(45000000000));
+    EXPECT_EQ(gate.membershipEpoch(), 2U);
+}
+
+TEST(RnicSenderGrantGateTest, RejectsMalformedAndNoncausalFeedback) {
+    RnicCollectiveController controller(kCapacity, kDwnd);
+    ASSERT_TRUE(controller.updateMembership(declare(90)).has_value());
+    const RnicCollectiveGrant valid =
+        controller.feedbackFor(90, controller.rateSnapshot(), 2 * kDwnd);
+
+    RnicSenderGrantGate idle(90);
+    EXPECT_THROW(idle.applyRateFeedback(valid, 2 * kDwnd), std::logic_error);
+
+    RnicSenderGrantGate gate = activeGate(90);
+    RnicCollectiveGrant wrong_flow = valid;
+    wrong_flow.flow_id = 91;
+    EXPECT_THROW(gate.applyRateFeedback(wrong_flow, 2 * kDwnd),
+                 std::invalid_argument);
+    RnicCollectiveGrant vestigial = valid;
+    vestigial.lease_expiry_ps = 1;
+    EXPECT_THROW(gate.applyRateFeedback(vestigial, 2 * kDwnd),
+                 std::invalid_argument);
+    RnicCollectiveGrant misaligned = valid;
+    misaligned.effective_time_ps = 2 * kDwnd + 1;
+    EXPECT_THROW(gate.applyRateFeedback(misaligned, 2 * kDwnd),
+                 std::invalid_argument);
+    RnicCollectiveGrant wrong_kind = valid;
+    wrong_kind.kind = RnicCollectiveGrantKind::Accept;
+    EXPECT_THROW(gate.receiveAccept(valid, 2 * kDwnd), std::invalid_argument);
+    // A snapshot cannot govern a boundary more than two windows past its
+    // physical arrival.
+    RnicCollectiveGrant noncausal = valid;
+    noncausal.effective_time_ps = 5 * kDwnd;
+    EXPECT_THROW(gate.applyRateFeedback(noncausal, 2 * kDwnd),
+                 std::runtime_error);
+    EXPECT_EQ(gate.currentWireRateBps(), kMarginDeratedCapacity);
+}
+
+TEST(RnicSenderGrantGateTest, RetirementIsTerminal) {
+    RnicCollectiveController controller(kCapacity, kDwnd);
     ASSERT_TRUE(controller.updateMembership(declare(100)).has_value());
-    RnicSenderGrantGate gate = admittedGate(
-        controller.acceptFor(100, 100, 50, 500), 40);
-    EXPECT_TRUE(gate.expireLease(1, 500, 500));
-    EXPECT_EQ(gate.phase(), RnicSenderGrantGate::Phase::LeaseExpired);
-    EXPECT_FALSE(gate.dataEligible());
-    EXPECT_EQ(gate.currentWireRateBps(), 0U);
+    RnicSenderGrantGate gate = activeGate(100);
+    const RnicCollectiveGrant pending =
+        controller.feedbackFor(100, controller.rateSnapshot(), 3 * kDwnd);
+    EXPECT_EQ(gate.applyRateFeedback(pending, kDwnd + 500),
+              RnicSenderFeedbackOutcome::Scheduled);
 
     gate.receiverRetirementCommitted();
     EXPECT_EQ(gate.phase(), RnicSenderGrantGate::Phase::Retired);
-    EXPECT_FALSE(gate.applyRateFeedback(
-        controller.markedFeedbackFor(100, 600, 700, 900), 650));
+    EXPECT_FALSE(gate.dataEligible());
+    EXPECT_EQ(gate.currentWireRateBps(), 0U);
+    EXPECT_FALSE(gate.scheduledActivationTimePs().has_value());
+    EXPECT_FALSE(gate.activateScheduledRate(2 * kDwnd));
+    EXPECT_EQ(gate.applyRateFeedback(pending, 2 * kDwnd),
+              RnicSenderFeedbackOutcome::Ignored);
+    gate.receiverRetirementCommitted();
+    EXPECT_EQ(gate.phase(), RnicSenderGrantGate::Phase::Retired);
 }
 
 TEST(RnicCollectiveControlTest, RejectsInvalidParametersAndOverflow) {
     EXPECT_THROW(
-        RnicCollectiveController(0, kControlDeadline),
+        RnicCollectiveController(0, kDwnd),
         std::invalid_argument);
     EXPECT_THROW(
         RnicCollectiveController(kCapacity, 0),
         std::invalid_argument);
     EXPECT_THROW(
-        RnicCollectiveController(kCapacity, kControlDeadline, 0),
+        RnicCollectiveController(kCapacity, kDwnd, 0),
         std::invalid_argument);
     EXPECT_THROW(
         RnicCollectiveController(
             std::numeric_limits<std::uint64_t>::max(),
-            kControlDeadline),
+            kDwnd),
         std::invalid_argument);
 
-    RnicCollectiveController controller(kCapacity, kControlDeadline);
+    RnicCollectiveController controller(kCapacity, kDwnd);
     EXPECT_THROW(
         controller.updateMembership(declare(1, 0)),
         std::invalid_argument);

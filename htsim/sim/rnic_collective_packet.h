@@ -44,10 +44,6 @@ struct RnicCollectiveDataMetadata {
     // same logical packet increments this attempt; receiver state is keyed by
     // flow plus packet_index rather than by a simulator lifecycle identifier.
     std::uint32_t transmission_attempt{0};
-    // Exactly one backlogged DATA packet is selected at a deterministic
-    // pseudo-random position in each delay window. After post-resequence
-    // release, this bit causes the receiver to return an explicit-rate ACK.
-    bool rate_feedback_mark{false};
 
     bool isFinalPacket() const noexcept {
         return packet_index + 1 == final_ledger.total_data_packets;
@@ -62,7 +58,6 @@ struct RnicCollectiveGapNackMetadata {
     std::uint64_t payload_byte_offset;
     RnicPacketExtent extent;
     std::uint32_t requested_transmission_attempt;
-    bool rate_feedback_mark{false};
 };
 
 // Physical receiver-to-sender closure for one previously NACKed logical
@@ -120,9 +115,8 @@ public:
 
 // A pooled, explicit-route HTSIM packet.  Metadata is immutable after factory
 // construction, DATA is low priority, and all six controls are high priority.
-// GRANT_UPDATE normally represents a marked-DATA explicit-rate ACK. A sender
-// whose lease expires re-DECLAREs before resuming, and receives the same
-// current-rate packet with marked_data_ack=false.
+// GRANT_UPDATE is the explicit-rate ACK of one resequenced-and-released DATA
+// packet; it carries the receiver's window-frozen (n_hat, wire_rate) snapshot.
 // Control identity comes only from kind()/priority(): header_only remains false
 // because HTSIM also uses that bit to mean a DATA packet was trimmed.  There is
 // deliberately no trim, bounce, route replacement, or retransmission path.
