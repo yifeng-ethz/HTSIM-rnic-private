@@ -8,6 +8,7 @@
  * A ROCEv2 source and sink
  */
 
+#include <cstdint>
 #include <list>
 #include <map>
 //#include "util.h"

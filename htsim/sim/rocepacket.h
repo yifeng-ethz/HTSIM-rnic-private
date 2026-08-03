@@ -2,6 +2,7 @@
 #ifndef ROCEPACKET_H
 #define ROCEPACKET_H
 
+#include <cstdint>
 #include <list>
 #include "network.h"
 
