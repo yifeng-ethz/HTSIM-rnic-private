@@ -73,6 +73,7 @@ RnicAtlahsRuntimeConfig collectiveRuntimeConfig(const RnicAtlahsCliOptions& opti
         {},
         options.collective.maximum_retransmissions,
         options.collective.retransmission_rto_ps,
+        options.collective.fractional_nflow,
     };
 }
 
@@ -170,8 +171,9 @@ std::string renderRnicAtlahsModelManifest(const RnicAtlahsCliOptions& options,
         }
         manifest << '\n';
         manifest << "[RNIC manifest] declaration_gate=physical-accept"
-                 << " declare_cca_field=nflow"
-                 << " startup_nflow=1"
+                 << " declare_cca_field=nflow_ppm"
+                 << " fractional_nflow="
+                 << (options.collective.fractional_nflow ? "on" : "off")
                  << " declare_debug_fields=collective_id,expected_fan_in"
                  << " declare_debug_affects_rx_cca=false"
                  << " grant=margin*C/n_hat"

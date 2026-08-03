@@ -44,6 +44,7 @@ struct RnicAtlahsCollectiveCliOptions {
     std::uint64_t ring_wire_capacity_bytes = UINT64_C(1) << 20;
     std::uint64_t ns_tm3_shared_buffer_bytes = UINT64_C(1) << 20;
     std::uint32_t maximum_retransmissions = 8;
+    bool fractional_nflow = false;
     std::uint64_t retransmission_rto_ps = UINT64_C(50000000000);
 };
 
@@ -89,6 +90,7 @@ struct RnicAtlahsExplicitCliOptions {
     bool ring_wire_capacity_bytes = false;
     bool ns_tm3_shared_buffer_bytes = false;
     bool cn_maximum_retransmissions = false;
+    bool cn_fractional_nflow = false;
     bool cn_retransmission_rto_ps = false;
 
     bool ss_control_wire_bytes = false;

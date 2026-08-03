@@ -113,7 +113,8 @@ TEST(RnicAtlahsDriverTest, CollectiveManifestNamesPhysicalModelExactly) {
     EXPECT_NE(manifest.find("voq_key=physical-ingress-x-physical-egress"), std::string::npos);
     EXPECT_NE(manifest.find("pfc=off ecn=off"), std::string::npos);
     EXPECT_NE(manifest.find("declaration_gate=physical-accept"), std::string::npos);
-    EXPECT_NE(manifest.find("declare_cca_field=nflow startup_nflow=1"), std::string::npos);
+    EXPECT_NE(manifest.find("declare_cca_field=nflow_ppm fractional_nflow=off"),
+              std::string::npos);
     EXPECT_NE(manifest.find("declare_debug_fields=collective_id,expected_fan_in "
                             "declare_debug_affects_rx_cca=false"),
               std::string::npos);
