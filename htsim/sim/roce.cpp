@@ -2,6 +2,9 @@
 #include <math.h>
 #include <iostream>
 #include <algorithm>
+#include <limits>
+#include <sstream>
+#include <stdexcept>
 #include "roce.h"
 #include "queue.h"
 #include <stdio.h>
@@ -74,10 +77,79 @@ RoceSrc::RoceSrc(RoceLogger* logger, TrafficLogger* pktlogger, EventList &eventl
 
     _state_send = READY;
     _time_last_sent = 0;
+    _has_sent_packet = false;
+    _highest_new_sequence_sent = 0;
     
     _pacing_rate = rate;
     
     update_spacing();
+}
+
+RoceSrc::~RoceSrc() {
+    cancelPacing();
+}
+
+void RoceSrc::schedulePacingAt(simtime_picosec when) {
+    if (when < eventlist().now()) {
+        throw std::logic_error("RoCE pacing event is in the past");
+    }
+    if (_pacing_event.has_value()) {
+        if ((*_pacing_event)->first <= when) {
+            return;
+        }
+        eventlist().cancelPendingSourceByHandle(*this, *_pacing_event);
+        _pacing_event.reset();
+    }
+    const EventList::Handle handle =
+        eventlist().sourceIsPendingGetHandle(*this, when);
+    if (handle != EventList::nullHandle()) {
+        _pacing_event = handle;
+    }
+}
+
+void RoceSrc::cancelPacing() {
+    if (!_pacing_event.has_value()) {
+        return;
+    }
+    eventlist().cancelPendingSourceByHandle(*this, *_pacing_event);
+    _pacing_event.reset();
+}
+
+simtime_picosec RoceSrc::pacing_event_time() const {
+    if (!_pacing_event.has_value()) {
+        throw std::logic_error("RoCE source has no pending pacing event");
+    }
+    return (*_pacing_event)->first;
+}
+
+void RoceSrc::update_spacing() {
+    if (_pacing_rate == 0) {
+        throw std::logic_error("RoCE pacing rate must be positive");
+    }
+    constexpr unsigned __int128 kPicosecondsPerSecond =
+        static_cast<unsigned __int128>(UINT64_C(1000000000000));
+    const unsigned __int128 wire_bytes =
+        static_cast<unsigned __int128>(Packet::data_packet_size())
+        + static_cast<unsigned __int128>(RocePacket::ACKSIZE);
+    const unsigned __int128 numerator =
+        wire_bytes * 8 * kPicosecondsPerSecond;
+    const unsigned __int128 interval =
+        (numerator + _pacing_rate - 1) / _pacing_rate;
+    if (interval == 0
+        || interval > std::numeric_limits<simtime_picosec>::max()) {
+        throw std::overflow_error("RoCE pacing interval is not representable");
+    }
+    _packet_spacing = static_cast<simtime_picosec>(interval);
+}
+
+void RoceSrc::setRate(linkspeed_bps rate) {
+    if (rate == 0) {
+        throw std::invalid_argument("RoCE rate must be positive");
+    }
+    _bitrate = rate;
+    _pacing_rate = rate;
+    update_spacing();
+    schedulePacingAt(eventlist().now());
 }
 
 /*mem_b RoceSrc::queuesize(){
@@ -104,16 +176,20 @@ void RoceSrc::log_me() {
 }
 
 void RoceSrc::startflow(){
-    cout << "startflow " << _flow._name << " at " << timeAsUs(eventlist().now()) << endl;
     _flow_started = true;
     _highest_sent = 0;
     _last_acked = 0;
     
     _acked_packets = 0;
     _packets_sent = 0;
+    _new_packets_sent = 0;
+    _rtx_packets_sent = 0;
     _done = false;
+    _time_last_sent = 0;
+    _has_sent_packet = false;
+    _highest_new_sequence_sent = 0;
     
-    eventlist().sourceIsPendingRel(*this,0);
+    schedulePacingAt(eventlist().now());
 }
 
 void RoceSrc::set_end_trigger(Trigger& end_trigger) {
@@ -131,10 +207,10 @@ void RoceSrc::connect(Route* routeout, Route* routeback, RoceSink& sink, simtime
 
     if (starttime != TRIGGER_START) {
         //cout << "scheduling start at " << starttime << " now is " << timeAsUs(eventlist().now())<< endl;
-        eventlist().sourceIsPending(*this,timeFromUs((double)starttime));
+        schedulePacingAt(timeFromUs((double)starttime));
         //startflow();
     }
-    else cout << "TRIGGER START " << _nodename << endl; 
+    else if (_log_me) cout << "TRIGGER START " << _nodename << endl;
 }
 
 /* Process a NACK.  Generally this involves queuing the NACKed packet
@@ -143,22 +219,16 @@ void RoceSrc::connect(Route* routeout, Route* routeback, RoceSink& sink, simtime
    resend immediately */
 void RoceSrc::processNack(const RoceNack& nack){
     _last_acked = nack.ackno();
-    _rtx_packets_sent += _highest_sent - _last_acked;
 
     if (_log_me)
         cout << "Src " << get_id() << " go back n from " <<  _highest_sent << " to " << _last_acked << " at " << timeAsUs(eventlist().now()) << " us" << endl;
 
-    if (_flow_size && _highest_sent>=_flow_size && _last_acked < _flow_size){
-        //restart the pacing of packets, this has stopped once we've passed the flow size but now a packet in the last window was lost.
-        if (_log_me)
-            cout << "Src " << get_id() << " restarting pacing\n";
-        eventlist().sourceIsPendingRel(*this,0);
-    }
-
     _highest_sent = _last_acked;
-    _nacks_received ++;
-
-    //this packet be sent when it is time to send a new packet!
+    // A finite flow stops scheduling pacing events after its last packet.
+    // GBN must explicitly restart the sender when a NACK reopens that tail.
+    if (!_done) {
+        schedulePacingAt(eventlist().now());
+    }
 }
 
 /* Process an ACK.  Mostly just housekeeping*/
@@ -198,6 +268,7 @@ void RoceSrc::processAck(const RoceAck& ack) {
         // the cumulative ack, but we'll get an ACK or NACK anyway in
         // due course.
         _last_acked = ackno;
+        _acked_packets = ackno;
     }
     if (_logger) _logger->logRoce(*this, RoceLogger::ROCE_RCV);
 
@@ -205,8 +276,8 @@ void RoceSrc::processAck(const RoceAck& ack) {
         cout << "Src " << get_id() << " ackno " << ackno << endl;
 
     if (ackno * _mss >= _flow_size){
-        cout << "Flow " << _name << " " << get_id() << " finished at " << timeAsUs(eventlist().now()) << " total bytes " << ackno << endl;
         _done = true;
+        cancelPacing();
         if (_end_trigger) {
             _end_trigger->activate();
         }
@@ -221,12 +292,12 @@ void RoceSrc::processPause(const EthPausePacket& p) {
         //cout << "Source " << str() << " PAUSE " << timeAsUs(eventlist().now()) << endl;
         //assert(_state_send != PAUSED);
         _state_send = PAUSED;
+        cancelPacing();
     } else {
         //we are allowed to send!
         //assert(_state_send != READY);
         _state_send = READY;
-        cout << "Source " << str() << " RESUME " << timeAsUs(eventlist().now()) << endl;
-        eventlist().sourceIsPendingRel(*this,0);
+        schedulePacingAt(eventlist().now());
     }
 }
 
@@ -234,6 +305,7 @@ void RoceSrc::receivePacket(Packet& pkt)
 {
     if (!_flow_started){
         assert(pkt.type()==ETH_PAUSE);
+        pkt.free();
         return; 
     }
 
@@ -243,8 +315,10 @@ void RoceSrc::receivePacket(Packet& pkt)
         _stop_time = 0;
     }
 
-    if (_done)
+    if (_done) {
+        pkt.free();
         return;
+    }
 
     switch (pkt.type()) {
     case ETH_PAUSE:
@@ -288,7 +362,17 @@ void RoceSrc::send_packet() {
         }
     }
 
-    p = RocePacket::newpkt(_flow, *_route, _highest_sent+1, _mss, false, last_packet,_dstaddr);
+    uint16_t payload_bytes = _mss;
+    if (_flow_size) {
+        const uint64_t payload_sent = _highest_sent * _mss;
+        const uint64_t remaining = _flow_size - payload_sent;
+        payload_bytes = static_cast<uint16_t>(std::min<uint64_t>(
+            remaining, static_cast<uint64_t>(_mss)));
+    }
+    const uint64_t sequence = _highest_sent + 1;
+    const bool retransmission = sequence <= _highest_new_sequence_sent;
+    p = RocePacket::newpkt(_flow, *_route, sequence,
+                           payload_bytes, false, last_packet, _dstaddr);
     
     assert(p);
     p->set_pathid(_pathid);
@@ -301,6 +385,12 @@ void RoceSrc::send_packet() {
     }
     _highest_sent ++;
     _packets_sent++;
+    if (retransmission) {
+        ++_rtx_packets_sent;
+    } else {
+        ++_new_packets_sent;
+        _highest_new_sequence_sent = sequence;
+    }
 
     //cout << "Sent " << _highest_sent+1 << " Flow Size: " << _flow_size << " Flow " << _name << " time " << timeAsUs(eventlist().now()) << endl;
 
@@ -308,12 +398,17 @@ void RoceSrc::send_packet() {
 }
 
 void RoceSrc::doNextEvent() {
+    // EventList removed this exact handle before invoking the source.
+    _pacing_event.reset();
     if (!_flow_started){
       startflow();
       return;
     }
 
     assert(_flow_started);
+    if (_done) {
+        return;
+    }
     if (_log_me) 
         cout << "Src " << get_id() << " do next event\n";
         
@@ -322,25 +417,56 @@ void RoceSrc::doNextEvent() {
         if (_log_me) 
             cout << "Src " << get_id() << " paused\n";
 
-        cout << "PAUSE" << endl;
         return;
     }
 
-    if (_flow_size && _highest_sent >= _flow_size) { 
+    if (_flow_size && _highest_sent * _mss >= _flow_size) {
         if (_log_me) 
             cout << "Src " << get_id()  << " stopping send coz highest_sent is " << _highest_sent << endl;
         return;
     }
 
-    if (_time_last_sent==0 || eventlist().now() - _time_last_sent >= _packet_spacing){
+    const simtime_picosec now = eventlist().now();
+    auto next_eligible_time = [this]() {
+        if (!_has_sent_packet) {
+            return eventlist().now();
+        }
+        if (_time_last_sent
+            > std::numeric_limits<simtime_picosec>::max()
+                  - _packet_spacing) {
+            throw std::overflow_error("RoCE pacing deadline overflow");
+        }
+        return _time_last_sent + _packet_spacing;
+    };
+
+    if (!_has_sent_packet || now >= next_eligible_time()) {
+        const std::uint64_t packets_before = _packets_sent;
         send_packet();
-        _time_last_sent = eventlist().now();
+        if (_packets_sent == packets_before) {
+            // No packet was eligible (normally the finite tail is waiting for
+            // its cumulative ACK).  A wakeup loop cannot make progress here.
+            return;
+        }
+        _time_last_sent = now;
+        _has_sent_packet = true;
     }
 
-    simtime_picosec next_send = _time_last_sent + _packet_spacing;
-    assert(next_send > eventlist().now());
+    if (_done || _state_send == PAUSED
+        || (_flow_size && _highest_sent * _mss >= _flow_size)) {
+        return;
+    }
 
-    eventlist().sourceIsPending(*this, next_send);
+    const simtime_picosec next_send = next_eligible_time();
+    if (next_send <= now) {
+        std::ostringstream error;
+        error << "RoCE pacing failed to advance: now=" << now
+              << " last_send=" << _time_last_sent
+              << " spacing=" << _packet_spacing
+              << " rate=" << _pacing_rate;
+        throw std::logic_error(error.str());
+    }
+
+    schedulePacingAt(next_send);
 }
 
 ////////////////////////////////////////////////////////////////
@@ -426,7 +552,10 @@ void RoceSink::receivePacket(Packet& pkt) {
         if (!_nack_sent){
             send_nack(ts,_cumulative_ack);  
             _nack_sent = true;
-            cout << "Wrong seqno received at Roce SINK " << seqno << " expecting " << _cumulative_ack << endl;
+            if (_log_me) {
+                cout << "Wrong seqno received at Roce SINK " << seqno
+                     << " expecting " << _cumulative_ack << endl;
+            }
         }
         pkt.flow().logTraffic(pkt,*this,TrafficLogger::PKT_RCVDESTROY);
 
@@ -453,7 +582,9 @@ void RoceSink::receivePacket(Packet& pkt) {
 
         send_ack(ts);
     } else if (seqno < _cumulative_ack+1) {
-        //must have been a bad retransmit
+        // A duplicate may be the sender's silent-tail RTO recovery after the
+        // final ACK was lost.  Re-ACK the current cumulative edge.
+        send_ack(ts);
     }
     // have we seen everything yet?
     pkt.flow().logTraffic(pkt,*this,TrafficLogger::PKT_RCVDESTROY);
@@ -466,6 +597,7 @@ void RoceSink::send_ack(simtime_picosec ts) {
     if (_log_me)
         cout << "Sink " << get_id() << " sending ack " << _cumulative_ack << endl;
     ack->set_pathid(0);
+    ack->set_ts(ts);
     ack->sendOn();
 }
 
@@ -481,7 +613,3 @@ void RoceSink::send_nack(simtime_picosec ts, RocePacket::seq_t ackno) {
     nack->set_ts(ts);
     nack->sendOn();
 }
-
-
-
-

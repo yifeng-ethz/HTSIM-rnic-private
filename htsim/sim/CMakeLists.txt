@@ -154,6 +154,7 @@ target_link_libraries(parse_output PRIVATE htsim)
 if ( ENABLE_TESTS )
     # Unit tests.
     set(UNIT_TEST_FILES
+        dcqcn_test
         eventlist_microphase_test
         pipe_test
         rnic_collective_control_test

@@ -24,11 +24,17 @@ class EthPausePacket : public Packet {
         p->_senderID = senderid;
         p->_size = PAUSESIZE;
         p->_flow = &(Packet::_defaultFlow);
+        ++_live_packets;
         return p;
     }
   
     virtual PktPriority priority() const {return Packet::PRIO_NONE;} // This shouldn't encounter a priority queue
-    void free() {_packetdb.freePacket(this);}
+    void free() {
+        assert(_live_packets > 0);
+        --_live_packets;
+        _packetdb.freePacket(this);
+    }
+    static std::uint64_t live_packet_count() { return _live_packets; }
     virtual ~EthPausePacket(){}
 
     inline uint32_t sleepTime() const {return _sleepTime;}
@@ -37,6 +43,7 @@ class EthPausePacket : public Packet {
     uint32_t _sleepTime;
     uint32_t _senderID;
     static PacketDB<EthPausePacket> _packetdb;
+    static std::uint64_t _live_packets;
 };
 
 #endif
