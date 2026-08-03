@@ -2,6 +2,7 @@
 #ifndef CNPPACKET_H
 #define CNPPACKET_H
 
+#include <cstdint>
 #include <list>
 #include "network.h"
 

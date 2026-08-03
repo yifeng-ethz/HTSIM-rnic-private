@@ -2,6 +2,7 @@
 #ifndef ETHPACKET_H
 #define ETHPACKET_H
 
+#include <cstdint>
 #include <list>
 #include <bitset>
 #include "network.h"
