@@ -109,6 +109,7 @@ set(SOURCE_FILES
     rnic_packetized_manifold_runtime.cpp
     rnic_port.cpp
     rnic_prbs_pacer.cpp
+    rnic_profile.cpp
     rnic_ring_cam.cpp
     rng.cpp
     roce.cpp
@@ -164,6 +165,7 @@ if ( ENABLE_TESTS )
         rnic_packetized_manifold_runtime_test
         rnic_port_test
         rnic_prbs_pacer_test
+        rnic_profile_test
         rnic_ring_cam_test
     )
 
@@ -175,6 +177,18 @@ if ( ENABLE_TESTS )
             PROPERTIES TIMEOUT 60
         )
     endforeach()
+
+    # AtlahsHtsimApi retains its legacy Clos/UEC path alongside the injected
+    # runtime seam, so this focused test also needs the datacenter definitions.
+    # The two static archives reference each other (api -> topology -> queues),
+    # so htsim appears on both sides of htsim_dc for single-pass resolution.
+    add_executable(atlahs_flow_runtime_test atlahs_flow_runtime_test.cpp)
+    target_link_libraries(
+        atlahs_flow_runtime_test PRIVATE htsim htsim_dc htsim gtest_main gmock_main)
+    gtest_discover_tests(atlahs_flow_runtime_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
 endif()
 
 # Always print ENABLE_TESTS status, so folks don't miss it.

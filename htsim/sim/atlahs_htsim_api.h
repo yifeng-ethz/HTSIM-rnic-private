@@ -2,9 +2,15 @@
 #define ATLAHS_HTSIM_API_H
 
 #include "atlahs_api.h"
+#include "atlahs_flow_runtime.h"
+#include <cstdint>
 #include <iostream>
 #include <functional>
+#include <limits>
 #include <memory>
+#include <optional>
+#include <stdexcept>
+#include <unordered_map>
 #include "compute_event.h"
 #include "null_event.h"
 #include "atlahs_event.h"
@@ -47,11 +53,36 @@ public:
     uint64_t finalCwnd;
 };
 
+// Protocol-neutral completion record for runtime-owned ATLAHS flows.  Times
+// remain in the simulator's picosecond clock so experiment analysis never has
+// to reconstruct FCT from rounded console output.
+struct AtlahsCompletedFlowRecord {
+    AtlahsFlowId flow_id;
+    std::uint32_t source;
+    std::uint32_t destination;
+    std::uint64_t payload_bytes;
+    simtime_picosec start_time_ps;
+    simtime_picosec completion_time_ps;
+    std::uint64_t tag;
+
+    simtime_picosec fct_ps() const {
+        return completion_time_ps - start_time_ps;
+    }
+};
+
 class AtlahsHtsimApi : public AtlahsApi {
 public:
     enum class GoalRankMapping {
         GpuRank,
         UniqueNic,
+    };
+
+    struct GoalLayout {
+        std::uint32_t rank_count;
+        int cpu_count;
+        int nic_count;
+        GoalRankMapping rank_mapping;
+        std::uint32_t physical_node_count;
     };
 
     AtlahsHtsimApi() = default;
@@ -80,8 +111,25 @@ public:
     FatTreeTopologyCfg* getTopologyCfg() const { return _topo_cfg; }
 
     // Getter and setter for LogSimInterface
-    void setLogSimInterface(LogSimInterface* logsim_interface) { _logsim_interface = logsim_interface; }
+    void setLogSimInterface(LogSimInterface* logsim_interface);
     LogSimInterface* getLogSimInterface() const { return _logsim_interface; }
+
+    // An injected runtime owns the network timing for delegated flows.  It is
+    // intentionally independent of the legacy UEC/topology objects.
+    void setFlowRuntime(std::unique_ptr<AtlahsFlowRuntime> runtime);
+    AtlahsFlowRuntime* getFlowRuntime() const { return _flow_runtime.get(); }
+    bool hasFlowRuntime() const { return _flow_runtime != nullptr; }
+    bool runtimeHasPendingPhysicalWork() const noexcept {
+        return _flow_runtime != nullptr
+               && _flow_runtime->hasPendingPhysicalWork();
+    }
+
+    // Runtime completion is idempotent: only a currently pending flow can be
+    // completed, and EventFinished is invoked exactly once for that flow ID.
+    bool completeFlow(AtlahsFlowId flow_id);
+    const std::vector<AtlahsCompletedFlowRecord>& completedFlows() const {
+        return _completed_flows;
+    }
 
     // Getter and setter for ComputeEvent
     void setComputeEvent(ComputeEvent* compute_event) { 
@@ -128,8 +176,28 @@ public:
 
     void setGoalRankMapping(GoalRankMapping mapping) { goal_rank_mapping = mapping; }
     GoalRankMapping getGoalRankMapping() const { return goal_rank_mapping; }
+    void setGoalRankMappingOverride(
+        std::optional<GoalRankMapping> mapping) {
+        goal_rank_mapping_override = mapping;
+    }
+    std::optional<GoalRankMapping> getGoalRankMappingOverride() const {
+        return goal_rank_mapping_override;
+    }
 
-    void setGoalRankMappingFromBinaryHeader(uint32_t rank_count, int cpu_count, int nic_count) {
+    // require_exact_node_count keeps the runtime-owned path (htsim_rnic)
+    // strict: an assembled physical runtime is sized from the GOAL layout, so
+    // a mismatched -nodes override would disagree with every flow submission.
+    // The legacy Clos/UEC path stays permissive; a schedule may occupy the
+    // first ranks of a larger configured topology, as it always could.
+    GoalLayout configureGoalLayoutFromBinaryHeader(
+        std::uint32_t rank_count,
+        int cpu_count,
+        int nic_count,
+        bool require_exact_node_count = false) {
+        if (rank_count == 0 || cpu_count <= 0 || nic_count <= 0) {
+            throw std::invalid_argument(
+                "GOAL layout requires positive rank, CPU, and NIC counts");
+        }
         setNumberNic(nic_count);
 
         // The binary GOAL format does not store the generator version. Infer
@@ -139,8 +207,60 @@ public:
         const bool looks_like_v2_gpu_rank =
             nic_count == 1 ||
             (nic_count == 2 && rank_count > static_cast<uint32_t>(nic_count) && cpu_count <= 8);
-        goal_rank_mapping =
-            looks_like_v2_gpu_rank ? GoalRankMapping::GpuRank : GoalRankMapping::UniqueNic;
+        goal_rank_mapping = goal_rank_mapping_override.value_or(
+            looks_like_v2_gpu_rank ? GoalRankMapping::GpuRank
+                                   : GoalRankMapping::UniqueNic);
+
+        const std::uint64_t required_nodes =
+            usesUniqueNicRankMapping()
+                ? static_cast<std::uint64_t>(rank_count)
+                      * static_cast<std::uint64_t>(nic_count)
+                : static_cast<std::uint64_t>(rank_count);
+        if (required_nodes
+            > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
+            throw std::overflow_error(
+                "GOAL physical node count exceeds the ATLAHS API domain");
+        }
+        if (total_nodes == 0) {
+            total_nodes = static_cast<int>(required_nodes);
+        } else if (total_nodes < 0
+            || static_cast<std::uint64_t>(total_nodes) < required_nodes
+            || (require_exact_node_count
+                && static_cast<std::uint64_t>(total_nodes) != required_nodes)) {
+            throw std::invalid_argument(
+                "configured HTSIM node count does not match GOAL "
+                + std::string(getGoalRankMappingName()) + " layout: expected "
+                + std::to_string(required_nodes) + ", configured "
+                + std::to_string(total_nodes));
+        }
+        return GoalLayout{rank_count,
+                          cpu_count,
+                          nic_count,
+                          goal_rank_mapping,
+                          static_cast<std::uint32_t>(total_nodes)};
+    }
+
+    // A layout-ready callback may install a runtime, but it must not rewrite
+    // the rank-to-physical-node interpretation that was just resolved from
+    // the GOAL header. Send() consults these live fields for every flow, so a
+    // mutation here would otherwise silently disagree with runtime setup.
+    void validateGoalLayoutSnapshot(const GoalLayout& layout) const {
+        if (total_nodes < 0
+            || static_cast<std::uint64_t>(total_nodes)
+                   != layout.physical_node_count) {
+            throw std::logic_error(
+                "ATLAHS layout-ready callback changed the physical node "
+                "count");
+        }
+        if (goal_rank_mapping != layout.rank_mapping) {
+            throw std::logic_error(
+                "ATLAHS layout-ready callback changed the GOAL rank "
+                "mapping");
+        }
+        if (number_nics != layout.nic_count) {
+            throw std::logic_error(
+                "ATLAHS layout-ready callback changed the GOAL NIC count");
+        }
     }
 
     bool usesUniqueNicRankMapping() const {
@@ -170,7 +290,7 @@ public:
     linkspeed_bps linkspeed; // TO DO
     int linkspeed_gbps = 100; // TO DO
     double htsim_G; // TO DO
-    int total_nodes; // TO DO
+    int total_nodes = 0; // TO DO
     bool send_done_return_control = false; // TO DO
     std::vector<FlowInfo> flowInfos;
     bool print_stats_flows = false;
@@ -189,12 +309,21 @@ private:
     FatTreeTopology* _topo = nullptr;
     FatTreeTopologyCfg* _topo_cfg = nullptr;
     LogSimInterface* _logsim_interface = nullptr;
+    std::unique_ptr<AtlahsFlowRuntime> _flow_runtime;
+
+    struct PendingFlow {
+        graph_node_properties node;
+        AtlahsFlowRequest request;
+    };
+    std::unordered_map<AtlahsFlowId, PendingFlow> _pending_flows;
+    std::vector<AtlahsCompletedFlowRecord> _completed_flows;
     ComputeEvent *compute_events_handler = nullptr;
     NullEvent *null_events_handler = nullptr;
 
     // LGS Specific
     int number_nics = 1;
     GoalRankMapping goal_rank_mapping = GoalRankMapping::GpuRank;
+    std::optional<GoalRankMapping> goal_rank_mapping_override;
 
     // EQDS Specific 
     vector<EqdsPullPacer*> pacersEQDS;

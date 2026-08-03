@@ -4,6 +4,72 @@
 
 #include "logsim-interface.h"
 #include "lgs/LogGOPSim.hpp"
+
+#include <stdexcept>
+
+void AtlahsHtsimApi::setLogSimInterface(LogSimInterface* logsim_interface) {
+    _logsim_interface = logsim_interface;
+    if (_logsim_interface != nullptr) {
+        _logsim_interface->setNetworkTiming(
+            _flow_runtime ? AtlahsNetworkTiming::RuntimeOwned
+                          : AtlahsNetworkTiming::LegacyLogSimGap);
+    }
+}
+
+void AtlahsHtsimApi::setFlowRuntime(
+    std::unique_ptr<AtlahsFlowRuntime> runtime) {
+    if (!_pending_flows.empty()) {
+        throw std::logic_error("cannot replace an ATLAHS runtime with pending flows");
+    }
+    _flow_runtime = std::move(runtime);
+    if (_logsim_interface != nullptr) {
+        _logsim_interface->setNetworkTiming(
+            _flow_runtime ? AtlahsNetworkTiming::RuntimeOwned
+                          : AtlahsNetworkTiming::LegacyLogSimGap);
+    }
+}
+
+bool AtlahsHtsimApi::completeFlow(AtlahsFlowId flow_id) {
+    auto pending_it = _pending_flows.find(flow_id);
+    if (pending_it == _pending_flows.end()) {
+        return false;
+    }
+
+    // Remove before notifying LogSimInterface.  EventFinished is synchronous,
+    // and the local copy keeps event.node alive throughout that call while a
+    // duplicate/re-entrant completion observes the flow as already complete.
+    PendingFlow pending = std::move(pending_it->second);
+    _pending_flows.erase(pending_it);
+
+    if (_eventlist == nullptr) {
+        throw std::logic_error(
+            "ATLAHS completed a runtime-owned flow without an EventList");
+    }
+    const simtime_picosec completion_time_ps = _eventlist->now();
+    if (completion_time_ps < pending.request.start_time_ps) {
+        throw std::logic_error(
+            "ATLAHS runtime-owned flow completed before it started");
+    }
+    _completed_flows.push_back(AtlahsCompletedFlowRecord{
+        pending.request.flow_id,
+        pending.request.source,
+        pending.request.destination,
+        pending.request.payload_bytes,
+        pending.request.start_time_ps,
+        completion_time_ps,
+        pending.request.tag});
+
+    EventOver event(
+        static_cast<int>(pending.request.source),
+        static_cast<int>(pending.request.destination),
+        pending.request.payload_bytes,
+        static_cast<int>(pending.request.tag),
+        pending.request.start_time_ps,
+        AtlahsEventType::SEND_EVENT_OVER);
+    event.node = &pending.node;
+    EventFinished(event);
+    return true;
+}
     
 void AtlahsHtsimApi::Send(const SendEvent &event, graph_node_properties elem) {
     //std::cout << "AtlahsHtsimApi: Sending event" << std::endl;
@@ -18,8 +84,38 @@ void AtlahsHtsimApi::Send(const SendEvent &event, graph_node_properties elem) {
     int to = event.getTo();
     int from = event.getFrom();
     int tag = event.getTag();
-    int size = event.getSizeBytes();
+    uint64_t size = event.getSizeBytes();
     size = size * 1;    
+
+    if (_flow_runtime) {
+        const int physical_from = getHtsimNodeNumber(from, elem.nic);
+        const int physical_to = getHtsimNodeNumber(to, elem.nic);
+        if (physical_from < 0 || physical_to < 0) {
+            throw std::invalid_argument("ATLAHS physical node IDs must be non-negative");
+        }
+
+        AtlahsFlowRequest request;
+        request.flow_id = makeAtlahsFlowId(elem.host, elem.offset);
+        request.source = static_cast<std::uint32_t>(physical_from);
+        request.destination = static_cast<std::uint32_t>(physical_to);
+        request.payload_bytes = size;
+        request.start_time_ps = event.getStartTimeEvent();
+        request.tag = elem.tag;
+
+        PendingFlow pending{elem, request};
+        const auto inserted = _pending_flows.emplace(request.flow_id, std::move(pending));
+        if (!inserted.second) {
+            throw std::logic_error("duplicate ATLAHS GOAL host/offset flow ID");
+        }
+
+        try {
+            _flow_runtime->send(request);
+        } catch (...) {
+            _pending_flows.erase(request.flow_id);
+            throw;
+        }
+        return;
+    }
 
     simtime_picosec transmission_delay =
             (Packet::data_packet_size() * 8 / speedAsGbps(linkspeed) * _topo->cfg().get_diameter() *
@@ -120,6 +216,16 @@ void AtlahsHtsimApi::Calc(const ComputeAtlahsEvent &event) {
 }
 
 void AtlahsHtsimApi::Setup() {
+    if (_flow_runtime) {
+        if (total_nodes < 0) {
+            throw std::invalid_argument("ATLAHS node count must be non-negative");
+        }
+        _flow_runtime->setup(
+            static_cast<std::uint32_t>(total_nodes),
+            [this](AtlahsFlowId flow_id) { completeFlow(flow_id); });
+        return;
+    }
+
     printf("No of nodes %d\n", total_nodes);
 
     if (_logsim_interface->get_protocol() == EQDS_PROTOCOL) {
