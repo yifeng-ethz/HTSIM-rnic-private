@@ -267,6 +267,36 @@ TEST(RnicCollectivePacketTest, CarriesTypedGrantMetadataAtHighPriority) {
               RnicCollectivePacketLifecycle::ENDPOINT_CONSUMED);
 }
 
+TEST(RnicCollectivePacketTest, NflowUpdateCarriesTheNewDeclarationMagnitude) {
+    PacketFlow flow(nullptr);
+    ConsumingEndpoint endpoint;
+    Route route = routeTo(endpoint);
+    auto observer = std::make_shared<RecordingObserver>();
+
+    RnicCollectivePacket* packet = RnicCollectivePacket::newNflowUpdate(
+        flow, route, 96, 0x100000020ULL, 2, 7, 64, declareMetadata(777778), observer);
+
+    EXPECT_EQ(packet->kind(), RnicCollectivePacketKind::NFLOW_UPDATE);
+    EXPECT_EQ(packet->priority(), Packet::PRIO_HI);
+    EXPECT_FALSE(packet->header_only());
+    EXPECT_EQ(packet->declaration().nflow_ppm, 777778U);
+    EXPECT_THROW(packet->data(), std::logic_error);
+    EXPECT_THROW(packet->grant(), std::logic_error);
+    packet->sendOn();
+    ASSERT_EQ(endpoint.received_kinds.size(), 1U);
+    EXPECT_EQ(endpoint.received_kinds[0], RnicCollectivePacketKind::NFLOW_UPDATE);
+    EXPECT_EQ(observer->observations.back().lifecycle,
+              RnicCollectivePacketLifecycle::ENDPOINT_CONSUMED);
+
+    EXPECT_THROW(RnicCollectivePacket::newNflowUpdate(flow, route, 97, 1, 0, 1, 64,
+                                                      declareMetadata(0), observer),
+                 std::invalid_argument);
+    EXPECT_THROW(
+        RnicCollectivePacket::newNflowUpdate(flow, route, 98, 1, 0, 1, 64,
+                                             declareMetadata(1000001), observer),
+        std::invalid_argument);
+}
+
 TEST(RnicCollectivePacketTest, RetireCarriesTheFinalLedgerAndGapDetectionDeadline) {
     PacketFlow flow(nullptr);
     ConsumingEndpoint endpoint;

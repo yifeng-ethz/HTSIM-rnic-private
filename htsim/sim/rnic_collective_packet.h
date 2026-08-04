@@ -11,10 +11,12 @@
 #include "rnic_collective_control.h"
 #include "rnic_packet_extent.h"
 
-// The seven in-band wire objects used by the collective-network profile.
+// The eight in-band wire objects used by the collective-network profile.
 // Packet::type() intentionally remains the neutral HTSIM IP value: existing
 // packet_type values cannot represent these kinds without changing network.h,
 // and collective endpoints must dispatch on this explicit kind instead.
+// NFLOW_UPDATE (book 1.4) changes an active declaration's magnitude only;
+// membership identity, join and retire semantics are untouched.
 enum class RnicCollectivePacketKind {
     DATA,
     DECLARE,
@@ -23,6 +25,7 @@ enum class RnicCollectivePacketKind {
     GAP_NACK,
     GAP_RESOLVED,
     RETIRE,
+    NFLOW_UPDATE,
 };
 
 // The immutable end-of-flow ledger carried by DATA and RETIRE.  A receiver
@@ -133,6 +136,17 @@ public:
         std::shared_ptr<RnicCollectivePacketLifecycleObserver> observer);
 
     static RnicCollectivePacket* newDeclare(
+        PacketFlow& flow,
+        const Route& route,
+        packetid_t htsim_packet_id,
+        AtlahsFlowId flow_id,
+        std::uint32_t source,
+        std::uint32_t destination,
+        std::uint64_t wire_bytes,
+        const RnicCollectiveDeclareMetadata& metadata,
+        std::shared_ptr<RnicCollectivePacketLifecycleObserver> observer);
+
+    static RnicCollectivePacket* newNflowUpdate(
         PacketFlow& flow,
         const Route& route,
         packetid_t htsim_packet_id,

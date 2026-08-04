@@ -97,6 +97,14 @@ public:
     std::optional<RnicCollectiveMembershipUpdate> updateMembership(
         const RnicCollectiveMembershipDelta& delta);
 
+    // NFLOW_UPDATE (book 1.4): mutate one active declaration's magnitude in
+    // place and bump the membership epoch. Returns false for unknown
+    // membership, which the caller counts and ignores, mirroring stale
+    // DECLAREs. A same-value repeat is an idempotent no-op that leaves the
+    // epoch unchanged. Membership identity, join and retire semantics are
+    // untouched.
+    bool updateDeclaration(std::uint64_t flow_id, std::uint32_t nflow_ppm);
+
     // The live triple the runtime freezes at each dwnd boundary.
     RnicCollectiveRateSnapshot rateSnapshot() const;
 
@@ -160,7 +168,11 @@ enum class RnicSenderFeedbackOutcome {
 // feedback then re-times the rate at sender-local dwnd boundaries, never
 // mid-window. Every shared rate is scaled by the gate's own declared nflow
 // fraction, so concurrent fractional declarers aggregate to
-// margin * C * (sum of fractions) / n_hat exactly.
+// margin * C * (sum of fractions) / n_hat exactly. Per book 1.4 the gate
+// never claims grant beyond its declared request: the shared basis is
+// capped at the margin-derated receiver capacity before scaling, so an
+// undersubscribed receiver's surplus is not consumed by a sender that
+// declared only a fraction.
 class RnicSenderGrantGate {
 public:
     enum class Phase {
@@ -179,9 +191,18 @@ public:
     // the first reachable window, with no ramping.
     // one_way_control_deadline_ps is dwnd; the sender-local window clock
     // runs one one-way ahead of the receiver clock.
+    // shared_rate_cap_bps is the margin-derated receiver capacity, the
+    // shared basis at which the own-scaled rate equals the declared request
+    // (book 1.4).
     void declarationDispatched(std::uint64_t shared_startup_rate_bps,
                                std::uint32_t own_nflow_ppm,
-                               std::uint64_t one_way_control_deadline_ps);
+                               std::uint64_t one_way_control_deadline_ps,
+                               std::uint64_t shared_rate_cap_bps);
+    // RTT-rebalancer support (book 1.4): records a raised declaration. The
+    // new fraction is adopted when a snapshot from a strictly newer
+    // membership epoch is applied, so pacing still changes only at window
+    // boundaries to ledger-consistent values.
+    void updateOwnNflow(std::uint32_t nflow_ppm);
     RnicSenderFeedbackOutcome receiveAccept(const RnicCollectiveGrant& grant,
                                             std::uint64_t arrival_time_ps);
     RnicSenderFeedbackOutcome applyRateFeedback(
@@ -209,12 +230,19 @@ private:
                                           std::uint32_t own_nflow_ppm);
     void applyGrant(const RnicCollectiveGrant& grant);
 
+    struct PendingOwnNflow {
+        std::uint32_t nflow_ppm;
+        std::uint64_t epoch_threshold;
+    };
+
     std::uint64_t _flow_id;
     Phase _phase{Phase::Idle};
     std::uint32_t _own_nflow_ppm{0};
     std::uint64_t _one_way_ps{0};
+    std::uint64_t _shared_rate_cap_bps{0};
     std::uint64_t _current_wire_rate_bps{0};
     std::uint64_t _membership_epoch{0};
+    std::optional<PendingOwnNflow> _pending_own_nflow;
     std::optional<RnicCollectiveGrant> _pending_feedback;
     std::optional<RnicCollectiveGrant> _applied_feedback;
 };

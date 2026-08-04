@@ -51,6 +51,9 @@ struct RnicCollectiveRecoveryStatistics {
     // DECLAREs never expire; a repeat DECLARE for a retired flow is counted
     // here and otherwise ignored.
     std::uint64_t stale_declarations_ignored{0};
+    // An NFLOW_UPDATE whose membership already retired is counted here and
+    // otherwise ignored, mirroring stale DECLAREs.
+    std::uint64_t stale_nflow_updates_ignored{0};
 };
 
 struct RnicCollectiveFlowSnapshot {
@@ -59,6 +62,8 @@ struct RnicCollectiveFlowSnapshot {
     RnicSenderGrantGate::Phase sender_phase;
     std::uint64_t current_wire_rate_bps;
     std::uint64_t membership_epoch;
+    std::uint32_t declared_nflow_ppm;
+    std::uint64_t nflow_updates_dispatched;
     std::uint64_t rate_feedback_acks_generated;
     std::uint64_t rate_feedback_acks_received;
     std::uint64_t source_payload_bytes_dispatched;

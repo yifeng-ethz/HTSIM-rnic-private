@@ -191,11 +191,12 @@ TEST(RnicCollectiveNetworkRuntimeTest, DeclareAndGoOpensDataImmediatelyAtTheLedg
     fixture.stepUntil([&] { return runtime.flow(request.flow_id).declaration_dispatched; });
     const RnicCollectiveFlowSnapshot declared = runtime.flow(request.flow_id);
     // Declare-and-go: the gate is Active the moment the DECLARE leaves the
-    // source serializer, at the sole-sender ledger allocation. wire = 2192,
-    // budget = 225000, nflow = 9743; the double integer floor gives
-    // floor(floor(9e16 / 9743) * 9743 / 1e6).
+    // source serializer. wire = 2192, budget = 225000, nflow = 9743, and
+    // per book 1.4 the sole fractional declarer paces exactly its request
+    // floor(9e10 * 9743 / 1e6), never the undersubscribed receiver surplus.
     EXPECT_EQ(declared.sender_phase, RnicSenderGrantGate::Phase::Active);
-    EXPECT_EQ(declared.current_wire_rate_bps, UINT64_C(89999999999));
+    EXPECT_EQ(declared.declared_nflow_ppm, 9743U);
+    EXPECT_EQ(declared.current_wire_rate_bps, UINT64_C(876870000));
 
     // RETIRE bypasses the DATA Ring-CAM and arrives first. It must not
     // remove receiver membership until the exact DATA ledger reaches the
@@ -225,11 +226,12 @@ TEST(RnicCollectiveNetworkRuntimeTest, DeclareAndGoOpensDataImmediatelyAtTheLedg
     EXPECT_GE(*completed.retirement_completion_time_ps, *completed.delivery_completion_time_ps);
     EXPECT_TRUE(completed.receiver_retired);
     EXPECT_EQ(completed.sender_phase, RnicSenderGrantGate::Phase::Retired);
-    // The whole transfer resequences inside the first dwnd window, whose
-    // boundary snapshot precedes the first admission, so no feedback packet
-    // is generated for it.
-    EXPECT_EQ(completed.rate_feedback_acks_generated, 0U);
-    EXPECT_EQ(completed.rate_feedback_acks_received, 0U);
+    // Every feedback ACK the receiver generated was physically delivered;
+    // releases inside the first dwnd window, whose boundary snapshot
+    // precedes the first admission, generate none.
+    EXPECT_EQ(completed.rate_feedback_acks_received,
+              completed.rate_feedback_acks_generated);
+    EXPECT_LE(completed.rate_feedback_acks_generated, completed.delivered_data_packets);
     EXPECT_FALSE(runtime.node(request.source).txPort().contains(request.flow_id));
     EXPECT_EQ(runtime.receiverActiveFlowCount(request.destination), 0U);
     EXPECT_EQ(runtime.pendingFabricPacketCount(), 0U);
@@ -374,6 +376,67 @@ TEST(RnicCollectiveNetworkRuntimeTest, RetryProceedsAcrossAMembershipEpochChange
     EXPECT_TRUE(runtime.flow(joiner).receiver_retired);
 }
 
+TEST(RnicCollectiveNetworkRuntimeTest, EgressCompositionAndRttRebalancerReclaimSlack) {
+    TwoTierCollectiveFixture fixture;
+    RnicCollectiveNetworkRuntime runtime(fixture.events, *fixture.topology,
+                                         fixture.runtimeConfig());
+    runtime.setup(32, [](AtlahsFlowId) {});
+
+    // Sender 0 fans out to two destinations. Destination 31 is
+    // oversubscribed by two whole-flow competitors; destination 30 is sole.
+    constexpr AtlahsFlowId hungry = 0x260000001ULL;
+    constexpr AtlahsFlowId satisfied = 0x260000002ULL;
+    constexpr AtlahsFlowId competitor_one = 0x260000003ULL;
+    constexpr AtlahsFlowId competitor_two = 0x260000004ULL;
+    runtime.send({hungry, 0, 31, 2000000, EventList::now(), 1});
+    runtime.send({satisfied, 0, 30, 2000000, EventList::now(), 2});
+    runtime.send({competitor_one, 1, 31, 2000000, EventList::now(), 3});
+    runtime.send({competitor_two, 2, 31, 2000000, EventList::now(), 4});
+
+    fixture.stepUntil([&] {
+        return runtime.flow(hungry).declaration_dispatched &&
+               runtime.flow(satisfied).declaration_dispatched;
+    });
+    // Egress composition at DECLARE time: the first flow saw one pending
+    // destination (whole flow); the second saw two and requested
+    // round(1e6 * (C_egress / 2) / (margin * C_receiver)) = 555556 ppm.
+    EXPECT_EQ(runtime.flow(hungry).declared_nflow_ppm, 1000000U);
+    EXPECT_EQ(runtime.flow(satisfied).declared_nflow_ppm, 555556U);
+    // Ledger allocations: 31 carries three whole-ish flows, 30 is sole and
+    // request-capped.
+    EXPECT_EQ(runtime.flow(hungry).current_wire_rate_bps, UINT64_C(30000000000));
+    EXPECT_EQ(runtime.flow(satisfied).current_wire_rate_bps, UINT64_C(50000040000));
+
+    // First RTT boundary (2 * dwnd): the hungry lane is under-granted and
+    // keeps its declaration; the satisfied lane absorbs the egress slack
+    // C_egress - 3e10 - 50000040000 and re-declares
+    // round(1e6 * 7e10 / 9e10) = 777778 via NFLOW_UPDATE.
+    fixture.stepUntil([&] {
+        return runtime.flow(satisfied).nflow_updates_dispatched == 1;
+    });
+    EXPECT_EQ(runtime.flow(satisfied).declared_nflow_ppm, 777778U);
+    EXPECT_EQ(runtime.flow(hungry).declared_nflow_ppm, 1000000U);
+
+    // Within two RTTs the raised declaration has passed through the
+    // receiver's window snapshots and paces the satisfied lane.
+    fixture.stepUntil([&] {
+        return runtime.flow(satisfied).current_wire_rate_bps == UINT64_C(70000020000);
+    });
+    EXPECT_LE(EventList::now(), timeFromUs(40.0));
+
+    fixture.drainRuntime(runtime);
+    // Converged: exactly one update, no oscillation, and zero recovery
+    // events anywhere in the run.
+    EXPECT_EQ(runtime.flow(satisfied).nflow_updates_dispatched, 1U);
+    EXPECT_EQ(runtime.flow(satisfied).declared_nflow_ppm, 777778U);
+    EXPECT_EQ(runtime.flow(hungry).nflow_updates_dispatched, 0U);
+    const RnicCollectiveRecoveryStatistics& recovery = runtime.recoveryStatistics();
+    EXPECT_EQ(recovery.late_data_packets, 0U);
+    EXPECT_EQ(recovery.gap_nacks_dispatched, 0U);
+    EXPECT_EQ(recovery.stale_declarations_ignored, 0U);
+    EXPECT_EQ(recovery.stale_nflow_updates_ignored, 0U);
+}
+
 TEST(RnicCollectiveNetworkRuntimeTest, DeclareForARetiredFlowIsIgnoredWithoutThrow) {
     TwoTierCollectiveFixture fixture;
     RnicCollectiveNetworkRuntime runtime(fixture.events, *fixture.topology,
@@ -512,18 +575,15 @@ TEST(RnicCollectiveNetworkRuntimeTest,
 
     constexpr AtlahsFlowId data_flow_id = 0x500000001ULL;
     constexpr AtlahsFlowId declaration_flow_id = 0x500000002ULL;
-    const std::uint64_t send_time_ps = EventList::now();
     runtime.send({data_flow_id, 0, 31, 6, EventList::now(), 1});
     fixture.stepUntil(
         [&] { return runtime.flow(data_flow_id).source_data_packets_dispatched == 1; });
-    const std::uint64_t data_start_ps = EventList::now();
+    // The request-capped pace launches the DATA on a fractional pacer
+    // boundary, so the port's published availability is the ground truth
+    // for the busy interval the second flow's DECLARE must not preempt.
     const std::uint64_t published_data_end_ps =
         runtime.node(0).txPort().physicalSerializerAvailablePs();
-    // Declare-and-go serializes the flow's own DECLARE first, so the DATA
-    // boundary carries the control byte's exact rational residue.
-    RnicWireSerializationClock data_clock(capacity_bps);
-    data_clock.serialize(send_time_ps, 1);
-    EXPECT_EQ(data_clock.serialize(data_start_ps, 6).end_ps, published_data_end_ps);
+    EXPECT_GT(published_data_end_ps, EventList::now());
 
     CallbackEvent declare_at_boundary(fixture.events, published_data_end_ps, [&] {
         runtime.send({declaration_flow_id, 0, 31, 0, EventList::now(), 2});

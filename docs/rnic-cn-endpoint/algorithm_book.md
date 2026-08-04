@@ -289,8 +289,8 @@ so any nonzero count is a hard failure, not noise.
 Numbered gaps between this book and the current implementation. Items 1
 through 8 come from the external review (the review's full 12-item corner
 case list is held in the maintainer's review thread; the items below are
-the ones already adjudicated); items 9 and 10 are open wire-semantic
-definitions awaiting the maintainer.
+the ones already adjudicated); item 9 is the remaining open wire-semantic
+definition, and item 10 was ruled in section 1.4 and is implemented.
 
 1. Rotating discrete full-packet slots for shares smaller than one packet
    (the runtime currently rate-paces; sub-packet shares rely on the pacer's
@@ -315,5 +315,10 @@ definitions awaiting the maintainer.
    DECLARE/RETIRE membership today).
 9. Open (maintainer): DECLARE+data piggyback wire semantics for small
    WQEs.
-10. Open (maintainer): a distinct nflow-update flag packet for mid-flow
-    WQE arrivals, since re-DECLAREs no longer exist.
+10. Done (section 1.4, implemented): NFLOW_UPDATE carries (flow_id, new
+    nflow_ppm), is validated like a DECLARE, takes effect in window
+    snapshots from the boundary of the window after arrival, ignores
+    retired membership with a counter, and treats same-value repeats as
+    idempotent no-ops. The sender egress composition and the RTT
+    rebalancer of section 1.4 drive it; the mixed all-to-all at
+    K = 10 us went from 335 late admissions / gap NACKs to zero.

@@ -124,6 +124,10 @@ TEST(RnicAtlahsDriverTest, CollectiveManifestNamesPhysicalModelExactly) {
     EXPECT_NE(manifest.find("rate_feedback=every-resequenced-ack-window-frozen-snapshot"),
               std::string::npos);
     EXPECT_NE(manifest.find("rate_effect=receiver-boundary-k-plus-2"), std::string::npos);
+    EXPECT_NE(manifest.find("egress_composition=cegress-fair-share-min-small-wqe"),
+              std::string::npos);
+    EXPECT_NE(manifest.find("rebalancer=rtt-slack-redistribution-nflow-update"),
+              std::string::npos);
     EXPECT_NE(manifest.find("eta=source-route-injection-plus-packet-specific-no-load-transit"),
               std::string::npos);
     EXPECT_NE(

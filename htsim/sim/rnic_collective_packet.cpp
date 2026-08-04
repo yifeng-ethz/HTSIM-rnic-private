@@ -189,6 +189,22 @@ RnicCollectivePacket* RnicCollectivePacket::newDeclare(
                      std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::move(observer));
 }
 
+RnicCollectivePacket* RnicCollectivePacket::newNflowUpdate(
+    PacketFlow& flow,
+    const Route& route,
+    packetid_t htsim_packet_id,
+    AtlahsFlowId flow_id,
+    std::uint32_t source,
+    std::uint32_t destination,
+    std::uint64_t wire_bytes,
+    const RnicCollectiveDeclareMetadata& metadata,
+    std::shared_ptr<RnicCollectivePacketLifecycleObserver> observer) {
+    validateDeclaration(metadata);
+    return newPacket(flow, route, htsim_packet_id, RnicCollectivePacketKind::NFLOW_UPDATE, flow_id,
+                     source, destination, checkedWireBytes(wire_bytes), std::nullopt, metadata,
+                     std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::move(observer));
+}
+
 RnicCollectivePacket* RnicCollectivePacket::newAccept(
     PacketFlow& flow,
     const Route& route,
@@ -306,9 +322,10 @@ RnicCollectivePacket* RnicCollectivePacket::newPacket(
             }
             break;
         case RnicCollectivePacketKind::DECLARE:
+        case RnicCollectivePacketKind::NFLOW_UPDATE:
             if (has_data || !has_declaration || has_grant || has_gap_nack || has_retire ||
                 has_gap_resolved) {
-                throw std::logic_error("rnic-cn DECLARE metadata shape is invalid");
+                throw std::logic_error("rnic-cn declaration metadata shape is invalid");
             }
             break;
         case RnicCollectivePacketKind::ACCEPT:

@@ -27,7 +27,8 @@ RnicSenderGrantGate activeGate(
         std::uint32_t own_nflow_ppm = RnicCollectiveController::kFullFlowPpm,
         std::uint64_t startup_capacity_bps = kMarginDeratedCapacity) {
     RnicSenderGrantGate gate(flow_id);
-    gate.declarationDispatched(startup_capacity_bps, own_nflow_ppm, kDwnd);
+    gate.declarationDispatched(startup_capacity_bps, own_nflow_ppm, kDwnd,
+                               kMarginDeratedCapacity);
     return gate;
 }
 
@@ -123,34 +124,113 @@ TEST(RnicSenderGrantGateTest, DeclareOpensDataImmediatelyAtDeclaredFraction) {
     EXPECT_EQ(full.phase(), RnicSenderGrantGate::Phase::Idle);
     EXPECT_FALSE(full.dataEligible());
     full.declarationDispatched(kMarginDeratedCapacity,
-                               RnicCollectiveController::kFullFlowPpm, kDwnd);
+                               RnicCollectiveController::kFullFlowPpm, kDwnd,
+                               kMarginDeratedCapacity);
     EXPECT_EQ(full.phase(), RnicSenderGrantGate::Phase::Active);
     EXPECT_TRUE(full.dataEligible());
     EXPECT_EQ(full.currentWireRateBps(), kMarginDeratedCapacity);
 
     RnicSenderGrantGate quarter(41);
-    quarter.declarationDispatched(kMarginDeratedCapacity, 250000, kDwnd);
+    quarter.declarationDispatched(kMarginDeratedCapacity, 250000, kDwnd,
+                                  kMarginDeratedCapacity);
     EXPECT_TRUE(quarter.dataEligible());
     EXPECT_EQ(quarter.currentWireRateBps(), UINT64_C(22500000000));
     EXPECT_EQ(quarter.ownNflowPpm(), 250000U);
 
+    // Book 1.4: the gate never claims grant beyond its declared request. A
+    // shared basis above the margin-derated receiver capacity is capped, so
+    // the sole fractional declarer paces exactly its request.
+    RnicSenderGrantGate capped(43);
+    capped.declarationDispatched(UINT64_C(162000000000), 555556, kDwnd,
+                                 kMarginDeratedCapacity);
+    EXPECT_EQ(capped.currentWireRateBps(), UINT64_C(50000040000));
+
     RnicSenderGrantGate invalid(42);
-    EXPECT_THROW(invalid.declarationDispatched(0, 1, kDwnd),
+    EXPECT_THROW(invalid.declarationDispatched(0, 1, kDwnd, kMarginDeratedCapacity),
                  std::invalid_argument);
-    EXPECT_THROW(invalid.declarationDispatched(kMarginDeratedCapacity, 0, kDwnd),
-                 std::invalid_argument);
+    EXPECT_THROW(
+        invalid.declarationDispatched(kMarginDeratedCapacity, 0, kDwnd,
+                                      kMarginDeratedCapacity),
+        std::invalid_argument);
     EXPECT_THROW(
         invalid.declarationDispatched(
             kMarginDeratedCapacity,
-            RnicCollectiveController::kFullFlowPpm + 1, kDwnd),
+            RnicCollectiveController::kFullFlowPpm + 1, kDwnd,
+            kMarginDeratedCapacity),
         std::invalid_argument);
     EXPECT_THROW(
-        invalid.declarationDispatched(kMarginDeratedCapacity, 1, 0),
+        invalid.declarationDispatched(kMarginDeratedCapacity, 1, 0,
+                                      kMarginDeratedCapacity),
         std::invalid_argument);
-    invalid.declarationDispatched(kMarginDeratedCapacity, 1, kDwnd);
     EXPECT_THROW(
-        invalid.declarationDispatched(kMarginDeratedCapacity, 1, kDwnd),
+        invalid.declarationDispatched(kMarginDeratedCapacity, 1, kDwnd, 0),
+        std::invalid_argument);
+    invalid.declarationDispatched(kMarginDeratedCapacity, 1, kDwnd,
+                                  kMarginDeratedCapacity);
+    EXPECT_THROW(
+        invalid.declarationDispatched(kMarginDeratedCapacity, 1, kDwnd,
+                                      kMarginDeratedCapacity),
         std::logic_error);
+}
+
+TEST(RnicCollectiveControllerTest, UpdateDeclarationRescalesActiveMembership) {
+    RnicCollectiveController controller(kCapacity, kDwnd);
+    ASSERT_TRUE(controller.updateMembership(declare(110, 500000)).has_value());
+    ASSERT_TRUE(controller.updateMembership(declare(111, 500000)).has_value());
+    ASSERT_EQ(controller.membershipEpoch(), 2U);
+
+    // Magnitude change: contribution and epoch both move.
+    EXPECT_TRUE(controller.updateDeclaration(110, 250000));
+    EXPECT_EQ(controller.membershipEpoch(), 3U);
+    EXPECT_EQ(controller.effectiveFlowPpm(), 750000U);
+    EXPECT_EQ(controller.currentWireRateBps(), UINT64_C(120000000000));
+
+    // Same-value repeat: idempotent no-op, epoch unchanged.
+    EXPECT_TRUE(controller.updateDeclaration(110, 250000));
+    EXPECT_EQ(controller.membershipEpoch(), 3U);
+    EXPECT_EQ(controller.effectiveFlowPpm(), 750000U);
+
+    // Unknown membership: counted-and-ignored by the caller, never a throw.
+    EXPECT_FALSE(controller.updateDeclaration(999, 250000));
+    EXPECT_EQ(controller.membershipEpoch(), 3U);
+
+    EXPECT_THROW(controller.updateDeclaration(110, 0), std::invalid_argument);
+    EXPECT_THROW(
+        controller.updateDeclaration(
+            110, RnicCollectiveController::kFullFlowPpm + 1),
+        std::invalid_argument);
+}
+
+TEST(RnicSenderGrantGateTest, RaisedOwnNflowIsAdoptedAtANewerEpochBoundary) {
+    RnicCollectiveController controller(kCapacity, kDwnd);
+    ASSERT_TRUE(controller.updateMembership(declare(120, 250000)).has_value());
+    RnicSenderGrantGate gate = activeGate(120, 250000);
+    const RnicCollectiveGrant first =
+        controller.feedbackFor(120, controller.rateSnapshot(), 2 * kDwnd);
+    EXPECT_EQ(gate.applyRateFeedback(first, 2 * kDwnd),
+              RnicSenderFeedbackOutcome::AppliedNow);
+    EXPECT_EQ(gate.currentWireRateBps(), UINT64_C(22500000000));
+
+    // The raise waits for a snapshot from a strictly newer epoch, i.e. one
+    // that includes the receiver-side NFLOW_UPDATE (book 1.4).
+    gate.updateOwnNflow(500000);
+    EXPECT_EQ(gate.ownNflowPpm(), 250000U);
+    EXPECT_EQ(gate.currentWireRateBps(), UINT64_C(22500000000));
+
+    ASSERT_TRUE(controller.updateDeclaration(120, 500000));
+    const RnicCollectiveGrant updated =
+        controller.feedbackFor(120, controller.rateSnapshot(), 4 * kDwnd);
+    EXPECT_EQ(gate.applyRateFeedback(updated, 4 * kDwnd),
+              RnicSenderFeedbackOutcome::AppliedNow);
+    EXPECT_EQ(gate.ownNflowPpm(), 500000U);
+    // Shared rate margin * C * 1e6 / 500000 capped at derated, scaled by
+    // the adopted half flow.
+    EXPECT_EQ(gate.currentWireRateBps(), UINT64_C(45000000000));
+
+    // A same-value update is an idempotent no-op.
+    gate.updateOwnNflow(500000);
+    EXPECT_EQ(gate.currentWireRateBps(), UINT64_C(45000000000));
+    EXPECT_THROW(gate.updateOwnNflow(0), std::invalid_argument);
 }
 
 TEST(RnicSenderGrantGateTest, OwnFractionScalesEverySharedRate) {

@@ -212,6 +212,8 @@ std::string renderRnicAtlahsModelManifest(const RnicAtlahsCliOptions& options,
                  << " rate_feedback=every-resequenced-ack-window-frozen-snapshot"
                  << " rate_effect=receiver-boundary-k-plus-2"
                  << " startup_rate=full-reservation-ledger-allocation"
+                 << " egress_composition=cegress-fair-share-min-small-wqe"
+                 << " rebalancer=rtt-slack-redistribution-nflow-update"
                  << " margin_ppm=" << options.collective.margin_ppm
                  << " control_deadline_ps=" << options.collective.control_deadline_ps
                  << " control_wire_bytes=" << options.collective.control_wire_bytes

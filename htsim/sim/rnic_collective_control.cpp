@@ -1,6 +1,7 @@
 // -*- c-basic-offset: 4; indent-tabs-mode: nil -*-
 #include "rnic_collective_control.h"
 
+#include <algorithm>
 #include <limits>
 #include <set>
 #include <stdexcept>
@@ -120,6 +121,44 @@ RnicCollectiveController::updateMembership(
         std::move(accepted_flow_ids)};
 }
 
+bool RnicCollectiveController::updateDeclaration(std::uint64_t flow_id,
+                                                 std::uint32_t nflow_ppm) {
+    if (nflow_ppm == 0 || nflow_ppm > kFullFlowPpm) {
+        throw std::invalid_argument(
+            "rnic-cn declaration update nflow_ppm must be in [1, one flow]");
+    }
+    const auto active = _active_nflow_by_flow.find(flow_id);
+    if (active == _active_nflow_by_flow.end()) {
+        return false;
+    }
+    if (active->second == nflow_ppm) {
+        return true;
+    }
+    std::uint64_t next_n_hat = 0;
+    for (const auto& member : _active_nflow_by_flow) {
+        const std::uint32_t contribution =
+            member.first == flow_id ? nflow_ppm : member.second;
+        if (contribution >
+            std::numeric_limits<std::uint32_t>::max() - next_n_hat) {
+            throw std::overflow_error(
+                "rnic-cn effective nflow exceeds feedback field");
+        }
+        next_n_hat += contribution;
+    }
+    const std::uint64_t numerator =
+        _bottleneck_wire_capacity_bps * _margin_ppm;
+    if (numerator / next_n_hat == 0) {
+        throw std::overflow_error(
+            "rnic-cn active membership produces a zero wire-rate grant");
+    }
+    if (_membership_epoch == std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error("rnic-cn membership epoch overflow");
+    }
+    active->second = nflow_ppm;
+    ++_membership_epoch;
+    return true;
+}
+
 RnicCollectiveRateSnapshot RnicCollectiveController::rateSnapshot() const {
     return {_membership_epoch, effectiveFlowPpm(), currentWireRateBps()};
 }
@@ -216,7 +255,8 @@ std::uint64_t RnicSenderGrantGate::scaledByOwnNflow(
 void RnicSenderGrantGate::declarationDispatched(
         std::uint64_t shared_startup_rate_bps,
         std::uint32_t own_nflow_ppm,
-        std::uint64_t one_way_control_deadline_ps) {
+        std::uint64_t one_way_control_deadline_ps,
+        std::uint64_t shared_rate_cap_bps) {
     if (_phase != Phase::Idle) {
         throw std::logic_error(
             "rnic-cn declaration dispatched in invalid sender phase");
@@ -224,6 +264,10 @@ void RnicSenderGrantGate::declarationDispatched(
     if (shared_startup_rate_bps == 0) {
         throw std::invalid_argument(
             "rnic-cn declaration requires a positive startup rate");
+    }
+    if (shared_rate_cap_bps == 0) {
+        throw std::invalid_argument(
+            "rnic-cn declaration requires a positive shared-rate cap");
     }
     if (own_nflow_ppm == 0 ||
         own_nflow_ppm > RnicCollectiveController::kFullFlowPpm) {
@@ -236,11 +280,13 @@ void RnicSenderGrantGate::declarationDispatched(
     }
     _own_nflow_ppm = own_nflow_ppm;
     _one_way_ps = one_way_control_deadline_ps;
+    _shared_rate_cap_bps = shared_rate_cap_bps;
     // The startup reservation is this sender's fraction of the supplied
-    // shared rate, i.e. the full ledger allocation; window snapshots then
-    // re-time it at sender-local dwnd boundaries.
-    _current_wire_rate_bps =
-        scaledByOwnNflow(shared_startup_rate_bps, own_nflow_ppm);
+    // shared rate, i.e. the full ledger allocation capped at the declared
+    // request (book 1.4); window snapshots then re-time it at sender-local
+    // dwnd boundaries.
+    _current_wire_rate_bps = scaledByOwnNflow(
+        std::min(shared_startup_rate_bps, shared_rate_cap_bps), own_nflow_ppm);
     _phase = Phase::Active;
 }
 
@@ -376,10 +422,38 @@ void RnicSenderGrantGate::validateGrantIdentity(
     }
 }
 
+void RnicSenderGrantGate::updateOwnNflow(std::uint32_t nflow_ppm) {
+    if (nflow_ppm == 0 ||
+        nflow_ppm > RnicCollectiveController::kFullFlowPpm) {
+        throw std::invalid_argument(
+            "rnic-cn declaration update nflow_ppm must be in [1, one flow]");
+    }
+    if (_phase == Phase::Retired) {
+        return;
+    }
+    if (_phase != Phase::Active) {
+        throw std::logic_error(
+            "rnic-cn declaration update requires a dispatched declaration");
+    }
+    if (nflow_ppm == _own_nflow_ppm) {
+        _pending_own_nflow.reset();
+        return;
+    }
+    // Adopted when a snapshot from a strictly newer epoch applies, i.e.
+    // once the receiver has folded the NFLOW_UPDATE into its window state
+    // (book 1.4); pacing never changes mid-window.
+    _pending_own_nflow = PendingOwnNflow{nflow_ppm, _membership_epoch};
+}
+
 void RnicSenderGrantGate::applyGrant(
         const RnicCollectiveGrant& grant) {
+    if (_pending_own_nflow.has_value() &&
+        grant.membership_epoch > _pending_own_nflow->epoch_threshold) {
+        _own_nflow_ppm = _pending_own_nflow->nflow_ppm;
+        _pending_own_nflow.reset();
+    }
     _membership_epoch = grant.membership_epoch;
-    _current_wire_rate_bps =
-        scaledByOwnNflow(grant.wire_rate_bps, _own_nflow_ppm);
+    _current_wire_rate_bps = scaledByOwnNflow(
+        std::min(grant.wire_rate_bps, _shared_rate_cap_bps), _own_nflow_ppm);
     _applied_feedback = grant;
 }
