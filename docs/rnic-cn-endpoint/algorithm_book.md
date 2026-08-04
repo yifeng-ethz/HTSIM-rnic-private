@@ -92,7 +92,57 @@ receiver clock         t + 0.5 RTT                 t + 1.5 RTT
   4160 * 8 / (0.9 * C), and a 64 B flag displaces the calendar by 512 / r
   where r is the flow's allocated rate.
 
-### 1.2 The deterministic reservation ledger (decision C2, maintainer-ruled)
+### 1.2 The resequencing window D and the bandwidth jitter product (maintainer-ruled)
+
+D is not a tuning knob and is never shrunk for latency. Where classical
+congestion control is sized by the bandwidth delay product, this design is
+sized by the bandwidth jitter product (BJP): the only jitter (queueing
+delay variation) in the system comes from FIFO buildup upstream of the
+resequencing buffer, i.e. one FIFO at the receiving RNIC and possibly
+several inside network switches on the path. For a given switch family the
+FIFO depth is a generational constant, so jitter times bandwidth is a
+constant, and
+
+    D = Q_upstream / C
+
+with Q_upstream the summed upstream FIFO depth. D must exceed the upstream
+jitter; the resequencing buffer (PIFO) must be at least the upstream queue
+size, which makes the resequencer itself lossless. The wait is independent
+of where in the window a hit arrives: a hit arriving at the beginning of
+its window experienced no jitter and waits the longest in the PIFO, a hit
+delayed by the maximum jitter arrives just in time; release at ETA + D is
+therefore the deterministic contract, and the constant +D on every flow's
+completion is designed behavior, not overhead. Comparisons against
+baselines that carry no resequencing discipline (rnic-nn) must treat D as
+a known constant offset.
+
+D is derived, never picked. With MTU_wire the maximum wire packet, S_max
+the maximum sender count, C the bottleneck capacity and n_paths the number
+of equal-cost paths through each intermediate stage, the upstream FIFO
+depths are bounded by
+
+    Q_final = (S_max - 1) * MTU_wire          (bottleneck egress / RX FIFO)
+    Q_mid   = ceil(S_max / n_paths) * MTU_wire (per intermediate stage)
+
+    D = (Q_final + n_mid_stages * Q_mid) * 8 / C
+
+For the 64-node 400G two-tier reference Clos (S_max = 64, n_paths = 8,
+two intermediate stages, MTU_wire = 4160 B): D = (63 + 16) * 4160 * 8 /
+400e9 = 6.573 us. The historical 4.096 us default sits below this provable
+bound and was only empirically sufficient thanks to PRBS scrambling; runs
+must use the derived value unless the operator explicitly overrides it
+with a bound of their own.
+
+Egress-constrained resequencers: in the RNIC the resequencer output is
+effectively unconstrained (delivery to memory); inside a network switch it
+is bounded by the egress port bandwidth. When summed ingress exceeds
+egress, the buffer can only replay the burst shape: the hit
+lifetime-in-system profile at egress equals the ingress profile stretched
+or shrunk by the ratio of summed ingress to egress bandwidth. With
+well-implemented PRBS pacing, timestamp collisions should not produce
+egress congestion in the first place.
+
+### 1.3 The deterministic reservation ledger (decision C2, maintainer-ruled)
 
 Cold start is full deterministic: no ramping and no negative feedback
 control anywhere. Where full ex-ante knowledge is awkward, fixed topology
