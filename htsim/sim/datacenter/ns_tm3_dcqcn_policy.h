@@ -6,6 +6,7 @@
 #include "network.h"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -35,6 +36,23 @@ struct NsTm3DcqcnPolicyCounters {
     std::uint64_t pause_frames{0};
     std::uint64_t resume_frames{0};
     mem_b max_ingress_buffered_bytes{0};
+    // PFC storm observability (comparator-realism ruling): cumulative wall
+    // time any of this switch's ingress meters held its upstream paused,
+    // and the deepest pause cascade this policy participated in. A pause
+    // emitted while one of the owning switch's egresses is itself paused
+    // counts as that egress depth plus one.
+    simtime_picosec paused_wall_ps{0};
+    std::uint32_t max_pause_cascade_depth{0};
+};
+
+// Per-ingress-port PFC measurement, reported in the run manifest. Ports
+// that never paused are omitted.
+struct NsTm3DcqcnPfcPortMetrics {
+    std::uint32_t ingress_id;
+    std::uint64_t pause_frames;
+    std::uint64_t resume_frames;
+    simtime_picosec paused_wall_ps;
+    std::uint32_t max_pause_cascade_depth;
 };
 
 class NsTm3DcqcnPolicy {
@@ -66,12 +84,30 @@ public:
     }
     mem_b ingress_buffered_bytes(std::uint32_t ingress_id) const;
 
+    // The owning switch supplies the depth of its deepest currently paused
+    // egress so an emitted pause can be attributed to the chain that caused
+    // it. Absent (standalone policies, host-edge tests) every pause is a
+    // root pause of depth one.
+    using ActiveEgressPauseDepthProvider = std::function<std::uint32_t()>;
+    void set_active_egress_pause_depth_provider(
+        ActiveEgressPauseDepthProvider provider) {
+        _active_egress_pause_depth_provider = std::move(provider);
+    }
+
+    // Measurement only; no behavior depends on these values.
+    std::vector<NsTm3DcqcnPfcPortMetrics> pfc_port_metrics() const;
+
 private:
     struct IngressState {
         mem_b data_buffered_bytes{0};
         bool data_paused{false};
         BaseQueue* upstream_egress{nullptr};
         std::unique_ptr<NsTm3PfcReverseLink> reverse_wire;
+        std::uint64_t pause_frames{0};
+        std::uint64_t resume_frames{0};
+        simtime_picosec paused_since_ps{0};
+        simtime_picosec paused_wall_ps{0};
+        std::uint32_t max_pause_cascade_depth{0};
     };
 
     IngressState& ingress_state(std::uint32_t ingress_id);
@@ -86,6 +122,7 @@ private:
     NsTm3DcqcnPolicyConfig _config;
     std::uint64_t _ecn_domain_id;
     NsTm3DcqcnPolicyCounters _counters;
+    ActiveEgressPauseDepthProvider _active_egress_pause_depth_provider;
     std::vector<IngressState> _ingresses;
 };
 

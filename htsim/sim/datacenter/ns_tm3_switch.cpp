@@ -46,6 +46,7 @@ void NsTm3EgressSerializer::receivePacket(Packet& pkt) {
         }
         const auto& pause = static_cast<const EthPausePacket&>(pkt);
         _data_paused = pause.sleepTime() > 0;
+        _active_pause_cascade_depth = _data_paused ? pause.cascadeDepth() : 0;
         pkt.free();
         _owner->egress_pause_state_changed(_egress_id);
         return;
@@ -164,6 +165,11 @@ void NsTm3Switch::configure_dcqcn_policy(const NsTm3DcqcnPolicyConfig& config) {
     }
     const std::uint64_t ecn_domain_id = (static_cast<std::uint64_t>(getType()) << 32) | getID();
     _dcqcn_policy = std::make_unique<NsTm3DcqcnPolicy>(eventlist(), config, ecn_domain_id);
+    // A pause emitted while one of this switch's egresses is itself paused
+    // extends that pause chain (comparator-realism ruling, PFC storm
+    // observability).
+    _dcqcn_policy->set_active_egress_pause_depth_provider(
+        [this]() { return max_active_egress_pause_depth(); });
 }
 
 void NsTm3Switch::set_voq_arbitration(NsTm3VoqArbitration arbitration) {
@@ -463,6 +469,14 @@ void NsTm3Switch::egress_serialization_complete(uint32_t egress_id) {
 
 void NsTm3Switch::egress_pause_state_changed(uint32_t egress_id) {
     schedule_egress(egress_id);
+}
+
+uint32_t NsTm3Switch::max_active_egress_pause_depth() const {
+    uint32_t depth = 0;
+    for (const EgressState& egress : _egresses) {
+        depth = std::max(depth, egress.serializer->active_pause_cascade_depth());
+    }
+    return depth;
 }
 
 void NsTm3Switch::emit_queue_observation(NsTm3QueueTransition transition,

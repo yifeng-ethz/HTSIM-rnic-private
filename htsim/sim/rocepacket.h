@@ -137,9 +137,21 @@ class RoceNack : public Packet {
                 p->_ackno = ackno;
                 p->_direction = NONE;
                 p->set_dst(destination);
+                p->_selective = false;
+                p->_resend_seqno = 0;
                 ++_live_packets;
                 return p;
     }
+
+    // Comparator-realism ruling: a selective NACK requests exactly one
+    // missing sequence (mlx5 ConnectX-6 Dx style limited selective repeat)
+    // instead of a go-back-N rewind to ackno.
+    inline void set_selective(seq_t resend_seqno) {
+        _selective = true;
+        _resend_seqno = resend_seqno;
+    }
+    inline bool is_selective() const { return _selective; }
+    inline seq_t resend_seqno() const { return _resend_seqno; }
   
     void free() {
         assert(_live_packets > 0);
@@ -157,6 +169,8 @@ class RoceNack : public Packet {
  protected:
     seq_t _ackno;
     simtime_picosec _ts;
+    bool _selective{false};
+    seq_t _resend_seqno{0};
     static PacketDB<RoceNack> _packetdb;
     static std::uint64_t _live_packets;
 };

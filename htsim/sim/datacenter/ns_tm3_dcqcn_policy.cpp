@@ -324,10 +324,55 @@ void NsTm3DcqcnPolicy::send_pfc(
     // The legacy HTSIM PFC model uses a nonzero quanta value as a pause
     // marker; duration is controlled by an explicit RESUME frame.
     EthPausePacket* packet = EthPausePacket::newpkt(pause ? 1 : 0, 0);
-    ingress.reverse_wire->receivePacket(*packet);
     if (pause) {
+        // Cascade attribution (comparator-realism ruling): a pause emitted
+        // while an egress of the owning switch is itself paused extends
+        // that chain by one; otherwise this is a root pause of depth one.
+        const std::uint32_t upstream_depth =
+            _active_egress_pause_depth_provider
+                ? _active_egress_pause_depth_provider()
+                : 0;
+        if (upstream_depth
+            >= std::numeric_limits<std::uint32_t>::max()) {
+            throw std::overflow_error(
+                "ns-tm3 PFC cascade depth overflow");
+        }
+        const std::uint32_t depth = upstream_depth + 1;
+        packet->setCascadeDepth(depth);
+        ++ingress.pause_frames;
+        ingress.paused_since_ps = _event_list.now();
+        ingress.max_pause_cascade_depth =
+            std::max(ingress.max_pause_cascade_depth, depth);
         ++_counters.pause_frames;
+        _counters.max_pause_cascade_depth =
+            std::max(_counters.max_pause_cascade_depth, depth);
     } else {
+        const simtime_picosec now = _event_list.now();
+        if (now < ingress.paused_since_ps) {
+            throw std::logic_error(
+                "ns-tm3 PFC resume precedes its pause");
+        }
+        const simtime_picosec held = now - ingress.paused_since_ps;
+        ingress.paused_wall_ps += held;
+        _counters.paused_wall_ps += held;
+        ++ingress.resume_frames;
         ++_counters.resume_frames;
     }
+    ingress.reverse_wire->receivePacket(*packet);
+}
+
+std::vector<NsTm3DcqcnPfcPortMetrics>
+NsTm3DcqcnPolicy::pfc_port_metrics() const {
+    std::vector<NsTm3DcqcnPfcPortMetrics> metrics;
+    for (std::uint32_t ingress_id = 0; ingress_id < _ingresses.size();
+         ++ingress_id) {
+        const IngressState& ingress = _ingresses[ingress_id];
+        if (ingress.pause_frames == 0) {
+            continue;
+        }
+        metrics.push_back({ingress_id, ingress.pause_frames,
+                           ingress.resume_frames, ingress.paused_wall_ps,
+                           ingress.max_pause_cascade_depth});
+    }
+    return metrics;
 }

@@ -120,4 +120,54 @@ TEST(DcqcnAtlahsRuntimeTest, CompletesPacketizedFlowOnTheSharedNsTm3Clos) {
     EXPECT_NE(manifest.find("pfc_reverse_order=fifo-serialize-then-propagate"), std::string::npos);
 }
 
+
+TEST(DcqcnAtlahsRuntimeTest, EcnOnlyModeDropsOnOverflowAndRecoversWithARateCut) {
+    EventList event_list;
+    EventList::setEndtime(std::numeric_limits<simtime_picosec>::max());
+    const std::filesystem::path topology =
+        std::filesystem::path(__FILE__).parent_path() /
+        "../../../experiments/rnic_multibaseline/topologies/clos_64_400g.topo";
+    DcqcnAtlahsRuntimeConfig config;
+    config.topology_file = topology.lexically_normal().string();
+    // Comparator-realism ruling: pfc off is the ECN-only mode. The small
+    // buffers force overflow drops through the counted ns-tm3 drop path;
+    // recovery is the transport's job and every recovery event cuts the
+    // rate as a CNP would.
+    config.pfc_enabled = false;
+    config.ns_tm3_shared_buffer_bytes = 128 * 1024;
+    config.ns_tm3_egress_buffer_bytes = 128 * 1024;
+    config.ecn_kmin_bytes = 0;
+    config.ecn_kmax_bytes = 4096;
+    config.ecn_pmax_ppm = 1000000;
+    config.ecn_seed = 9;
+    config.silent_loss_rto_ps = UINT64_C(1000000000);
+    DcqcnAtlahsRuntime runtime(event_list, config, 64);
+    std::vector<AtlahsFlowId> completed;
+    runtime.setup(64, [&](AtlahsFlowId flow_id) { completed.push_back(flow_id); });
+
+    for (std::uint32_t source = 0; source < 8; ++source) {
+        runtime.send(AtlahsFlowRequest{177 + source, source, 63, 64 * 1024, EventList::now(), 9});
+    }
+    while (runtime.hasPendingPhysicalWork()) {
+        ASSERT_TRUE(EventList::doNextEvent());
+    }
+
+    EXPECT_EQ(completed.size(), 8U);
+    EXPECT_EQ(runtime.completed_flow_count(), 8U);
+    EXPECT_GT(runtime.dropped_packet_count(), 0U);
+    EXPECT_GT(runtime.loss_rate_cut_count(), 0U);
+    EXPECT_EQ(runtime.pfc_pause_count(), 0U);
+    EXPECT_EQ(runtime.pfc_resume_count(), 0U);
+    EXPECT_EQ(runtime.pfc_paused_wall_ps_total(), 0U);
+    EXPECT_EQ(runtime.pfc_max_cascade_depth(), 0U);
+    EXPECT_TRUE(runtime.renderPfcPortMetricsManifest().empty());
+
+    const std::string manifest =
+        renderDcqcnAtlahsManifest(config, 64, "flat.bin", "", "", "gpu-rank");
+    EXPECT_NE(manifest.find("pfc=off-ecn-only-drop-on-overflow"), std::string::npos);
+    EXPECT_NE(manifest.find("recovery=go-back-n"), std::string::npos);
+    EXPECT_NE(manifest.find("sr_window_packets=64"), std::string::npos);
+    EXPECT_NE(manifest.find("loss_rate_cut=on"), std::string::npos);
+}
+
 }  // namespace

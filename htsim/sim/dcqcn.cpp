@@ -28,6 +28,7 @@ linkspeed_bps DCQCNSrc::_minimum_rate_bps = UINT64_C(100000000);
 uint32_t DCQCNSrc::_F = 5;
 linkspeed_bps DCQCNSrc::_RAI = 0;
 linkspeed_bps DCQCNSrc::_RHAI = 0;
+bool DCQCNSrc::_loss_rate_cut_enabled = true;
 
 DCQCNSrc::DCQCNSrc(RoceLogger* logger, TrafficLogger* pktlogger, EventList &eventlist, linkspeed_bps rate)
     : RoceSrc(logger,pktlogger,eventlist,rate),
@@ -118,7 +119,7 @@ std::uint64_t DCQCNSrc::cc_timer_fire_count() const noexcept {
     return _cc_timer.fireCount();
 }
 
-void DCQCNSrc::processCNP(const CNPPacket& cnp){
+void DCQCNSrc::rateCut(const char* observer_event){
     _RT = _RC;
     _RC = std::max<linkspeed_bps>(
         _minimum_rate_bps,
@@ -140,7 +141,7 @@ void DCQCNSrc::processCNP(const CNPPacket& cnp){
     _last_cc_update = eventlist().now();
     _last_alpha_update = eventlist().now();
     if (_state_observer) {
-        _state_observer("cnp-rate-cut");
+        _state_observer(observer_event);
     }
 
     if (_cc_update_period == 0) {
@@ -150,6 +151,27 @@ void DCQCNSrc::processCNP(const CNPPacket& cnp){
         <= std::numeric_limits<simtime_picosec>::max() - _cc_update_period) {
         _cc_timer.arm(eventlist().now() + _cc_update_period);
     }
+}
+
+void DCQCNSrc::processCNP(const CNPPacket& cnp){
+    rateCut("cnp-rate-cut");
+}
+
+void DCQCNSrc::processNack(const RoceNack& nack) {
+    RoceSrc::processNack(nack);
+    // Loss recovery induces the AIMD-style drop exactly like a CNP
+    // (comparator-realism ruling); mlx5 hardware couples its rate machine
+    // to retransmission events.
+    applyLossRateCut(nack.is_selective() ? "sr-loss-rate-cut"
+                                         : "gbn-loss-rate-cut");
+}
+
+void DCQCNSrc::applyLossRateCut(const char* observer_event) {
+    if (!_loss_rate_cut_enabled || _done || !_flow_started) {
+        return;
+    }
+    ++_loss_rate_cuts;
+    rateCut(observer_event);
 }
 
 void DCQCNSrc::increaseRate(){
