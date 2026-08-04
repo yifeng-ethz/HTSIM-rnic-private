@@ -8,6 +8,7 @@
  * A ROCEv2 source and sink
  */
 
+#include <cstdint>
 #include <list>
 #include <map>
 //#include "util.h"
@@ -20,6 +21,8 @@
 #include "eth_pause_packet.h"
 #include "trigger.h"
 #include "modular_vector.h"
+
+#include <optional>
 
 #define timeInf 0
 #define roceMaxReorder 64
@@ -35,17 +38,18 @@ class RoceSrc : public BaseQueue, public TriggerTarget {
     friend class RoceSink;
 public:
     RoceSrc(RoceLogger* logger, TrafficLogger* pktlogger, EventList &eventlist, linkspeed_bps rate);
+    ~RoceSrc() override;
 
     virtual void connect(Route* routeout, Route* routeback, RoceSink& sink, simtime_picosec startTime);
     void set_dst(uint32_t dst) {_dstaddr = dst;}
     void set_traffic_logger(TrafficLogger* pktlogger);
 
     void startflow();
-    void setRate(linkspeed_bps r) {_bitrate = r;_packet_spacing = (simtime_picosec)((Packet::data_packet_size()+RocePacket::ACKSIZE) * (pow(10.0,12.0) * 8) / _bitrate);doNextEvent();}
+    void setRate(linkspeed_bps r);
 
     inline void set_flowid(flowid_t flow_id) { _flow.set_flowid(flow_id);}
 
-    inline void update_spacing(){_packet_spacing = (simtime_picosec)((Packet::data_packet_size()+RocePacket::ACKSIZE) * (pow(10.0,12.0) * 8) / _pacing_rate);}
+    void update_spacing();
 
     static void setMinRTO(uint32_t min_rto_in_us) {_min_rto = timeFromUs((uint32_t)min_rto_in_us);}
 
@@ -74,6 +78,10 @@ public:
     virtual void processPause(const EthPausePacket& pkt);
     virtual void processAck(const RoceAck& ack);
     virtual void processNack(const RoceNack& nack);
+    // Retransmit exactly one logical packet without rewinding the send
+    // edge (mlx5-style limited selective repeat; comparator-realism
+    // ruling).
+    void resend_one(uint64_t sequence);
 
     virtual mem_b queuesize() const { return 0;};
     virtual mem_b maxsize() const { return 0;}; 
@@ -82,12 +90,12 @@ public:
     uint64_t _highest_sent;  //seqno is in bytes
     uint64_t _packets_sent;
     uint64_t _last_acked;
-    uint32_t _new_packets_sent;  // all the below reduced to 32 bits to save RAM
-    uint32_t _rtx_packets_sent;
+    uint64_t _new_packets_sent;
+    uint64_t _rtx_packets_sent;
     uint32_t _acks_received;
     uint32_t _nacks_received;
 
-    uint32_t _acked_packets;
+    uint64_t _acked_packets;
     uint32_t _pathid;
 
     enum {PAUSED,READY};
@@ -95,6 +103,14 @@ public:
     uint32_t _dstaddr;
 
     void print_stats();
+    bool done() const noexcept { return _done; }
+    bool has_outstanding_data() const noexcept {
+        return _highest_sent > _last_acked;
+    }
+    bool pacing_event_pending() const noexcept {
+        return _pacing_event.has_value();
+    }
+    simtime_picosec pacing_event_time() const;
 
     //round trip time estimate, needed for RTO calculation
     simtime_picosec _rtt, _rto, _mdev,_base_rtt;
@@ -108,7 +124,7 @@ public:
     bool _flow_started;
     uint16_t _state_send;
 
-    void send_packet();
+    virtual void send_packet();
 
     virtual const string& nodename() { return _nodename; }
     inline uint32_t flow_id() const { return _flow.flow_id();}
@@ -130,6 +146,12 @@ protected:
 
     linkspeed_bps _pacing_rate;
 
+    // RoCE owns one coalesced pacing event.  Pause/resume, GBN recovery and
+    // silent-RTO recovery may all request a wakeup, but they must never create
+    // independent pacing chains for the same source.
+    void schedulePacingAt(simtime_picosec when);
+    void cancelPacing();
+
     TrafficLogger* _pktlogger;
 
     // Connectivity
@@ -143,7 +165,10 @@ protected:
     simtime_picosec _stop_time;
     simtime_picosec _packet_spacing;
     simtime_picosec _time_last_sent;
+    bool _has_sent_packet;
+    uint64_t _highest_new_sequence_sent;
     bool _done;
+    std::optional<EventList::Handle> _pacing_event;
 };
 
 class RoceSink : public PacketSink, public DataReceiver {
@@ -152,6 +177,14 @@ public:
     RoceSink();
 
     enum {PAUSED,READY};
+
+    // Comparator-realism ruling: mlx5 ConnectX-6 Dx style limited
+    // selective repeat. A loss whose successors stay inside this fixed
+    // tracking window is repaired with one selective NACK per hole; a
+    // successor beyond the window falls back to the go-back-N NACK and
+    // drops the tracked state. Zero keeps plain go-back-N.
+    void configure_selective_repeat(uint32_t window_packets);
+    uint32_t selective_repeat_window() const { return _sr_window_packets; }
 
     virtual void receivePacket(Packet& pkt);
     
@@ -203,8 +236,15 @@ protected:
     // Mechanism
     void send_ack(simtime_picosec ts);
     void send_nack(simtime_picosec ts, RocePacket::seq_t ackno);
+    void send_selective_nack(simtime_picosec ts);
+    void advance_cumulative_through_tracked();
+    void clear_selective_tracking();
+
+    uint32_t _sr_window_packets{0};
+    // True while the outstanding NACK is selective; a window overflow
+    // escalates it to the go-back-N NACK exactly once.
+    bool _selective_nack_outstanding{false};
 };
 
 
 #endif
-

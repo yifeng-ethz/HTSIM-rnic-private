@@ -2,6 +2,7 @@
 #ifndef ROCEPACKET_H
 #define ROCEPACKET_H
 
+#include <cstdint>
 #include <list>
 #include "network.h"
 
@@ -34,6 +35,7 @@ class RocePacket : public Packet {
                 p->_path_len = 0;
                 p->_direction = NONE;
                 p->set_dst(destination);
+                ++_live_packets;
                 return p;
     }
   
@@ -52,10 +54,16 @@ class RocePacket : public Packet {
                 p->_last_packet = last_packet;
                 p->_path_len = route.size();
                 p->set_dst(destination);
+                ++_live_packets;
                 return p;
     }
-  
-    void free() {_packetdb.freePacket(this);}
+
+    void free() {
+        assert(_live_packets > 0);
+        --_live_packets;
+        _packetdb.freePacket(this);
+    }
+    static std::uint64_t live_packet_count() { return _live_packets; }
     virtual ~RocePacket(){}
     
         inline seq_t seqno() const {return _seqno;}
@@ -72,6 +80,7 @@ class RocePacket : public Packet {
     bool _retransmitted;
     bool _last_packet;  // set to true in the last packet in a flow.
     static PacketDB<RocePacket> _packetdb;
+    static std::uint64_t _live_packets;
 };
 
 class RoceAck : public Packet {
@@ -89,10 +98,16 @@ class RoceAck : public Packet {
                 p->_path_len = 0;
                 p->_direction = NONE;
                 p->set_dst(destination);
+                ++_live_packets;
                 return p;
     }
   
-    void free() {_packetdb.freePacket(this);}
+    void free() {
+        assert(_live_packets > 0);
+        --_live_packets;
+        _packetdb.freePacket(this);
+    }
+    static std::uint64_t live_packet_count() { return _live_packets; }
     inline seq_t ackno() const {return _ackno;}
     inline simtime_picosec ts() const {return _ts;}
     inline void set_ts(simtime_picosec ts) {_ts = ts;}
@@ -104,6 +119,7 @@ class RoceAck : public Packet {
     seq_t _ackno;
     simtime_picosec _ts;
     static PacketDB<RoceAck> _packetdb;
+    static std::uint64_t _live_packets;
 };
 
 
@@ -121,10 +137,28 @@ class RoceNack : public Packet {
                 p->_ackno = ackno;
                 p->_direction = NONE;
                 p->set_dst(destination);
+                p->_selective = false;
+                p->_resend_seqno = 0;
+                ++_live_packets;
                 return p;
     }
+
+    // Comparator-realism ruling: a selective NACK requests exactly one
+    // missing sequence (mlx5 ConnectX-6 Dx style limited selective repeat)
+    // instead of a go-back-N rewind to ackno.
+    inline void set_selective(seq_t resend_seqno) {
+        _selective = true;
+        _resend_seqno = resend_seqno;
+    }
+    inline bool is_selective() const { return _selective; }
+    inline seq_t resend_seqno() const { return _resend_seqno; }
   
-    void free() {_packetdb.freePacket(this);}
+    void free() {
+        assert(_live_packets > 0);
+        --_live_packets;
+        _packetdb.freePacket(this);
+    }
+    static std::uint64_t live_packet_count() { return _live_packets; }
     inline seq_t ackno() const {return _ackno;}
     inline simtime_picosec ts() const {return _ts;}
     inline void set_ts(simtime_picosec ts) {_ts = ts;}
@@ -135,7 +169,10 @@ class RoceNack : public Packet {
  protected:
     seq_t _ackno;
     simtime_picosec _ts;
+    bool _selective{false};
+    seq_t _resend_seqno{0};
     static PacketDB<RoceNack> _packetdb;
+    static std::uint64_t _live_packets;
 };
 
 

@@ -8,6 +8,10 @@ set(LIB_SOURCES
     oversubscribed_fat_tree_topology.cpp
     shortflows.cpp
     multihomed_fat_tree_topology.cpp
+    atlahs_goodput_trace.cpp
+    atlahs_state_trace.cpp
+    dcqcn_atlahs_cli.cpp
+    dcqcn_atlahs_runtime.cpp
     rnic_atlahs_cli.cpp
     rnic_atlahs_driver.cpp
     rnic_atlahs_runtime_factory.cpp
@@ -55,6 +59,7 @@ set_property(TARGET htsim_hpcc PROPERTY EXCLUDE_FROM_ALL TRUE)
 add_executable(htsim_eqds main_eqds.cpp)
 set_property(TARGET htsim_eqds PROPERTY EXCLUDE_FROM_ALL TRUE)
 
+add_executable(htsim_dcqcn_atlahs main_dcqcn_atlahs.cpp)
 add_executable(htsim_rnic main_rnic.cpp)
 add_executable(htsim_uec main_uec.cpp)
 add_executable(htsim_uec_sf main_uec_sf.cpp)
@@ -70,6 +75,7 @@ set (ALL_EXECUTABLES
     htsim_swift
     htsim_hpcc
     htsim_eqds
+    htsim_dcqcn_atlahs
     htsim_rnic
     htsim_uec
     htsim_uec_sf
@@ -131,6 +137,32 @@ if ( ENABLE_TESTS )
         rnic_collective_network_runtime_test
         PRIVATE htsim_dc htsim gtest_main)
     gtest_discover_tests(rnic_collective_network_runtime_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
+    add_executable(atlahs_goodput_trace_test atlahs_goodput_trace_test.cpp)
+    target_link_libraries(
+        atlahs_goodput_trace_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(atlahs_goodput_trace_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
+    add_executable(dcqcn_atlahs_cli_test dcqcn_atlahs_cli_test.cpp)
+    target_link_libraries(
+        dcqcn_atlahs_cli_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(dcqcn_atlahs_cli_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
+    add_executable(
+        dcqcn_atlahs_runtime_test
+        dcqcn_atlahs_runtime_test.cpp)
+    target_link_libraries(
+        dcqcn_atlahs_runtime_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(dcqcn_atlahs_runtime_test
         PROPERTIES LABELS "unit"
         PROPERTIES TIMEOUT 60
     )
