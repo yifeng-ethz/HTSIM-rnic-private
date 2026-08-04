@@ -228,6 +228,19 @@ all-to-all). The composition rule:
   join and retire semantics are untouched. A repeat with the same value is
   an idempotent no-op.
 
+Pacing alignment (maintainer-ruled): pacing is NOT boundary aligned. The
+ledger component of a pace (join, retire, NFLOW_UPDATE registered at
+dispatch) takes effect at mutation time; only the snapshot component moves
+at window boundaries. Under oversubscribed mixed traffic the FCT CDF tail
+may bloat, and that is allowed: it is the accepted price of the deliberate
+negative-feedback rebalancer, and it unblocks only by removing the cause.
+
+Open design point: destination-port oversubscription (many senders
+targeting one receiver) is the root cause of hunger, rebalancing and the
+tail bloat. It may be avoidable by construction, e.g. by arranging the
+ex-ante workload schedule so no destination is oversubscribed within a
+window. Deliberately left open.
+
 ## 2. The impossible triangle: deterministic, line-rate, lossless
 
 - **Per-packet spraying, not ECMP.** rnic-nn and rnic-cn spray packets
