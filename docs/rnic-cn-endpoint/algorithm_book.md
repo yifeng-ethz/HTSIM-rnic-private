@@ -206,6 +206,20 @@ all-to-all). The composition rule:
   stays feedforward and rates still change only at window boundaries to
   ledger values. Convergence is deterministic: same snapshots, same
   reallocation, every run.
+- **Pacing is port-normalized, never request-capped** (maintainer
+  correction, 2026-08-04). Pacing at grant can never oversubscribe a
+  receiver, because the grant formula is the reservation, and underfilling
+  a reservation is safe; "no receiver grant is claimed that cannot be
+  used" constrains declaration sizing, not pacing below grant. Each sender
+  paces lane i at grant_i * min(1, C_egress / sum_j grant_j), where
+  grant_i intersects the applied window snapshot with the receiver
+  ledger's current exact allocation (section 1.3): the ledger mutates at
+  sender dispatch, one one-way before the mutating packet can reach the
+  receiver, so surplus a stale snapshot still advertises after a peer
+  registered is never claimed and every receiver's inflow stays at or
+  below margin * C by construction. The scale factor is 1 whenever the
+  port is not oversubscribed, so an isolated small flow absorbs the
+  receiver's whole surplus and finishes early.
 - **NFLOW_UPDATE wire semantics** (previously an open definition, now
   load-bearing): a flag packet carrying (flow_id, new nflow_ppm),
   resequenced like every other packet, taking effect in the ledger and the

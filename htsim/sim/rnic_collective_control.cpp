@@ -255,8 +255,7 @@ std::uint64_t RnicSenderGrantGate::scaledByOwnNflow(
 void RnicSenderGrantGate::declarationDispatched(
         std::uint64_t shared_startup_rate_bps,
         std::uint32_t own_nflow_ppm,
-        std::uint64_t one_way_control_deadline_ps,
-        std::uint64_t shared_rate_cap_bps) {
+        std::uint64_t one_way_control_deadline_ps) {
     if (_phase != Phase::Idle) {
         throw std::logic_error(
             "rnic-cn declaration dispatched in invalid sender phase");
@@ -264,10 +263,6 @@ void RnicSenderGrantGate::declarationDispatched(
     if (shared_startup_rate_bps == 0) {
         throw std::invalid_argument(
             "rnic-cn declaration requires a positive startup rate");
-    }
-    if (shared_rate_cap_bps == 0) {
-        throw std::invalid_argument(
-            "rnic-cn declaration requires a positive shared-rate cap");
     }
     if (own_nflow_ppm == 0 ||
         own_nflow_ppm > RnicCollectiveController::kFullFlowPpm) {
@@ -280,13 +275,11 @@ void RnicSenderGrantGate::declarationDispatched(
     }
     _own_nflow_ppm = own_nflow_ppm;
     _one_way_ps = one_way_control_deadline_ps;
-    _shared_rate_cap_bps = shared_rate_cap_bps;
     // The startup reservation is this sender's fraction of the supplied
-    // shared rate, i.e. the full ledger allocation capped at the declared
-    // request (book 1.4); window snapshots then re-time it at sender-local
-    // dwnd boundaries.
-    _current_wire_rate_bps = scaledByOwnNflow(
-        std::min(shared_startup_rate_bps, shared_rate_cap_bps), own_nflow_ppm);
+    // shared rate, i.e. the full ledger allocation; window snapshots then
+    // re-time it at sender-local dwnd boundaries.
+    _current_wire_rate_bps =
+        scaledByOwnNflow(shared_startup_rate_bps, own_nflow_ppm);
     _phase = Phase::Active;
 }
 
@@ -453,7 +446,7 @@ void RnicSenderGrantGate::applyGrant(
         _pending_own_nflow.reset();
     }
     _membership_epoch = grant.membership_epoch;
-    _current_wire_rate_bps = scaledByOwnNflow(
-        std::min(grant.wire_rate_bps, _shared_rate_cap_bps), _own_nflow_ppm);
+    _current_wire_rate_bps =
+        scaledByOwnNflow(grant.wire_rate_bps, _own_nflow_ppm);
     _applied_feedback = grant;
 }

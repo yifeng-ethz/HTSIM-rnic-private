@@ -140,6 +140,21 @@ public:
                RnicCollectiveController::kPartsPerMillion / _registered_nflow_ppm_sum;
     }
 
+    // The registered flow's exact current allocation. The ledger mutates at
+    // sender dispatch, one one-way before the mutating packet can reach the
+    // receiver, so allocations over all registered flows never exceed
+    // margin * C at any instant.
+    std::uint64_t allocationBps(std::uint64_t flow_id) const {
+        const auto entry = _registered_nflow_by_flow.find(flow_id);
+        if (entry == _registered_nflow_by_flow.end()) {
+            throw std::logic_error(
+                "rnic-cn ledger allocation requested for an unregistered flow");
+        }
+        return static_cast<std::uint64_t>(
+            static_cast<unsigned __int128>(sharedWireRateBps()) * entry->second /
+            RnicCollectiveController::kPartsPerMillion);
+    }
+
     bool empty() const noexcept { return _registered_nflow_by_flow.empty(); }
 
 private:
@@ -593,6 +608,8 @@ struct RnicCollectiveNetworkRuntime::Impl {
     void processDueRateActivations(TimePs now_ps);
     std::uint32_t egressFairSharePpm(std::size_t destination_count) const;
     std::uint64_t requestedRateBps(std::uint32_t nflow_ppm) const;
+    void refreshEgressPacing(NodeState& source);
+    void refreshEgressPacingForReceiver(std::uint32_t receiver_id);
     void processDueEgressRebalances(TimePs now_ps);
     void rebalanceEgress(NodeState& source, TimePs now_ps);
 
@@ -1353,6 +1370,7 @@ void RnicCollectiveNetworkRuntime::Impl::processEndpointArrivals(
                 }
                 receiver.reservation_ledger.updateDeclaration(
                     flow.request.flow_id, arrival.declaration->nflow_ppm);
+                refreshEgressPacingForReceiver(flow.request.destination);
                 break;
             }
             case RnicCollectivePacketKind::ACCEPT:
@@ -2261,9 +2279,7 @@ void RnicCollectiveNetworkRuntime::Impl::processDueRateActivations(TimePs now_ps
         if (!flow.sender_gate.activateScheduledRate(now_ps)) {
             continue;
         }
-        requireNode(flow.request.source)
-            .node.txPort()
-            .setWireRateGrant(flow.request.flow_id, flow.sender_gate.currentWireRateBps());
+        refreshEgressPacing(requireNode(flow.request.source));
     }
     pending_rate_activations.erase(pending_rate_activations.begin(), due_end);
 }
@@ -2295,6 +2311,69 @@ std::uint64_t RnicCollectiveNetworkRuntime::Impl::requestedRateBps(
     return static_cast<std::uint64_t>(
         static_cast<Wide>(marginDeratedCapacityBps(config)) * nflow_ppm /
         RnicCollectiveController::kPartsPerMillion);
+}
+
+void RnicCollectiveNetworkRuntime::Impl::refreshEgressPacing(NodeState& source) {
+    // Book 1.4 pacing correction: pacing AT grant can never oversubscribe a
+    // receiver, because the grant formula is the reservation, and
+    // underfilling a reservation is safe. The only physical constraint is
+    // the sender port, so each active lane paces
+    // grant_i * min(1, C_egress / sum_j grant_j), recomputed
+    // deterministically whenever an applied snapshot, a declaration, or a
+    // retirement changes any lane's grant. The scale is 1 whenever the port
+    // is not oversubscribed, so an isolated small flow absorbs the
+    // receiver's whole surplus and finishes early.
+    //
+    // grant_i intersects the applied window snapshot with the receiver
+    // ledger's current exact allocation (book 1.3): the ledger is the
+    // ex-ante schedule and mutates at sender dispatch, one one-way before
+    // the mutating packet can reach the receiver, so surplus a snapshot
+    // still advertises after a peer registered is never claimed and every
+    // receiver's inflow stays at or below margin * C by construction. The
+    // snapshot component still changes only at window boundaries.
+    struct Lane {
+        AtlahsFlowId flow_id;
+        std::uint64_t grant_bps;
+    };
+    std::vector<Lane> lanes;
+    Wide grant_sum = 0;
+    for (const auto& by_destination : source.egress_flows_by_destination) {
+        for (const AtlahsFlowId flow_id : by_destination.second) {
+            const FlowState& flow = requireFlow(flow_id);
+            if (!flow.declaration_dispatched || flow.receiver_retired ||
+                flow.sender_gate.phase() != RnicSenderGrantGate::Phase::Active) {
+                continue;
+            }
+            const std::uint64_t grant_bps = std::min(
+                flow.sender_gate.currentWireRateBps(),
+                requireNode(flow.request.destination)
+                    .reservation_ledger.allocationBps(flow_id));
+            lanes.push_back({flow_id, grant_bps});
+            grant_sum += grant_bps;
+        }
+    }
+    const std::uint64_t egress_capacity_bps = config.access_wire_capacity_bps;
+    RnicTxPort& tx = source.node.txPort();
+    for (const Lane& lane : lanes) {
+        std::uint64_t pace_bps = lane.grant_bps;
+        if (grant_sum > egress_capacity_bps) {
+            pace_bps = std::max<std::uint64_t>(
+                1, static_cast<std::uint64_t>(static_cast<Wide>(lane.grant_bps) *
+                                              egress_capacity_bps / grant_sum));
+        }
+        tx.setWireRateGrant(lane.flow_id, pace_bps);
+    }
+}
+
+void RnicCollectiveNetworkRuntime::Impl::refreshEgressPacingForReceiver(
+    std::uint32_t receiver_id) {
+    // A ledger mutation changes every registered peer's allocation, so all
+    // senders with an active lane toward this receiver re-pace.
+    for (const auto& node_state : nodes) {
+        if (node_state->egress_flows_by_destination.count(receiver_id) != 0) {
+            refreshEgressPacing(*node_state);
+        }
+    }
 }
 
 void RnicCollectiveNetworkRuntime::Impl::processDueEgressRebalances(TimePs now_ps) {
@@ -2403,9 +2482,7 @@ void RnicCollectiveNetworkRuntime::Impl::applyFeedbackArrival(
     FlowState& flow,
     RnicSenderFeedbackOutcome outcome) {
     if (outcome == RnicSenderFeedbackOutcome::AppliedNow) {
-        requireNode(flow.request.source)
-            .node.txPort()
-            .setWireRateGrant(flow.request.flow_id, flow.sender_gate.currentWireRateBps());
+        refreshEgressPacing(requireNode(flow.request.source));
         return;
     }
     if (outcome == RnicSenderFeedbackOutcome::Scheduled) {
@@ -2531,7 +2608,13 @@ void RnicCollectiveNetworkRuntime::Impl::beginMembershipChange(
         }
         if (sender_node.egress_flows_by_destination.empty()) {
             sender_node.next_egress_rebalance_ps.reset();
+        } else {
+            // The retired lane's grant leaves the port sum; sibling lanes
+            // regain their share of the egress immediately.
+            refreshEgressPacing(sender_node);
         }
+        // The ledger retirement raises every remaining peer's allocation.
+        refreshEgressPacingForReceiver(flow.request.destination);
         flow.receiver_retired = true;
         flow.retirement_completion_time_ps = observation_time_ps;
         auto activation = pending_rate_activations.begin();
@@ -2598,21 +2681,22 @@ void RnicCollectiveNetworkRuntime::Impl::activateDeclaredFlows() {
     }
     std::vector<AtlahsFlowId> declared;
     declared.swap(declared_flows_pending_activation);
+    std::set<std::uint32_t> touched_sources;
+    std::set<std::uint32_t> touched_receivers;
     for (const AtlahsFlowId flow_id : declared) {
         FlowState& flow = requireFlow(flow_id);
         // Declare-and-go with no ramping: the whole same-timestamp DECLARE
         // batch registers in the reservation ledger before any gate opens,
         // so simultaneous joiners read one consistent ledger sum and start
-        // at their full allocation immediately, capped at the declared
-        // request (book 1.4).
+        // at their full allocation immediately.
         flow.sender_gate.declarationDispatched(
             requireNode(flow.request.destination).reservation_ledger.sharedWireRateBps(),
-            flow.declared_nflow_ppm, config.control_deadline_ps,
-            marginDeratedCapacityBps(config));
+            flow.declared_nflow_ppm, config.control_deadline_ps);
         NodeState& source = requireNode(flow.request.source);
         RnicTxPort& tx = source.node.txPort();
-        tx.setWireRateGrant(flow_id, flow.sender_gate.currentWireRateBps());
         tx.setDataEligible(flow_id, true);
+        touched_sources.insert(flow.request.source);
+        touched_receivers.insert(flow.request.destination);
         if (flow.final_ledger.total_data_packets == 0 && !flow.retire_control_queued) {
             queueRetireControl(flow, EventList::now(), true);
         }
@@ -2627,6 +2711,12 @@ void RnicCollectiveNetworkRuntime::Impl::activateDeclaredFlows() {
             source.next_egress_rebalance_ps = next;
             wakeAt(next);
         }
+    }
+    for (const std::uint32_t receiver_id : touched_receivers) {
+        refreshEgressPacingForReceiver(receiver_id);
+    }
+    for (const std::uint32_t source_id : touched_sources) {
+        refreshEgressPacing(requireNode(source_id));
     }
 }
 
