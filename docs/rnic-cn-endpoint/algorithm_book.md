@@ -179,6 +179,41 @@ sanctioned fallback, known to both sender and receiver as run constants.
   reservation domains are per-receiver; the reverse ACK calendar is
   reserved with the bound 64 * N_k + X_k <= C_rev * K / 8 per window.
 
+### 1.4 Sender egress composition and the RTT rebalancer (maintainer-ruled)
+
+Per-receiver ledgers alone cannot see a sender's port: fifteen receivers
+can jointly grant one sender more than its egress, it launches late, and
+packets land beyond ETA + D (observed deterministically in the mixed
+all-to-all). The composition rule:
+
+- **The sender knows its output bandwidth.** When pending work spans
+  n_dest destinations whose granted sum could exceed the sender's egress
+  capacity within a dwnd, the sender declares from its own fair share: the
+  initial declaration toward each destination requests rate
+  C_egress / n_dest (as a flow fraction, clamped to one flow), so the
+  sender's own declarations never oversubscribe its port and no receiver
+  grant is claimed that cannot be used.
+- **Hunger is detected locally.** A destination may be oversubscribed
+  (many senders targeting it) and grant less than the fair-share request.
+  The sender sees this directly in the returned window snapshots (granted
+  rate versus requested); the shortfall is idle egress capacity, i.e.
+  sender egress bandwidth waste.
+- **A slower loop rebalances at RTT granularity.** Once per RTT (2K), the
+  sender redistributes the detected slack to destinations that were fully
+  granted (no oversubscription observed), raising their declarations via
+  NFLOW_UPDATE. This outer loop is deliberately negative feedback, scoped
+  narrowly to reclaiming sender-egress waste; the per-window fast path
+  stays feedforward and rates still change only at window boundaries to
+  ledger values. Convergence is deterministic: same snapshots, same
+  reallocation, every run.
+- **NFLOW_UPDATE wire semantics** (previously an open definition, now
+  load-bearing): a flag packet carrying (flow_id, new nflow_ppm),
+  resequenced like every other packet, taking effect in the ledger and the
+  window snapshots at the boundary of the window after its resequenced
+  arrival. It changes a declaration's magnitude only; membership identity,
+  join and retire semantics are untouched. A repeat with the same value is
+  an idempotent no-op.
+
 ## 2. The impossible triangle: deterministic, line-rate, lossless
 
 - **Per-packet spraying, not ECMP.** rnic-nn and rnic-cn spray packets
