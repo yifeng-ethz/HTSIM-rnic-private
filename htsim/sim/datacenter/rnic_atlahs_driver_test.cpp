@@ -158,6 +158,20 @@ TEST(RnicAtlahsDriverTest, CollectiveManifestNamesPhysicalModelExactly) {
     EXPECT_NE(manifest.find("retirement_gate=exact-rx-ledger-and-no-gap"), std::string::npos);
 }
 
+TEST(RnicAtlahsDriverTest, SevereLateDropFlagAppearsOnlyWhenLateAdmissionsOccurred) {
+    RnicCollectiveRecoveryStatistics clean;
+    EXPECT_TRUE(renderRnicSevereLateDropManifest(clean).empty());
+
+    RnicCollectiveRecoveryStatistics late;
+    late.late_data_packets = 3;
+    const std::string flagged = renderRnicSevereLateDropManifest(late);
+    EXPECT_NE(flagged.find("rnic_cn_severe_late_drop=flagged"), std::string::npos);
+    EXPECT_NE(flagged.find("[RNIC warning] 3 Ring-CAM late admission(s)"),
+              std::string::npos);
+    EXPECT_NE(flagged.find("jitter bound"), std::string::npos);
+    EXPECT_NE(flagged.find("should in principle be fixed"), std::string::npos);
+}
+
 TEST(RnicAtlahsDriverTest, ManifoldManifestsExcludePhysicalTopology) {
     EventList& event_list = testEventList();
     for (const RnicProfile profile :

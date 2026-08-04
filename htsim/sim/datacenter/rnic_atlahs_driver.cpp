@@ -146,6 +146,22 @@ std::unique_ptr<RnicAtlahsRuntimeAssembly> assembleRnicAtlahsProfile(
     throw std::invalid_argument("invalid RNIC profile enum");
 }
 
+std::string renderRnicSevereLateDropManifest(
+    const RnicCollectiveRecoveryStatistics& recovery) {
+    if (recovery.late_data_packets == 0) {
+        return std::string();
+    }
+    std::ostringstream manifest;
+    manifest << "[RNIC manifest] rnic_cn_severe_late_drop=flagged" << '\n';
+    manifest << "[RNIC warning] " << recovery.late_data_packets
+             << " Ring-CAM late admission(s) were recovered deterministically"
+                " through the GAP NACK path with rates untouched, but a late"
+                " drop means the derived jitter bound (bandwidth jitter"
+                " product) was violated and should in principle be fixed."
+             << '\n';
+    return manifest.str();
+}
+
 std::string renderRnicAtlahsModelManifest(const RnicAtlahsCliOptions& options,
                                           const AtlahsHtsimApi::GoalLayout& goal_layout,
                                           const RnicAtlahsRuntimeAssembly& assembly) {

@@ -87,6 +87,7 @@ void validateRuntimeQuiescence(AtlahsHtsimApi& api) {
                   << recovery.stale_declarations_ignored
                   << " rnic_cn_stale_nflow_updates_ignored="
                   << recovery.stale_nflow_updates_ignored << '\n';
+        std::cout << renderRnicSevereLateDropManifest(recovery);
     }
 }
 
