@@ -117,6 +117,33 @@ DcqcnAtlahsCliOptions parseDcqcnAtlahsCli(int argc, const char* const argv[]) {
         } else if (option == "-pfc_high_bytes") {
             options.runtime.pfc_high_threshold_bytes =
                 checkedValue<mem_b>(option, parseUnsigned(option, value));
+        } else if (option == "-pfc") {
+            if (value == "on") {
+                options.runtime.pfc_enabled = true;
+            } else if (value == "off") {
+                options.runtime.pfc_enabled = false;
+            } else {
+                throw std::invalid_argument("-pfc: expected on or off");
+            }
+        } else if (option == "-recovery") {
+            if (value == "gbn") {
+                options.runtime.selective_repeat = false;
+            } else if (value == "sr") {
+                options.runtime.selective_repeat = true;
+            } else {
+                throw std::invalid_argument("-recovery: expected gbn or sr");
+            }
+        } else if (option == "-sr_window_packets") {
+            options.runtime.sr_window_packets =
+                checkedValue<std::uint32_t>(option, parseUnsigned(option, value));
+        } else if (option == "-loss_rate_cut") {
+            if (value == "on") {
+                options.runtime.loss_rate_cut = true;
+            } else if (value == "off") {
+                options.runtime.loss_rate_cut = false;
+            } else {
+                throw std::invalid_argument("-loss_rate_cut: expected on or off");
+            }
         } else if (option == "-silent_rto_us") {
             const std::uint64_t us = parseUnsigned(option, value);
             if (us > std::numeric_limits<simtime_picosec>::max() / UINT64_C(1000000)) {
@@ -179,5 +206,7 @@ std::string dcqcnAtlahsCliUsage(const std::string& program_name) {
            " [-ecn_kmin_bytes N] [-ecn_kmax_bytes N]"
            " [-ecn_pmax_ppm N] [-ecn_seed N]"
            " [-pfc_low_bytes N] [-pfc_high_bytes N]"
+           " [-pfc on|off] [-recovery gbn|sr]"
+           " [-sr_window_packets N] [-loss_rate_cut on|off]"
            " [-silent_rto_us N] [-dcqcn_min_rate_bps N]";
 }

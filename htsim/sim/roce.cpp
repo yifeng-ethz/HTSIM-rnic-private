@@ -218,6 +218,18 @@ void RoceSrc::connect(Route* routeout, Route* routeback, RoceSink& sink, simtime
    it.  However, sometimes the NACK has the PULL bit set, and then we
    resend immediately */
 void RoceSrc::processNack(const RoceNack& nack){
+    if (nack.is_selective()) {
+        // Limited selective repeat (comparator-realism ruling): the NACK
+        // requests exactly one missing sequence; the send edge and every
+        // in-flight successor stay untouched.
+        if (nack.ackno() > _last_acked) {
+            _last_acked = nack.ackno();
+        }
+        if (!_done) {
+            resend_one(nack.resend_seqno());
+        }
+        return;
+    }
     _last_acked = nack.ackno();
 
     if (_log_me)
@@ -229,6 +241,35 @@ void RoceSrc::processNack(const RoceNack& nack){
     if (!_done) {
         schedulePacingAt(eventlist().now());
     }
+}
+
+void RoceSrc::resend_one(uint64_t sequence) {
+    if (sequence == 0 || sequence > _highest_new_sequence_sent) {
+        throw std::logic_error(
+            "RoCE selective retransmission targets an unsent sequence");
+    }
+    uint16_t payload_bytes = _mss;
+    bool last_packet = false;
+    if (_flow_size) {
+        const uint64_t payload_sent = (sequence - 1) * _mss;
+        if (payload_sent >= _flow_size) {
+            throw std::logic_error(
+                "RoCE selective retransmission is beyond the flow size");
+        }
+        const uint64_t remaining = _flow_size - payload_sent;
+        payload_bytes = static_cast<uint16_t>(std::min<uint64_t>(
+            remaining, static_cast<uint64_t>(_mss)));
+        last_packet = sequence * _mss >= _flow_size;
+    }
+    RocePacket* p = RocePacket::newpkt(_flow, *_route, sequence,
+                                       payload_bytes, true, last_packet,
+                                       _dstaddr);
+    p->set_pathid(_pathid);
+    p->flow().logTraffic(*p, *this, TrafficLogger::PKT_CREATESEND);
+    p->set_ts(eventlist().now());
+    ++_packets_sent;
+    ++_rtx_packets_sent;
+    p->sendOn();
 }
 
 /* Process an ACK.  Mostly just housekeeping*/
@@ -508,6 +549,31 @@ void RoceSink::connect(RoceSrc& src, Route* route)
     _drops = 0;
 }
 
+void RoceSink::configure_selective_repeat(uint32_t window_packets) {
+    if (window_packets > roceMaxReorder) {
+        throw std::invalid_argument(
+            "RoCE selective-repeat window exceeds the tracking capacity");
+    }
+    _sr_window_packets = window_packets;
+}
+
+void RoceSink::advance_cumulative_through_tracked() {
+    while (_epsn_rx_bitmap[_cumulative_ack + 1]) {
+        ++_cumulative_ack;
+        _epsn_rx_bitmap[_cumulative_ack] = 0;
+        --_out_of_order_count;
+    }
+}
+
+void RoceSink::clear_selective_tracking() {
+    // Tracked successors live in (_cumulative_ack, _cumulative_ack + W];
+    // the modular bitmap wraps at its compile-time capacity.
+    for (uint32_t offset = 1; offset <= roceMaxReorder; ++offset) {
+        _epsn_rx_bitmap[_cumulative_ack + offset] = 0;
+    }
+    _out_of_order_count = 0;
+}
+
 
 // Receive a packet.
 // Note: _cumulative_ack is the last byte we've ACKed.
@@ -537,6 +603,37 @@ void RoceSink::receivePacket(Packet& pkt) {
     //bool last_packet = ((RocePacket*)&pkt)->last_packet();
 
     if (seqno > _cumulative_ack+1){
+        if (_sr_window_packets > 0
+            && seqno - (_cumulative_ack + 1) < _sr_window_packets) {
+            // In-window successor of a hole: track it and request exactly
+            // the missing head, once per open hole (limited selective
+            // repeat, comparator-realism ruling).
+            if (_epsn_rx_bitmap[seqno] == 0) {
+                _epsn_rx_bitmap[seqno] = 1;
+                _out_of_order_count++;
+            }
+            if (!_nack_sent) {
+                send_selective_nack(ts);
+                _nack_sent = true;
+            }
+            pkt.flow().logTraffic(pkt,*this,TrafficLogger::PKT_RCVDESTROY);
+            p->free();
+            return;
+        }
+        if (_sr_window_packets > 0) {
+            // Beyond the fixed tracking window: fall back to go-back-N and
+            // drop the tracked state, since the sender rewinds everything.
+            // An outstanding selective NACK escalates to the rewind once.
+            clear_selective_tracking();
+            if (!_nack_sent || _selective_nack_outstanding) {
+                send_nack(ts, _cumulative_ack);
+                _nack_sent = true;
+                _selective_nack_outstanding = false;
+            }
+            pkt.flow().logTraffic(pkt,*this,TrafficLogger::PKT_RCVDESTROY);
+            p->free();
+            return;
+        }
         if (ooo_enabled && seqno - _cumulative_ack <= roceMaxReorder){
             //store packet in OOO buffer.
             _epsn_rx_bitmap[seqno] = 1;
@@ -566,19 +663,32 @@ void RoceSink::receivePacket(Packet& pkt) {
     if (seqno == _cumulative_ack+1) { // it's the next expected seq no
         _cumulative_ack = seqno;
 
-        if (ooo_enabled){
-            assert(_epsn_rx_bitmap[seqno] == 0);
-
-            while (_epsn_rx_bitmap[_cumulative_ack + 1]) {
-                // clean OOO state, this will wrap at some point.
-                _cumulative_ack ++;
-                _epsn_rx_bitmap[_cumulative_ack] = 0;
-                _out_of_order_count--;
-                cout << this << " ooo count- " << _out_of_order_count << endl;
+        if (_sr_window_packets > 0) {
+            advance_cumulative_through_tracked();
+            if (_out_of_order_count > 0) {
+                // The repaired hole exposed the next one: tracked
+                // successors remain beyond a new missing head.
+                send_selective_nack(ts);
+                _nack_sent = true;
+            } else {
+                _nack_sent = false;
+                _selective_nack_outstanding = false;
             }
+        } else {
+            if (ooo_enabled){
+                assert(_epsn_rx_bitmap[seqno] == 0);
+
+                while (_epsn_rx_bitmap[_cumulative_ack + 1]) {
+                    // clean OOO state, this will wrap at some point.
+                    _cumulative_ack ++;
+                    _epsn_rx_bitmap[_cumulative_ack] = 0;
+                    _out_of_order_count--;
+                    cout << this << " ooo count- " << _out_of_order_count << endl;
+                }
+            }
+            if (_nack_sent) 
+                _nack_sent = false;
         }
-        if (_nack_sent) 
-            _nack_sent = false;
 
         send_ack(ts);
     } else if (seqno < _cumulative_ack+1) {
@@ -612,4 +722,15 @@ void RoceSink::send_nack(simtime_picosec ts, RocePacket::seq_t ackno) {
     nack->flow().logTraffic(*nack,*this,TrafficLogger::PKT_CREATE);
     nack->set_ts(ts);
     nack->sendOn();
+}
+
+void RoceSink::send_selective_nack(simtime_picosec ts) {
+    RoceNack* nack =
+        RoceNack::newpkt(_src->_flow, *_route, _cumulative_ack, _srcaddr);
+    nack->set_selective(_cumulative_ack + 1);
+    nack->set_pathid(0);
+    nack->flow().logTraffic(*nack, *this, TrafficLogger::PKT_CREATE);
+    nack->set_ts(ts);
+    nack->sendOn();
+    _selective_nack_outstanding = true;
 }

@@ -131,12 +131,18 @@ int main(int argc, char* argv[]) {
         if (options.runtime.goodput_trace_csv.has_value()) {
             installed_runtime->writeGoodputTraceCsv();
         }
+        std::cout << installed_runtime->renderPfcPortMetricsManifest();
         std::cout << "[DCQCN manifest] completed_flows="
                   << installed_runtime->completed_flow_count()
                   << " silent_rtos=" << installed_runtime->silent_rto_count()
+                  << " loss_rate_cuts=" << installed_runtime->loss_rate_cut_count()
                   << " ecn_marked_packets=" << installed_runtime->ecn_marked_packet_count()
-                  << " pfc_pause_frames=" << installed_runtime->pfc_pause_count()
-                  << " pfc_resume_frames=" << installed_runtime->pfc_resume_count()
+                  << " dcqcn_pfc_pause_frames=" << installed_runtime->pfc_pause_count()
+                  << " dcqcn_pfc_resume_frames=" << installed_runtime->pfc_resume_count()
+                  << " dcqcn_pfc_paused_wall_ps="
+                  << installed_runtime->pfc_paused_wall_ps_total()
+                  << " dcqcn_pfc_max_cascade_depth="
+                  << installed_runtime->pfc_max_cascade_depth()
                   << " ns_tm3_dropped_packets=" << installed_runtime->dropped_packet_count()
                   << " ns_tm3_shared_pool_dropped_packets="
                   << installed_runtime->shared_pool_dropped_packet_count()

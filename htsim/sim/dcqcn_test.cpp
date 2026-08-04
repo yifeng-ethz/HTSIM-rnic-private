@@ -4,6 +4,7 @@
 #include "dcqcn.h"
 #include "eventlist.h"
 #include "eth_pause_packet.h"
+#include "pipe.h"
 #include "route.h"
 
 #include <cstddef>
@@ -157,6 +158,124 @@ TEST(DcqcnTimerTest,
     EXPECT_EQ(EthPausePacket::live_packet_count(), 0U);
 
     DCQCNSrc::_B = original_byte_threshold;
+}
+
+
+class SeqnoDropper final : public PacketSink {
+public:
+    explicit SeqnoDropper(std::uint64_t drop_seqno) : _drop_seqno(drop_seqno) {}
+
+    void receivePacket(Packet& packet) override {
+        if (packet.type() == ROCE && !_dropped) {
+            const auto& data = static_cast<const RocePacket&>(packet);
+            if (data.seqno() == _drop_seqno) {
+                _dropped = true;
+                packet.free();
+                return;
+            }
+        }
+        packet.sendOn();
+    }
+
+    const string& nodename() override { return _name; }
+    bool dropped() const { return _dropped; }
+
+private:
+    std::uint64_t _drop_seqno;
+    bool _dropped{false};
+    string _name{"seqno-dropper"};
+};
+
+struct SelectiveRepeatHarness {
+    SelectiveRepeatHarness(EventList& event_list,
+                           std::uint64_t drop_seqno,
+                           std::uint32_t sr_window_packets,
+                           std::uint64_t flow_packets,
+                           simtime_picosec wire_delay_ps = timeFromNs(100u))
+        : dropper(drop_seqno),
+          forward_wire(wire_delay_ps, event_list),
+          reverse_wire(wire_delay_ps, event_list),
+          source(nullptr, nullptr, event_list, UINT64_C(8000000000)),
+          sink(event_list) {
+        forward.push_back(&dropper);
+        forward.push_back(&forward_wire);
+        forward.push_back(&sink);
+        reverse.push_back(&reverse_wire);
+        reverse.push_back(&source);
+        sink.configure_selective_repeat(sr_window_packets);
+        source.set_dst(1);
+        sink.set_src(0);
+        source.set_flowsize(
+            flow_packets *
+            static_cast<std::uint64_t>(Packet::data_packet_size()));
+        source.connect(&forward, &reverse, sink, 0);
+    }
+
+    Route forward;
+    Route reverse;
+    SeqnoDropper dropper;
+    Pipe forward_wire;
+    Pipe reverse_wire;
+    DCQCNSrc source;
+    DCQCNSink sink;
+};
+
+TEST(DcqcnSelectiveRepeatTest, InWindowLossRetransmitsSelectivelyAndCutsRate) {
+    EventList& event_list = EventList::getTheEventList();
+    while (EventList::doNextEvent()) {
+    }
+    DCQCNSrc::setLossRateCut(true);
+    SelectiveRepeatHarness harness(event_list, 2, 64, 6);
+    while (EventList::doNextEvent()) {
+    }
+
+    // The comparator-realism ruling: one selective NACK repairs the hole
+    // without rewinding the send edge, and the loss event drives the same
+    // alpha-based cut a CNP would.
+    EXPECT_TRUE(harness.dropper.dropped());
+    EXPECT_TRUE(harness.source.done());
+    EXPECT_EQ(harness.sink.cumulative_ack(), 6U);
+    EXPECT_EQ(harness.source._new_packets_sent, 6U);
+    EXPECT_EQ(harness.source._rtx_packets_sent, 1U);
+    EXPECT_EQ(harness.source.loss_rate_cut_count(), 1U);
+    EXPECT_LT(harness.source.current_rate(), UINT64_C(8000000000));
+}
+
+TEST(DcqcnSelectiveRepeatTest, LossBeyondTheTrackingWindowFallsBackToGoBackN) {
+    EventList& event_list = EventList::getTheEventList();
+    while (EventList::doNextEvent()) {
+    }
+    DCQCNSrc::setLossRateCut(true);
+    // The long wire keeps the selective repair in flight while successors
+    // keep arriving, so the four-packet tracking window overflows.
+    SelectiveRepeatHarness harness(event_list, 2, 4, 12, timeFromUs(50.0));
+    while (EventList::doNextEvent()) {
+    }
+
+    // Successors of the hole overflow the four-packet tracking window, so
+    // the receiver dropped its tracked state and requested a go-back-N
+    // rewind; the flow still completes exactly.
+    EXPECT_TRUE(harness.source.done());
+    EXPECT_EQ(harness.sink.cumulative_ack(), 12U);
+    EXPECT_EQ(harness.source._new_packets_sent, 12U);
+    EXPECT_GE(harness.source._rtx_packets_sent, 5U);
+    EXPECT_GE(harness.source.loss_rate_cut_count(), 1U);
+}
+
+TEST(DcqcnSelectiveRepeatTest, LossRateCutOffIsolatesRecoveryFromTheRateMachine) {
+    EventList& event_list = EventList::getTheEventList();
+    while (EventList::doNextEvent()) {
+    }
+    DCQCNSrc::setLossRateCut(false);
+    SelectiveRepeatHarness harness(event_list, 2, 64, 6);
+    while (EventList::doNextEvent()) {
+    }
+    DCQCNSrc::setLossRateCut(true);
+
+    EXPECT_TRUE(harness.source.done());
+    EXPECT_EQ(harness.source._rtx_packets_sent, 1U);
+    EXPECT_EQ(harness.source.loss_rate_cut_count(), 0U);
+    EXPECT_EQ(harness.source.current_rate(), UINT64_C(8000000000));
 }
 
 }  // namespace

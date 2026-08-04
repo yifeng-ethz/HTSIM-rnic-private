@@ -357,4 +357,144 @@ TEST(NsTm3DcqcnPolicyTest, DataPauseWaitsForPacketBoundaryAndDoesNotBlockControl
     EXPECT_EQ(sink.ids, (std::vector<packetid_t>{1, 3, 2}));
 }
 
+
+TEST(NsTm3DcqcnPolicyTest, PauseCascadeDepthAndPausedWallTimeAreMeasured) {
+    EventList& event_list = EventList::getTheEventList();
+    drainEvents();
+    // Two chained switches: the downstream switch drains through a slow
+    // egress, so it pauses the upstream switch's egress first (a root
+    // pause, depth one); packets then pile up in the upstream switch while
+    // its egress is held, so its own pause toward the recording edge
+    // extends the chain to depth two (comparator-realism ruling, PFC storm
+    // observability).
+    struct CascadeHarness {
+        CascadeHarness(EventList& event_list, linkspeed_bps egress_rate, const std::string& name)
+            : owner(FatTreeSwitchFactory::create(FatTreeSwitchModel::NsTm3,
+                                                 event_list,
+                                                 name,
+                                                 FatTreeSwitch::TOR,
+                                                 0,
+                                                 0,
+                                                 nullptr,
+                                                 8192)),
+              traffic_manager(dynamic_cast<NsTm3Switch*>(owner.get())),
+              egress(egress_rate, event_list, nullptr) {
+            if (traffic_manager == nullptr) {
+                throw std::logic_error("factory did not return ns-tm3");
+            }
+            traffic_manager->addPort(&egress);
+            ingress = dynamic_cast<NsTm3IngressPort*>(
+                traffic_manager->create_physical_ingress(name + "-ingress"));
+            if (ingress == nullptr) {
+                throw std::logic_error("factory did not return physical ingress");
+            }
+        }
+
+        std::unique_ptr<FatTreeSwitch> owner;
+        NsTm3Switch* traffic_manager;
+        NsTm3EgressSerializer egress;
+        NsTm3IngressPort* ingress{nullptr};
+    };
+
+    CascadeHarness downstream(event_list, kLinkRate / 10, "cascade-downstream");
+    CascadeHarness upstream(event_list, kLinkRate, "cascade-upstream");
+    const NsTm3DcqcnPolicyConfig policy{false, 0, 1, 1, 1, true, 150, 250, kLinkRate};
+    downstream.traffic_manager->configure_dcqcn_policy(policy);
+    upstream.traffic_manager->configure_dcqcn_policy(policy);
+
+    class DepthRecordingUpstream final : public BaseQueue {
+    public:
+        explicit DepthRecordingUpstream(EventList& event_list)
+            : BaseQueue(kLinkRate, event_list, nullptr) {
+            _nodename = "cascade-recording-upstream";
+        }
+        void receivePacket(Packet& packet) override {
+            if (packet.type() == ETH_PAUSE) {
+                const auto& pause = static_cast<const EthPausePacket&>(packet);
+                if (pause.sleepTime() > 0) {
+                    depths.push_back(pause.cascadeDepth());
+                }
+                packet.free();
+                return;
+            }
+            packet.sendOn();
+        }
+        void doNextEvent() override {}
+        mem_b queuesize() const override { return 0; }
+        mem_b maxsize() const override { return 0; }
+        std::vector<std::uint32_t> depths;
+    };
+
+    DepthRecordingUpstream edge(event_list);
+    Pipe wire_edge(timeFromNs(100u), event_list);
+    Pipe wire_middle(timeFromNs(100u), event_list);
+    RecordingSink sink;
+    Route route;
+    route.push_back(&edge);
+    route.push_back(&wire_edge);
+    route.push_back(upstream.ingress);
+    route.push_back(&upstream.egress);
+    route.push_back(&wire_middle);
+    route.push_back(downstream.ingress);
+    route.push_back(&downstream.egress);
+    route.push_back(&sink);
+    PacketFlow flow(nullptr);
+    flow.set_flowid(51);
+
+    // Inject one packet per upstream-egress serialization slot: the
+    // upstream meter stays balanced until the downstream pause lands on
+    // its egress, which is what makes the second pause a cascade rather
+    // than an independent root.
+    class PacedInjector final : public EventSource {
+    public:
+        PacedInjector(EventList& event_list, PacketFlow& flow, const Route& route)
+            : EventSource(event_list, "cascade-paced-injector"),
+              _flow(flow),
+              _route(route) {
+            event_list.sourceIsPendingRel(*this, 0);
+        }
+
+        void doNextEvent() override {
+            _packets.push_back(std::make_unique<PolicyTestPacket>(
+                _flow, _route, _next_id, Packet::PRIO_LO));
+            _packets.back()->sendOn();
+            if (++_next_id <= 40) {
+                eventlist().sourceIsPendingRel(*this, timeFromNs(100u));
+            }
+        }
+
+    private:
+        PacketFlow& _flow;
+        const Route& _route;
+        packetid_t _next_id{1};
+        std::vector<std::unique_ptr<PolicyTestPacket>> _packets;
+    };
+
+    PacedInjector injector(event_list, flow, route);
+    drainEvents();
+
+    const NsTm3DcqcnPolicyCounters& downstream_counters =
+        downstream.traffic_manager->dcqcn_policy()->counters();
+    const NsTm3DcqcnPolicyCounters& upstream_counters =
+        upstream.traffic_manager->dcqcn_policy()->counters();
+    // Root pauses at the downstream switch, extended pauses upstream.
+    EXPECT_GT(downstream_counters.pause_frames, 0U);
+    EXPECT_EQ(downstream_counters.pause_frames, downstream_counters.resume_frames);
+    EXPECT_EQ(downstream_counters.max_pause_cascade_depth, 1U);
+    EXPECT_GT(downstream_counters.paused_wall_ps, 0U);
+    EXPECT_GT(upstream_counters.pause_frames, 0U);
+    EXPECT_EQ(upstream_counters.pause_frames, upstream_counters.resume_frames);
+    EXPECT_EQ(upstream_counters.max_pause_cascade_depth, 2U);
+    EXPECT_GT(upstream_counters.paused_wall_ps, 0U);
+    ASSERT_FALSE(edge.depths.empty());
+    EXPECT_EQ(*std::max_element(edge.depths.begin(), edge.depths.end()), 2U);
+
+    const auto port_metrics =
+        upstream.traffic_manager->dcqcn_policy()->pfc_port_metrics();
+    ASSERT_EQ(port_metrics.size(), 1U);
+    EXPECT_EQ(port_metrics.front().pause_frames, upstream_counters.pause_frames);
+    EXPECT_EQ(port_metrics.front().paused_wall_ps, upstream_counters.paused_wall_ps);
+    EXPECT_EQ(port_metrics.front().max_pause_cascade_depth, 2U);
+}
+
 }  // namespace

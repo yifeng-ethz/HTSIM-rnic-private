@@ -118,6 +118,12 @@ public:
 
     bool is_busy() const { return _packet_in_service != nullptr; }
     bool data_is_paused() const { return _data_paused; }
+    // Cascade depth of the pause currently holding this egress (0 when not
+    // paused). Recorded from the arriving PFC frame per the
+    // comparator-realism ruling.
+    uint32_t active_pause_cascade_depth() const {
+        return _data_paused ? _active_pause_cascade_depth : 0;
+    }
     mem_b in_service_bytes() const;
     uint32_t egress_id() const { return _egress_id; }
     NsTm3Switch* owner() const { return _owner; }
@@ -137,6 +143,7 @@ private:
     Packet* _authorized_dispatch{nullptr};
     Packet* _packet_in_service{nullptr};
     bool _data_paused{false};
+    uint32_t _active_pause_cascade_depth{0};
 };
 
 class NsTm3Switch : public FatTreeSwitch {
@@ -157,6 +164,10 @@ public:
     void receive_from_physical_ingress(Packet& pkt, uint32_t ingress_id);
     void egress_serialization_complete(uint32_t egress_id);
     void egress_pause_state_changed(uint32_t egress_id);
+    // Highest cascade depth among this switch's currently paused egresses
+    // (0 when none is paused); the local policy adds one when it emits a
+    // pause of its own, so PFC pause trees are measurable.
+    uint32_t max_active_egress_pause_depth() const;
     void configure_dcqcn_policy(const NsTm3DcqcnPolicyConfig& config);
     const NsTm3DcqcnPolicy* dcqcn_policy() const { return _dcqcn_policy.get(); }
     void set_queue_observer(std::shared_ptr<NsTm3QueueObserver> observer) {

@@ -2,6 +2,7 @@
 
 #include "dcqcn_atlahs_cli.h"
 
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -124,6 +125,35 @@ TEST(DcqcnAtlahsCliTest, ExplicitEgressBufferDoesNotDependOnOptionOrder) {
     EXPECT_EQ(shared_first.runtime.ns_tm3_egress_buffer_bytes, 1048576);
     EXPECT_EQ(egress_first.runtime.ns_tm3_shared_buffer_bytes, 67108864);
     EXPECT_EQ(shared_first.runtime.ns_tm3_shared_buffer_bytes, 67108864);
+}
+
+TEST(DcqcnAtlahsCliTest, ComparatorRealismFlagsDefaultToTheHardwareFreeRide) {
+    const DcqcnAtlahsCliOptions options =
+        parse({"htsim_dcqcn_atlahs", "-goal", "flat.bin", "-topology", "clos.topo"});
+    EXPECT_TRUE(options.runtime.pfc_enabled);
+    EXPECT_FALSE(options.runtime.selective_repeat);
+    EXPECT_EQ(options.runtime.sr_window_packets, 64U);
+    EXPECT_TRUE(options.runtime.loss_rate_cut);
+}
+
+TEST(DcqcnAtlahsCliTest, ParsesEcnOnlyAndSelectiveRepeatModes) {
+    const DcqcnAtlahsCliOptions options = parse(
+        {"htsim_dcqcn_atlahs", "-goal", "flat.bin", "-topology", "clos.topo", "-pfc", "off",
+         "-recovery", "sr", "-sr_window_packets", "32", "-loss_rate_cut", "off"});
+    EXPECT_FALSE(options.runtime.pfc_enabled);
+    EXPECT_TRUE(options.runtime.selective_repeat);
+    EXPECT_EQ(options.runtime.sr_window_packets, 32U);
+    EXPECT_FALSE(options.runtime.loss_rate_cut);
+
+    EXPECT_THROW(parse({"htsim_dcqcn_atlahs", "-goal", "flat.bin", "-topology", "clos.topo",
+                        "-pfc", "maybe"}),
+                 std::invalid_argument);
+    EXPECT_THROW(parse({"htsim_dcqcn_atlahs", "-goal", "flat.bin", "-topology", "clos.topo",
+                        "-recovery", "arq"}),
+                 std::invalid_argument);
+    EXPECT_THROW(parse({"htsim_dcqcn_atlahs", "-goal", "flat.bin", "-topology", "clos.topo",
+                        "-loss_rate_cut", "1"}),
+                 std::invalid_argument);
 }
 
 TEST(DcqcnAtlahsCliTest, RequiresGoalAndTopologyAndRejectsLegacyAliases) {

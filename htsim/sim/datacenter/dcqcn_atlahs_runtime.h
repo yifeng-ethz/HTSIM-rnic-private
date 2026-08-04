@@ -30,6 +30,16 @@ struct DcqcnAtlahsRuntimeConfig {
     mem_b pfc_high_threshold_bytes{720000};
     simtime_picosec silent_loss_rto_ps{UINT64_C(50000000000)};
     linkspeed_bps dcqcn_min_rate_bps{UINT64_C(100000000)};
+    // Comparator-realism ruling (2026-08-04): pfc off is the ECN-only mode
+    // in which buffer overflow drops packets and recovery is the
+    // transport's job; selective_repeat models the mlx5 ConnectX-6 Dx
+    // limited selective repeat with go-back-N fallback beyond the window;
+    // loss_rate_cut couples every loss recovery event to the CNP-style
+    // multiplicative rate cut.
+    bool pfc_enabled{true};
+    bool selective_repeat{false};
+    std::uint32_t sr_window_packets{64};
+    bool loss_rate_cut{true};
     std::uint64_t ecmp_seed{1};
     std::optional<std::string> state_trace_csv;
     std::optional<std::string> goodput_trace_csv;
@@ -58,9 +68,15 @@ public:
 
     std::uint64_t completed_flow_count() const noexcept;
     std::uint64_t silent_rto_count() const noexcept;
+    std::uint64_t loss_rate_cut_count() const noexcept;
     std::uint64_t ecn_marked_packet_count() const noexcept;
     std::uint64_t pfc_pause_count() const noexcept;
     std::uint64_t pfc_resume_count() const noexcept;
+    std::uint64_t pfc_paused_wall_ps_total() const noexcept;
+    std::uint32_t pfc_max_cascade_depth() const noexcept;
+    // Per-switch and per-port dcqcn_pfc_* manifest lines (measurement
+    // only); empty when no pause was ever sent.
+    std::string renderPfcPortMetricsManifest() const;
     std::uint64_t dropped_packet_count() const noexcept;
     std::uint64_t shared_pool_dropped_packet_count() const noexcept;
     std::uint64_t egress_domain_dropped_packet_count() const noexcept;

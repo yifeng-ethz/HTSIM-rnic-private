@@ -8,6 +8,7 @@
  * A DCQCN source and sink
  */
 
+#include <cstdint>
 #include <list>
 #include <map>
 #include <functional>
@@ -42,6 +43,22 @@ public:
     virtual void processCNP(const CNPPacket& cnp);    
     virtual void increaseRate();
     void processAck(const RoceAck& ack) override;
+    void processNack(const RoceNack& nack) override;
+
+    // Comparator-realism ruling: any loss recovery event (go-back-N
+    // rewind, selective retransmission, or silent RTO) drives the same
+    // alpha-based multiplicative cut the rate machine applies for a CNP.
+    // The -loss_rate_cut flag isolates this coupling.
+    void applyLossRateCut(const char* observer_event);
+    static void setLossRateCut(bool enabled) {
+        _loss_rate_cut_enabled = enabled;
+    }
+    static bool lossRateCutEnabled() noexcept {
+        return _loss_rate_cut_enabled;
+    }
+    std::uint64_t loss_rate_cut_count() const noexcept {
+        return _loss_rate_cuts;
+    }
 
     // should really be private, but loggers want to see:
     uint32_t _cnps_received;    
@@ -95,6 +112,7 @@ private:
 
     void ccTimerExpired();
     void send_packet() override;
+    void rateCut(const char* observer_event);
 
     simtime_picosec _last_cc_update, _last_alpha_update;
     linkspeed_bps _RC, _RT, _link;
@@ -106,6 +124,8 @@ private:
     uint16_t _T,_BC;
     uint64_t _byte_counter;
     std::uint64_t _byte_counter_rate_updates{0};
+    std::uint64_t _loss_rate_cuts{0};
+    static bool _loss_rate_cut_enabled;
     CcTimer _cc_timer;
     StateObserver _state_observer;
 

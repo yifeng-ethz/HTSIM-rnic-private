@@ -8,6 +8,7 @@
  * A ROCEv2 source and sink
  */
 
+#include <cstdint>
 #include <list>
 #include <map>
 //#include "util.h"
@@ -77,6 +78,10 @@ public:
     virtual void processPause(const EthPausePacket& pkt);
     virtual void processAck(const RoceAck& ack);
     virtual void processNack(const RoceNack& nack);
+    // Retransmit exactly one logical packet without rewinding the send
+    // edge (mlx5-style limited selective repeat; comparator-realism
+    // ruling).
+    void resend_one(uint64_t sequence);
 
     virtual mem_b queuesize() const { return 0;};
     virtual mem_b maxsize() const { return 0;}; 
@@ -173,6 +178,14 @@ public:
 
     enum {PAUSED,READY};
 
+    // Comparator-realism ruling: mlx5 ConnectX-6 Dx style limited
+    // selective repeat. A loss whose successors stay inside this fixed
+    // tracking window is repaired with one selective NACK per hole; a
+    // successor beyond the window falls back to the go-back-N NACK and
+    // drops the tracked state. Zero keeps plain go-back-N.
+    void configure_selective_repeat(uint32_t window_packets);
+    uint32_t selective_repeat_window() const { return _sr_window_packets; }
+
     virtual void receivePacket(Packet& pkt);
     
     RoceAck::seq_t _cumulative_ack; // the packet we have cumulatively acked
@@ -223,6 +236,14 @@ protected:
     // Mechanism
     void send_ack(simtime_picosec ts);
     void send_nack(simtime_picosec ts, RocePacket::seq_t ackno);
+    void send_selective_nack(simtime_picosec ts);
+    void advance_cumulative_through_tracked();
+    void clear_selective_tracking();
+
+    uint32_t _sr_window_packets{0};
+    // True while the outstanding NACK is selective; a window overflow
+    // escalates it to the go-back-N NACK exactly once.
+    bool _selective_nack_outstanding{false};
 };
 
 

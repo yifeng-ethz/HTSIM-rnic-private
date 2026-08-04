@@ -188,7 +188,7 @@ public:
     void processNack(const RoceNack& nack) override {
         DCQCNSrc::processNack(nack);
         _last_progress_ps = eventlist().now();
-        trace("gbn-nack");
+        trace(nack.is_selective() ? "sr-nack" : "gbn-nack");
     }
 
     void processPause(const EthPausePacket& pause) override {
@@ -206,6 +206,9 @@ public:
         _last_progress_ps = now;
         schedulePacingAt(now);
         trace("silent-rto");
+        // RTO recovery is a loss event; it induces the CNP-style cut
+        // (comparator-realism ruling).
+        applyLossRateCut("rto-loss-rate-cut");
         return true;
     }
 
@@ -297,6 +300,7 @@ public:
         RoceSrc::setMinRTO(
             static_cast<std::uint32_t>(this->config.silent_loss_rto_ps / UINT64_C(1000000)));
         DCQCNSrc::setMinRate(this->config.dcqcn_min_rate_bps);
+        DCQCNSrc::setLossRateCut(this->config.loss_rate_cut);
 
         std::ifstream topology_probe(this->config.topology_file);
         if (!topology_probe.is_open()) {
@@ -331,7 +335,7 @@ public:
                                                    this->config.ecn_kmax_bytes,
                                                    this->config.ecn_pmax_ppm,
                                                    this->config.ecn_seed,
-                                                   true,
+                                                   this->config.pfc_enabled,
                                                    this->config.pfc_low_threshold_bytes,
                                                    this->config.pfc_high_threshold_bytes,
                                                    this->config.endpoint_link_bps};
@@ -405,6 +409,8 @@ public:
         source->set_dst(request.destination);
         sink->set_src(request.source);
         source->set_flowsize(request.payload_bytes);
+        sink->configure_selective_repeat(
+            config.selective_repeat ? config.sr_window_packets : 0);
 
         Route* forward = make_route(request.source, request.destination, request.flow_id, *sink);
         Route* reverse =
@@ -529,13 +535,23 @@ private:
             config.ns_tm3_egress_buffer_bytes > config.ns_tm3_shared_buffer_bytes ||
             config.ecn_kmin_bytes < 0 || config.ecn_kmax_bytes <= config.ecn_kmin_bytes ||
             config.ecn_pmax_ppm == 0 || config.ecn_pmax_ppm > UINT32_C(1000000) ||
-            config.pfc_low_threshold_bytes <= 0 ||
-            config.pfc_low_threshold_bytes >= config.pfc_high_threshold_bytes ||
-            config.pfc_high_threshold_bytes >= config.ns_tm3_shared_buffer_bytes ||
             config.ecn_kmax_bytes >= config.ns_tm3_egress_buffer_bytes ||
             config.silent_loss_rto_ps == 0 || config.dcqcn_min_rate_bps == 0 ||
             config.dcqcn_min_rate_bps > config.endpoint_link_bps) {
             throw std::invalid_argument("invalid DCQCN ATLAHS model config");
+        }
+        // PFC thresholds bind only in ECN+PFC mode; with pfc off the
+        // buffer overflow drop path is the deliberate behavior.
+        if (config.pfc_enabled &&
+            (config.pfc_low_threshold_bytes <= 0 ||
+             config.pfc_low_threshold_bytes >= config.pfc_high_threshold_bytes ||
+             config.pfc_high_threshold_bytes >= config.ns_tm3_shared_buffer_bytes)) {
+            throw std::invalid_argument("invalid DCQCN ATLAHS PFC thresholds");
+        }
+        if (config.sr_window_packets == 0 ||
+            config.sr_window_packets > roceMaxReorder) {
+            throw std::invalid_argument(
+                "DCQCN selective-repeat window must be in [1, tracking capacity]");
         }
         if (config.goodput_trace_csv.has_value() !=
             (config.goodput_trace_bin_ps != 0)) {
@@ -668,6 +684,14 @@ std::uint64_t DcqcnAtlahsRuntime::silent_rto_count() const noexcept {
     return _impl->silent_rtos;
 }
 
+std::uint64_t DcqcnAtlahsRuntime::loss_rate_cut_count() const noexcept {
+    std::uint64_t total = 0;
+    for (const auto& source : _impl->sources) {
+        total += source->loss_rate_cut_count();
+    }
+    return total;
+}
+
 std::uint64_t DcqcnAtlahsRuntime::ecn_marked_packet_count() const noexcept {
     return _impl->sum_policy_counter(
         [](const NsTm3DcqcnPolicyCounters& counters) { return counters.ecn_marked_packets; });
@@ -681,6 +705,83 @@ std::uint64_t DcqcnAtlahsRuntime::pfc_pause_count() const noexcept {
 std::uint64_t DcqcnAtlahsRuntime::pfc_resume_count() const noexcept {
     return _impl->sum_policy_counter(
         [](const NsTm3DcqcnPolicyCounters& counters) { return counters.resume_frames; });
+}
+
+std::uint64_t DcqcnAtlahsRuntime::pfc_paused_wall_ps_total() const noexcept {
+    return _impl->sum_policy_counter([](const NsTm3DcqcnPolicyCounters& counters) {
+        return static_cast<std::uint64_t>(counters.paused_wall_ps);
+    });
+}
+
+std::uint32_t DcqcnAtlahsRuntime::pfc_max_cascade_depth() const noexcept {
+    std::uint32_t depth = 0;
+    const auto scan = [&](const std::vector<Switch*>& switches) {
+        for (Switch* base : switches) {
+            const auto* ns_tm3 = dynamic_cast<const NsTm3Switch*>(base);
+            if (ns_tm3 != nullptr && ns_tm3->dcqcn_policy() != nullptr) {
+                depth = std::max(depth,
+                                 ns_tm3->dcqcn_policy()->counters().max_pause_cascade_depth);
+            }
+        }
+    };
+    scan(_impl->topology->switches_lp);
+    scan(_impl->topology->switches_up);
+    scan(_impl->topology->switches_c);
+    return depth;
+}
+
+std::string DcqcnAtlahsRuntime::renderPfcPortMetricsManifest() const {
+    // PFC storm observability (comparator-realism ruling): measurement
+    // only, one line per switch and per port with any pause activity.
+    std::ostringstream manifest;
+    const auto tier_name = [](uint32_t switch_type) -> const char* {
+        switch (static_cast<FatTreeSwitch::switch_type>(switch_type)) {
+            case FatTreeSwitch::TOR:
+                return "leaf";
+            case FatTreeSwitch::AGG:
+                return "spine";
+            case FatTreeSwitch::CORE:
+                return "core";
+            case FatTreeSwitch::NONE:
+                break;
+        }
+        return "unknown";
+    };
+    const auto render = [&](const std::vector<Switch*>& switches) {
+        for (Switch* base : switches) {
+            auto* ns_tm3 = dynamic_cast<NsTm3Switch*>(base);
+            if (ns_tm3 == nullptr || ns_tm3->dcqcn_policy() == nullptr) {
+                continue;
+            }
+            const NsTm3DcqcnPolicyCounters& counters = ns_tm3->dcqcn_policy()->counters();
+            if (counters.pause_frames == 0) {
+                continue;
+            }
+            const std::string switch_name =
+                std::string(tier_name(ns_tm3->getType())) + ":" +
+                std::to_string(ns_tm3->getID());
+            manifest << "[DCQCN manifest] dcqcn_pfc_switch switch=" << switch_name
+                     << " dcqcn_pfc_pause_frames=" << counters.pause_frames
+                     << " dcqcn_pfc_resume_frames=" << counters.resume_frames
+                     << " dcqcn_pfc_paused_wall_ps=" << counters.paused_wall_ps
+                     << " dcqcn_pfc_max_cascade_depth=" << counters.max_pause_cascade_depth
+                     << '\n';
+            for (const NsTm3DcqcnPfcPortMetrics& port :
+                 ns_tm3->dcqcn_policy()->pfc_port_metrics()) {
+                manifest << "[DCQCN manifest] dcqcn_pfc_port switch=" << switch_name
+                         << " ingress=" << port.ingress_id
+                         << " dcqcn_pfc_pause_frames=" << port.pause_frames
+                         << " dcqcn_pfc_resume_frames=" << port.resume_frames
+                         << " dcqcn_pfc_paused_wall_ps=" << port.paused_wall_ps
+                         << " dcqcn_pfc_max_cascade_depth=" << port.max_pause_cascade_depth
+                         << '\n';
+            }
+        }
+    };
+    render(_impl->topology->switches_lp);
+    render(_impl->topology->switches_up);
+    render(_impl->topology->switches_c);
+    return manifest.str();
 }
 
 std::uint64_t DcqcnAtlahsRuntime::dropped_packet_count() const noexcept {
@@ -753,7 +854,11 @@ std::string renderDcqcnAtlahsManifest(const DcqcnAtlahsRuntimeConfig& config,
              << " egress_buffer_scope=per-physical-egress"
              << " buffer_residency=queued-voq-excludes-egress-serializer" << '\n';
     manifest << "[DCQCN manifest] transport=rocev2-dcqcn"
-             << " recovery=go-back-n"
+             << " recovery="
+             << (config.selective_repeat ? "selective-repeat-limited" : "go-back-n")
+             << " sr_window_packets=" << config.sr_window_packets
+             << " sr_fallback=go-back-n-beyond-window"
+             << " loss_rate_cut=" << (config.loss_rate_cut ? "on" : "off")
              << " cnp_interval_ps=" << DCQCNSink::_cnp_interval
              << " cnp_timer=single-coalesced-event-source"
              << " cc_update_period_ps=" << DCQCNSrc::_cc_update_period
@@ -769,7 +874,8 @@ std::string renderDcqcnAtlahsManifest(const DcqcnAtlahsRuntimeConfig& config,
              << " ecn_kmax_bytes=" << config.ecn_kmax_bytes
              << " ecn_pmax_ppm=" << config.ecn_pmax_ppm << " ecn_seed=" << config.ecn_seed
              << " ecn_sampler=packet-switch-egress-hash"
-             << " pfc=data-priority-only"
+             << " pfc="
+             << (config.pfc_enabled ? "data-priority-only" : "off-ecn-only-drop-on-overflow")
              << " pfc_meter_scope=per-physical-ingress"
              << " pfc_low_bytes=" << config.pfc_low_threshold_bytes
              << " pfc_high_bytes=" << config.pfc_high_threshold_bytes
