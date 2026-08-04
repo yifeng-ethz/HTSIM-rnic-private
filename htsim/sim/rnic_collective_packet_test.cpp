@@ -77,8 +77,8 @@ RnicCollectiveFinalLedger twoPacketLedger() {
     return {1500, 1628, 2};
 }
 
-RnicCollectiveDeclareMetadata declareMetadata(std::uint32_t nflow = 1) {
-    return {nflow};
+RnicCollectiveDeclareMetadata declareMetadata(std::uint32_t nflow_ppm = 1000000) {
+    return {nflow_ppm};
 }
 
 TEST(RnicCollectivePacketTest, CarriesFullAtlahsIdentityAndConsumesDataExplicitly) {
@@ -154,9 +154,9 @@ TEST(RnicCollectivePacketTest, DeclareCarriesOnlyNflow) {
     auto observer = std::make_shared<RecordingObserver>();
 
     RnicCollectivePacket* packet = RnicCollectivePacket::newDeclare(
-        flow, route, 51, 0x100000010ULL, 2, 7, 64, declareMetadata(1), observer);
+        flow, route, 51, 0x100000010ULL, 2, 7, 64, declareMetadata(), observer);
 
-    EXPECT_EQ(packet->declaration().nflow, 1U);
+    EXPECT_EQ(packet->declaration().nflow_ppm, 1000000U);
     EXPECT_THROW(packet->data(), std::logic_error);
     EXPECT_THROW(packet->grant(), std::logic_error);
     packet->sendOn();
@@ -230,7 +230,7 @@ TEST(RnicCollectivePacketTest, CarriesTypedGrantMetadataAtHighPriority) {
     auto observer = std::make_shared<RecordingObserver>();
     const RnicCollectiveGrant grant{
         0xabcdef0123456789ULL, 11, 37, 8000000000ULL, 123456,
-        RnicCollectiveGrantKind::Update, 124000, 130000, true,
+        RnicCollectiveGrantKind::Update, 0, 0,
     };
 
     RnicCollectivePacket* packet =
@@ -244,7 +244,9 @@ TEST(RnicCollectivePacketTest, CarriesTypedGrantMetadataAtHighPriority) {
     EXPECT_EQ(packet->grant().wire_rate_bps, 8000000000ULL);
     EXPECT_EQ(packet->grant().effective_time_ps, 123456U);
     EXPECT_EQ(packet->grant().kind, RnicCollectiveGrantKind::Update);
-    EXPECT_TRUE(packet->grant().marked_data_ack);
+    // Vestigial lease-era fields stay on the wire, pinned to zero.
+    EXPECT_EQ(packet->grant().feedback_deadline_ps, 0U);
+    EXPECT_EQ(packet->grant().lease_expiry_ps, 0U);
 
     packet->sendOn();
     ASSERT_EQ(observer->observations.size(), 2U);
@@ -253,17 +255,46 @@ TEST(RnicCollectivePacketTest, CarriesTypedGrantMetadataAtHighPriority) {
 
     const RnicCollectiveGrant accept{
         grant.flow_id, 12, 38, 7000000000ULL, 223456,
-        RnicCollectiveGrantKind::Accept, 200000, 300000, false,
+        RnicCollectiveGrantKind::Accept, 0, 0,
     };
     RnicCollectivePacket* accept_packet =
         RnicCollectivePacket::newAccept(flow, route, 93, 9, 4, 80, accept, observer);
     EXPECT_EQ(accept_packet->kind(), RnicCollectivePacketKind::ACCEPT);
     EXPECT_EQ(accept_packet->grant().kind, RnicCollectiveGrantKind::Accept);
-    EXPECT_FALSE(accept_packet->grant().marked_data_ack);
     accept_packet->sendOn();
     ASSERT_EQ(observer->observations.size(), 4U);
     EXPECT_EQ(observer->observations[3].lifecycle,
               RnicCollectivePacketLifecycle::ENDPOINT_CONSUMED);
+}
+
+TEST(RnicCollectivePacketTest, NflowUpdateCarriesTheNewDeclarationMagnitude) {
+    PacketFlow flow(nullptr);
+    ConsumingEndpoint endpoint;
+    Route route = routeTo(endpoint);
+    auto observer = std::make_shared<RecordingObserver>();
+
+    RnicCollectivePacket* packet = RnicCollectivePacket::newNflowUpdate(
+        flow, route, 96, 0x100000020ULL, 2, 7, 64, declareMetadata(777778), observer);
+
+    EXPECT_EQ(packet->kind(), RnicCollectivePacketKind::NFLOW_UPDATE);
+    EXPECT_EQ(packet->priority(), Packet::PRIO_HI);
+    EXPECT_FALSE(packet->header_only());
+    EXPECT_EQ(packet->declaration().nflow_ppm, 777778U);
+    EXPECT_THROW(packet->data(), std::logic_error);
+    EXPECT_THROW(packet->grant(), std::logic_error);
+    packet->sendOn();
+    ASSERT_EQ(endpoint.received_kinds.size(), 1U);
+    EXPECT_EQ(endpoint.received_kinds[0], RnicCollectivePacketKind::NFLOW_UPDATE);
+    EXPECT_EQ(observer->observations.back().lifecycle,
+              RnicCollectivePacketLifecycle::ENDPOINT_CONSUMED);
+
+    EXPECT_THROW(RnicCollectivePacket::newNflowUpdate(flow, route, 97, 1, 0, 1, 64,
+                                                      declareMetadata(0), observer),
+                 std::invalid_argument);
+    EXPECT_THROW(
+        RnicCollectivePacket::newNflowUpdate(flow, route, 98, 1, 0, 1, 64,
+                                             declareMetadata(1000001), observer),
+        std::invalid_argument);
 }
 
 TEST(RnicCollectivePacketTest, RetireCarriesTheFinalLedgerAndGapDetectionDeadline) {
@@ -370,9 +401,15 @@ TEST(RnicCollectivePacketTest, RejectsLossyWireAndLedgerConversions) {
         std::invalid_argument);
 
     RnicCollectiveGrant wrong_kind{
-        1, 1, 1, 1, 10, RnicCollectiveGrantKind::Accept, 5, 20, false};
+        1, 1, 1, 1, 10, RnicCollectiveGrantKind::Accept, 0, 0};
     EXPECT_THROW(
         RnicCollectivePacket::newGrantUpdate(flow, route, 1, 1, 0, 64, wrong_kind, observer),
+        std::invalid_argument);
+    // The vestigial lease-era wire fields must stay zero.
+    RnicCollectiveGrant vestigial{
+        1, 1, 1, 1, 10, RnicCollectiveGrantKind::Update, 5, 20};
+    EXPECT_THROW(
+        RnicCollectivePacket::newGrantUpdate(flow, route, 1, 1, 0, 64, vestigial, observer),
         std::invalid_argument);
     EXPECT_TRUE(observer->observations.empty());
 }

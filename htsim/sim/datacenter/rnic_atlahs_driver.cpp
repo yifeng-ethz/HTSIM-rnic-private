@@ -1,6 +1,7 @@
 // -*- c-basic-offset: 4; indent-tabs-mode: nil -*-
 #include "rnic_atlahs_driver.h"
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -58,12 +59,39 @@ std::unique_ptr<FatTreeTopologyCfg> makeCollectiveTopologyConfig(
     return topology_config;
 }
 
-RnicAtlahsRuntimeConfig collectiveRuntimeConfig(const RnicAtlahsCliOptions& options) {
+// The resequencing window is the bandwidth jitter product of the known
+// topology (algorithm book, section 1.2): upstream FIFO depths are bounded
+// by (S_max - 1) packets at the bottleneck egress plus ceil(S_max / paths)
+// packets per intermediate stage, so D = (Q_final + stages * Q_mid) * 8 / C.
+// An explicitly supplied -rnic_cn_ring_window_ps overrides the derivation.
+std::uint64_t derivedRingWindowPs(const RnicAtlahsCliOptions& options,
+                                  const FatTreeTopologyCfg& topology_config,
+                                  std::uint32_t physical_node_count) {
+    if (options.explicitly_supplied.ring_delay_window_ps) {
+        return options.collective.ring_delay_window_ps;
+    }
+    const std::uint64_t mtu_wire = options.packet.max_wire_packet_bytes;
+    const std::uint64_t paths = std::max<std::uint32_t>(1, topology_config.radix_up(0));
+    const std::uint64_t mid_stages =
+        topology_config.get_tiers() >= 2
+            ? 2ULL * (topology_config.get_tiers() - 1)
+            : 0ULL;
+    const std::uint64_t q_final = (physical_node_count - 1) * mtu_wire;
+    const std::uint64_t q_mid =
+        ((physical_node_count + paths - 1) / paths) * mtu_wire;
+    const std::uint64_t upstream_bytes = q_final + mid_stages * q_mid;
+    return upstream_bytes * 8ULL * 1000000000000ULL / options.link_capacity_bps;
+}
+
+RnicAtlahsRuntimeConfig collectiveRuntimeConfig(const RnicAtlahsCliOptions& options,
+                                                const FatTreeTopologyCfg& topology_config,
+                                                std::uint32_t physical_node_count) {
     return RnicCollectiveNetworkConfig{
         options.link_capacity_bps,
         RnicDataPacketizationConfig(options.packet.max_wire_packet_bytes,
                                     options.packet.data_header_bytes),
-        RnicRingCamConfig{options.collective.ring_delay_window_ps,
+        RnicRingCamConfig{derivedRingWindowPs(options, topology_config,
+                                              physical_node_count),
                           options.collective.ring_release_tick_ps,
                           options.collective.ring_wire_capacity_bytes},
         options.collective.global_prbs_seed,
@@ -88,10 +116,15 @@ std::unique_ptr<RnicAtlahsRuntimeAssembly> assembleRnicAtlahsProfile(
     }
 
     switch (options.profile) {
-        case RnicProfile::CollectiveNetwork:
+        case RnicProfile::CollectiveNetwork: {
+            auto topology_config =
+                makeCollectiveTopologyConfig(options, physical_node_count);
+            auto runtime_config = collectiveRuntimeConfig(
+                options, *topology_config, physical_node_count);
             return makeRnicAtlahsRuntime(
-                event_list, options.profile, collectiveRuntimeConfig(options),
-                makeCollectiveTopologyConfig(options, physical_node_count), logger_factory);
+                event_list, options.profile, std::move(runtime_config),
+                std::move(topology_config), logger_factory);
+        }
         case RnicProfile::SlingshotLike:
             throw std::invalid_argument(
                 "rnic-ss profile is not wired yet; it lands with the "
@@ -111,6 +144,22 @@ std::unique_ptr<RnicAtlahsRuntimeAssembly> assembleRnicAtlahsProfile(
                                                options.manifold.fixed_propagation_delay_ps});
     }
     throw std::invalid_argument("invalid RNIC profile enum");
+}
+
+std::string renderRnicSevereLateDropManifest(
+    const RnicCollectiveRecoveryStatistics& recovery) {
+    if (recovery.late_data_packets == 0) {
+        return std::string();
+    }
+    std::ostringstream manifest;
+    manifest << "[RNIC manifest] rnic_cn_severe_late_drop=flagged" << '\n';
+    manifest << "[RNIC warning] " << recovery.late_data_packets
+             << " Ring-CAM late admission(s) were recovered deterministically"
+                " through the GAP NACK path with rates untouched, but a late"
+                " drop means the derived jitter bound (bandwidth jitter"
+                " product) was violated and should in principle be fixed."
+             << '\n';
+    return manifest.str();
 }
 
 std::string renderRnicAtlahsModelManifest(const RnicAtlahsCliOptions& options,
@@ -169,13 +218,18 @@ std::string renderRnicAtlahsModelManifest(const RnicAtlahsCliOptions& options,
             manifest << " latency_source=topology-file";
         }
         manifest << '\n';
-        manifest << "[RNIC manifest] declaration_gate=physical-accept"
-                 << " declare_cca_field=nflow"
-                 << " startup_nflow=1"
+        manifest << "[RNIC manifest] declaration_gate=declare-and-go"
+                 << " declare_cca_field=nflow_ppm"
+                 << " fractional_nflow=always"
                  << " declare_debug_fields=collective_id,expected_fan_in"
                  << " declare_debug_affects_rx_cca=false"
-                 << " grant=margin*C/n_hat"
+                 << " grant=margin*C/n_hat-scaled-by-own-nflow"
                  << " n_hat=sum-active-declare-nflow"
+                 << " rate_feedback=every-resequenced-ack-window-frozen-snapshot"
+                 << " rate_effect=receiver-boundary-k-plus-2"
+                 << " startup_rate=full-reservation-ledger-allocation"
+                 << " egress_composition=cegress-fair-share-min-small-wqe"
+                 << " rebalancer=rtt-slack-redistribution-nflow-update"
                  << " margin_ppm=" << options.collective.margin_ppm
                  << " control_deadline_ps=" << options.collective.control_deadline_ps
                  << " control_wire_bytes=" << options.collective.control_wire_bytes
@@ -191,7 +245,9 @@ std::string renderRnicAtlahsModelManifest(const RnicAtlahsCliOptions& options,
                  << " global_seed=" << options.collective.global_prbs_seed
                  << " mixed_extent_hazard=adaptive-fixed-point-q32"
                  << " tie_break=flow-id" << '\n';
-        manifest << "[RNIC manifest] ring_window_ps=" << options.collective.ring_delay_window_ps
+        manifest << "[RNIC manifest] ring_window_ps="
+                 << derivedRingWindowPs(options, *assembly.topologyConfig(),
+                                        goal_layout.physical_node_count)
                  << " ring_tick_ps=" << options.collective.ring_release_tick_ps
                  << " ring_capacity_wire_bytes=" << options.collective.ring_wire_capacity_bytes
                  << " scope=node-shared"

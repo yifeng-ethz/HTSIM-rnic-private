@@ -263,6 +263,15 @@ TEST(RnicAtlahsCliTest, RejectsRetiredTomahawk3BufferFlag) {
     EXPECT_THROW(parse(std::move(arguments)), std::invalid_argument);
 }
 
+TEST(RnicAtlahsCliTest, RejectsRetiredFractionalNflowFlag) {
+    // Fractional nflow is the only rule now; the mode switch is gone.
+    for (const std::string& value : {"on", "off"}) {
+        std::vector<std::string> arguments = baseArguments("rnic-cn");
+        append(arguments, "-rnic_cn_fractional_nflow", value);
+        EXPECT_THROW(parse(std::move(arguments)), std::invalid_argument) << value;
+    }
+}
+
 TEST(RnicAtlahsCliTest, RejectsMissingRequiredOptionsAndValues) {
     EXPECT_THROW(parse({"htsim_rnic"}), std::invalid_argument);
     EXPECT_THROW(parse({"htsim_rnic", "-goal"}), std::invalid_argument);
@@ -465,6 +474,7 @@ TEST(RnicAtlahsCliTest, UsageNamesOnlyCanonicalProfilesAndExactUnits) {
     EXPECT_NE(usage.find("-rnic_ss_ns_rosetta_buffer_bytes"), std::string::npos);
     EXPECT_NE(usage.find("-rnic_ss_routing unordered|ordered"), std::string::npos);
     EXPECT_EQ(usage.find("-rnic_cn_tomahawk3_buffer_bytes"), std::string::npos);
+    EXPECT_EQ(usage.find("-rnic_cn_fractional_nflow"), std::string::npos);
     EXPECT_EQ(usage.find("rnic-cc"), std::string::npos);
     EXPECT_EQ(usage.find("rnic-null"), std::string::npos);
 }

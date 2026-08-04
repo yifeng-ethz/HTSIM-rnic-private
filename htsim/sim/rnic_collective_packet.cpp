@@ -90,8 +90,9 @@ void RnicCollectivePacket::validateData(const RnicCollectiveDataMetadata& metada
 }
 
 void RnicCollectivePacket::validateDeclaration(const RnicCollectiveDeclareMetadata& metadata) {
-    if (metadata.nflow == 0) {
-        throw std::invalid_argument("rnic-cn DECLARE nflow must be nonzero");
+    if (metadata.nflow_ppm == 0 || metadata.nflow_ppm > 1000000) {
+        throw std::invalid_argument(
+            "rnic-cn DECLARE nflow_ppm must be in [1, one flow]");
     }
 }
 
@@ -115,24 +116,16 @@ void RnicCollectivePacket::validateGrant(const RnicCollectiveGrant& grant,
     if (grant.n_hat == 0 || grant.wire_rate_bps == 0) {
         throw std::invalid_argument("rnic-cn in-band grant requires positive N_hat and wire rate");
     }
-    if (grant.feedback_deadline_ps == 0 ||
-        grant.lease_expiry_ps <= grant.feedback_deadline_ps) {
+    if (grant.effective_time_ps == 0) {
         throw std::invalid_argument(
-            "rnic-cn in-band grant requires a live feedback interval");
+            "rnic-cn in-band grant requires a governed dwnd boundary");
     }
-    if (packet_kind == RnicCollectivePacketKind::ACCEPT) {
-        if (grant.marked_data_ack) {
-            throw std::invalid_argument(
-                "rnic-cn ACCEPT cannot identify a marked DATA ACK");
-        }
-        if (grant.feedback_deadline_ps > grant.effective_time_ps ||
-            grant.lease_expiry_ps <= grant.effective_time_ps) {
-            throw std::invalid_argument(
-                "rnic-cn ACCEPT timing does not contain its join gate");
-        }
-    } else if (grant.feedback_deadline_ps < grant.effective_time_ps) {
+    // feedback_deadline_ps and lease_expiry_ps are vestigial, kept for
+    // wire-format stability; leases were removed and both fields are always
+    // 0. Removal is tracked in the algorithm book (section 3, D2).
+    if (grant.feedback_deadline_ps != 0 || grant.lease_expiry_ps != 0) {
         throw std::invalid_argument(
-            "rnic-cn marked ACK deadline precedes receiver generation");
+            "rnic-cn in-band grant carries nonzero vestigial lease fields");
     }
 }
 
@@ -192,6 +185,22 @@ RnicCollectivePacket* RnicCollectivePacket::newDeclare(
     std::shared_ptr<RnicCollectivePacketLifecycleObserver> observer) {
     validateDeclaration(metadata);
     return newPacket(flow, route, htsim_packet_id, RnicCollectivePacketKind::DECLARE, flow_id,
+                     source, destination, checkedWireBytes(wire_bytes), std::nullopt, metadata,
+                     std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::move(observer));
+}
+
+RnicCollectivePacket* RnicCollectivePacket::newNflowUpdate(
+    PacketFlow& flow,
+    const Route& route,
+    packetid_t htsim_packet_id,
+    AtlahsFlowId flow_id,
+    std::uint32_t source,
+    std::uint32_t destination,
+    std::uint64_t wire_bytes,
+    const RnicCollectiveDeclareMetadata& metadata,
+    std::shared_ptr<RnicCollectivePacketLifecycleObserver> observer) {
+    validateDeclaration(metadata);
+    return newPacket(flow, route, htsim_packet_id, RnicCollectivePacketKind::NFLOW_UPDATE, flow_id,
                      source, destination, checkedWireBytes(wire_bytes), std::nullopt, metadata,
                      std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::move(observer));
 }
@@ -313,9 +322,10 @@ RnicCollectivePacket* RnicCollectivePacket::newPacket(
             }
             break;
         case RnicCollectivePacketKind::DECLARE:
+        case RnicCollectivePacketKind::NFLOW_UPDATE:
             if (has_data || !has_declaration || has_grant || has_gap_nack || has_retire ||
                 has_gap_resolved) {
-                throw std::logic_error("rnic-cn DECLARE metadata shape is invalid");
+                throw std::logic_error("rnic-cn declaration metadata shape is invalid");
             }
             break;
         case RnicCollectivePacketKind::ACCEPT:

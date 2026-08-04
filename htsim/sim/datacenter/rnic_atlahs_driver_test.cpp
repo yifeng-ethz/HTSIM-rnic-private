@@ -112,12 +112,21 @@ TEST(RnicAtlahsDriverTest, CollectiveManifestNamesPhysicalModelExactly) {
               std::string::npos);
     EXPECT_NE(manifest.find("voq_key=physical-ingress-x-physical-egress"), std::string::npos);
     EXPECT_NE(manifest.find("pfc=off ecn=off"), std::string::npos);
-    EXPECT_NE(manifest.find("declaration_gate=physical-accept"), std::string::npos);
-    EXPECT_NE(manifest.find("declare_cca_field=nflow startup_nflow=1"), std::string::npos);
+    EXPECT_NE(manifest.find("declaration_gate=declare-and-go"), std::string::npos);
+    EXPECT_NE(manifest.find("declare_cca_field=nflow_ppm fractional_nflow=always"),
+              std::string::npos);
     EXPECT_NE(manifest.find("declare_debug_fields=collective_id,expected_fan_in "
                             "declare_debug_affects_rx_cca=false"),
               std::string::npos);
-    EXPECT_NE(manifest.find("grant=margin*C/n_hat n_hat=sum-active-declare-nflow"),
+    EXPECT_NE(
+        manifest.find("grant=margin*C/n_hat-scaled-by-own-nflow n_hat=sum-active-declare-nflow"),
+        std::string::npos);
+    EXPECT_NE(manifest.find("rate_feedback=every-resequenced-ack-window-frozen-snapshot"),
+              std::string::npos);
+    EXPECT_NE(manifest.find("rate_effect=receiver-boundary-k-plus-2"), std::string::npos);
+    EXPECT_NE(manifest.find("egress_composition=cegress-fair-share-min-small-wqe"),
+              std::string::npos);
+    EXPECT_NE(manifest.find("rebalancer=rtt-slack-redistribution-nflow-update"),
               std::string::npos);
     EXPECT_NE(manifest.find("eta=source-route-injection-plus-packet-specific-no-load-transit"),
               std::string::npos);
@@ -147,6 +156,20 @@ TEST(RnicAtlahsDriverTest, CollectiveManifestNamesPhysicalModelExactly) {
     EXPECT_NE(manifest.find("control_loss=fatal-no-control-recovery"), std::string::npos);
     EXPECT_NE(manifest.find("retire_deadline=max-original-release"), std::string::npos);
     EXPECT_NE(manifest.find("retirement_gate=exact-rx-ledger-and-no-gap"), std::string::npos);
+}
+
+TEST(RnicAtlahsDriverTest, SevereLateDropFlagAppearsOnlyWhenLateAdmissionsOccurred) {
+    RnicCollectiveRecoveryStatistics clean;
+    EXPECT_TRUE(renderRnicSevereLateDropManifest(clean).empty());
+
+    RnicCollectiveRecoveryStatistics late;
+    late.late_data_packets = 3;
+    const std::string flagged = renderRnicSevereLateDropManifest(late);
+    EXPECT_NE(flagged.find("rnic_cn_severe_late_drop=flagged"), std::string::npos);
+    EXPECT_NE(flagged.find("[RNIC warning] 3 Ring-CAM late admission(s)"),
+              std::string::npos);
+    EXPECT_NE(flagged.find("jitter bound"), std::string::npos);
+    EXPECT_NE(flagged.find("should in principle be fixed"), std::string::npos);
 }
 
 TEST(RnicAtlahsDriverTest, ManifoldManifestsExcludePhysicalTopology) {

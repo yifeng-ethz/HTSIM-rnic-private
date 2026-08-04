@@ -82,7 +82,12 @@ void validateRuntimeQuiescence(AtlahsHtsimApi& api) {
                   << " rnic_cn_duplicate_data_packets_ignored="
                   << recovery.duplicate_data_packets_ignored
                   << " rnic_cn_maximum_retry_attempt_observed="
-                  << recovery.maximum_retry_attempt_observed << '\n';
+                  << recovery.maximum_retry_attempt_observed
+                  << " rnic_cn_stale_declarations_ignored="
+                  << recovery.stale_declarations_ignored
+                  << " rnic_cn_stale_nflow_updates_ignored="
+                  << recovery.stale_nflow_updates_ignored << '\n';
+        std::cout << renderRnicSevereLateDropManifest(recovery);
     }
 }
 

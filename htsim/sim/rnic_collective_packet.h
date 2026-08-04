@@ -11,10 +11,12 @@
 #include "rnic_collective_control.h"
 #include "rnic_packet_extent.h"
 
-// The seven in-band wire objects used by the collective-network profile.
+// The eight in-band wire objects used by the collective-network profile.
 // Packet::type() intentionally remains the neutral HTSIM IP value: existing
 // packet_type values cannot represent these kinds without changing network.h,
 // and collective endpoints must dispatch on this explicit kind instead.
+// NFLOW_UPDATE (book 1.4) changes an active declaration's magnitude only;
+// membership identity, join and retire semantics are untouched.
 enum class RnicCollectivePacketKind {
     DATA,
     DECLARE,
@@ -23,6 +25,7 @@ enum class RnicCollectivePacketKind {
     GAP_NACK,
     GAP_RESOLVED,
     RETIRE,
+    NFLOW_UPDATE,
 };
 
 // The immutable end-of-flow ledger carried by DATA and RETIRE.  A receiver
@@ -44,10 +47,6 @@ struct RnicCollectiveDataMetadata {
     // same logical packet increments this attempt; receiver state is keyed by
     // flow plus packet_index rather than by a simulator lifecycle identifier.
     std::uint32_t transmission_attempt{0};
-    // Exactly one backlogged DATA packet is selected at a deterministic
-    // pseudo-random position in each delay window. After post-resequence
-    // release, this bit causes the receiver to return an explicit-rate ACK.
-    bool rate_feedback_mark{false};
 
     bool isFinalPacket() const noexcept {
         return packet_index + 1 == final_ledger.total_data_packets;
@@ -62,7 +61,6 @@ struct RnicCollectiveGapNackMetadata {
     std::uint64_t payload_byte_offset;
     RnicPacketExtent extent;
     std::uint32_t requested_transmission_attempt;
-    bool rate_feedback_mark{false};
 };
 
 // Physical receiver-to-sender closure for one previously NACKed logical
@@ -86,7 +84,8 @@ struct RnicCollectiveRetireMetadata {
 
 // DECLARE exposes only the receiver's explicit-rate input.
 struct RnicCollectiveDeclareMetadata {
-    std::uint32_t nflow;
+    // Membership contribution in ppm of one flow, in [1, one flow].
+    std::uint32_t nflow_ppm;
 };
 
 // CREATED plus exactly one terminal observation gives the integration a
@@ -119,9 +118,8 @@ public:
 
 // A pooled, explicit-route HTSIM packet.  Metadata is immutable after factory
 // construction, DATA is low priority, and all six controls are high priority.
-// GRANT_UPDATE normally represents a marked-DATA explicit-rate ACK. A sender
-// whose lease expires re-DECLAREs before resuming, and receives the same
-// current-rate packet with marked_data_ack=false.
+// GRANT_UPDATE is the explicit-rate ACK of one resequenced-and-released DATA
+// packet; it carries the receiver's window-frozen (n_hat, wire_rate) snapshot.
 // Control identity comes only from kind()/priority(): header_only remains false
 // because HTSIM also uses that bit to mean a DATA packet was trimmed.  There is
 // deliberately no trim, bounce, route replacement, or retransmission path.
@@ -138,6 +136,17 @@ public:
         std::shared_ptr<RnicCollectivePacketLifecycleObserver> observer);
 
     static RnicCollectivePacket* newDeclare(
+        PacketFlow& flow,
+        const Route& route,
+        packetid_t htsim_packet_id,
+        AtlahsFlowId flow_id,
+        std::uint32_t source,
+        std::uint32_t destination,
+        std::uint64_t wire_bytes,
+        const RnicCollectiveDeclareMetadata& metadata,
+        std::shared_ptr<RnicCollectivePacketLifecycleObserver> observer);
+
+    static RnicCollectivePacket* newNflowUpdate(
         PacketFlow& flow,
         const Route& route,
         packetid_t htsim_packet_id,

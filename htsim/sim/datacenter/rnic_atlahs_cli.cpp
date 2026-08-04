@@ -235,7 +235,8 @@ void rejectCrossProfileOptions(const RnicAtlahsCliOptions& options) {
         supplied.global_prbs_seed || supplied.control_deadline_ps || supplied.margin_ppm ||
         supplied.control_wire_bytes || supplied.ring_delay_window_ps ||
         supplied.ring_release_tick_ps || supplied.ring_wire_capacity_bytes ||
-        supplied.ns_tm3_shared_buffer_bytes || supplied.cn_maximum_retransmissions ||
+        supplied.ns_tm3_shared_buffer_bytes ||
+        supplied.cn_maximum_retransmissions ||
         supplied.cn_retransmission_rto_ps;
     if (options.profile != RnicProfile::CollectiveNetwork && supplied_collective) {
         throw std::invalid_argument("physical Clos/control options are valid only for rnic-cn");

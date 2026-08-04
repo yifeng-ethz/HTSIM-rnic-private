@@ -1,6 +1,7 @@
 // -*- c-basic-offset: 4; indent-tabs-mode: nil -*-
 #include "rnic_collective_control.h"
 
+#include <algorithm>
 #include <limits>
 #include <set>
 #include <stdexcept>
@@ -37,12 +38,14 @@ RnicCollectiveController::updateMembership(
     std::map<std::uint64_t, std::uint32_t> declarations;
     for (const RnicCollectiveMembershipDeclaration& declaration :
          delta.declarations) {
-        if (declaration.nflow == 0) {
+        if (declaration.nflow_ppm == 0 ||
+            declaration.nflow_ppm > kFullFlowPpm) {
             throw std::invalid_argument(
-                "rnic-cn membership declaration nflow must be nonzero");
+                "rnic-cn membership declaration nflow_ppm must be in "
+                "[1, one flow]");
         }
         if (!declarations.emplace(
-                 declaration.flow_id, declaration.nflow).second) {
+                 declaration.flow_id, declaration.nflow_ppm).second) {
             throw std::invalid_argument(
                 "rnic-cn membership delta contains duplicate flow ids");
         }
@@ -98,9 +101,8 @@ RnicCollectiveController::updateMembership(
     if (next_n_hat != 0) {
         const std::uint64_t numerator =
             _bottleneck_wire_capacity_bps * _margin_ppm;
-        const std::uint64_t denominator =
-            static_cast<std::uint64_t>(kPartsPerMillion) * next_n_hat;
-        next_rate = numerator / denominator;
+        // next_n_hat is already in ppm of a flow, so no further scaling.
+        next_rate = numerator / next_n_hat;
         if (next_rate == 0) {
             throw std::overflow_error(
                 "rnic-cn active membership produces a zero wire-rate grant");
@@ -119,75 +121,69 @@ RnicCollectiveController::updateMembership(
         std::move(accepted_flow_ids)};
 }
 
+bool RnicCollectiveController::updateDeclaration(std::uint64_t flow_id,
+                                                 std::uint32_t nflow_ppm) {
+    if (nflow_ppm == 0 || nflow_ppm > kFullFlowPpm) {
+        throw std::invalid_argument(
+            "rnic-cn declaration update nflow_ppm must be in [1, one flow]");
+    }
+    const auto active = _active_nflow_by_flow.find(flow_id);
+    if (active == _active_nflow_by_flow.end()) {
+        return false;
+    }
+    if (active->second == nflow_ppm) {
+        return true;
+    }
+    std::uint64_t next_n_hat = 0;
+    for (const auto& member : _active_nflow_by_flow) {
+        const std::uint32_t contribution =
+            member.first == flow_id ? nflow_ppm : member.second;
+        if (contribution >
+            std::numeric_limits<std::uint32_t>::max() - next_n_hat) {
+            throw std::overflow_error(
+                "rnic-cn effective nflow exceeds feedback field");
+        }
+        next_n_hat += contribution;
+    }
+    const std::uint64_t numerator =
+        _bottleneck_wire_capacity_bps * _margin_ppm;
+    if (numerator / next_n_hat == 0) {
+        throw std::overflow_error(
+            "rnic-cn active membership produces a zero wire-rate grant");
+    }
+    if (_membership_epoch == std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error("rnic-cn membership epoch overflow");
+    }
+    active->second = nflow_ppm;
+    ++_membership_epoch;
+    return true;
+}
+
+RnicCollectiveRateSnapshot RnicCollectiveController::rateSnapshot() const {
+    return {_membership_epoch, effectiveFlowPpm(), currentWireRateBps()};
+}
+
 RnicCollectiveGrant RnicCollectiveController::acceptFor(
         std::uint64_t flow_id,
-        std::uint64_t join_not_before_ps,
-        std::uint64_t feedback_deadline_ps,
-        std::uint64_t lease_expiry_ps) const {
-    if (feedback_deadline_ps > join_not_before_ps) {
-        throw std::invalid_argument(
-            "rnic-cn ACCEPT deadline exceeds its join gate");
-    }
-    if (lease_expiry_ps <= join_not_before_ps ||
-        lease_expiry_ps <= feedback_deadline_ps) {
-        throw std::invalid_argument(
-            "rnic-cn ACCEPT lease must outlive its deadline and join gate");
-    }
-    return grantFor(flow_id,
-                    join_not_before_ps,
-                    RnicCollectiveGrantKind::Accept,
-                    feedback_deadline_ps,
-                    lease_expiry_ps,
-                    false);
+        const RnicCollectiveRateSnapshot& snapshot,
+        std::uint64_t governed_boundary_ps) const {
+    return grantFor(flow_id, snapshot, governed_boundary_ps,
+                    RnicCollectiveGrantKind::Accept);
 }
 
-RnicCollectiveGrant RnicCollectiveController::markedFeedbackFor(
+RnicCollectiveGrant RnicCollectiveController::feedbackFor(
         std::uint64_t flow_id,
-        std::uint64_t receiver_feedback_time_ps,
-        std::uint64_t feedback_deadline_ps,
-        std::uint64_t lease_expiry_ps) const {
-    if (feedback_deadline_ps < receiver_feedback_time_ps) {
-        throw std::invalid_argument(
-            "rnic-cn marked feedback deadline precedes receiver generation");
-    }
-    if (lease_expiry_ps <= feedback_deadline_ps) {
-        throw std::invalid_argument(
-            "rnic-cn marked feedback lease must outlive its delivery deadline");
-    }
-    return grantFor(flow_id,
-                    receiver_feedback_time_ps,
-                    RnicCollectiveGrantKind::Update,
-                    feedback_deadline_ps,
-                    lease_expiry_ps,
-                    true);
-}
-
-RnicCollectiveGrant RnicCollectiveController::refreshFeedbackFor(
-        std::uint64_t flow_id,
-        std::uint64_t receiver_feedback_time_ps,
-        std::uint64_t feedback_deadline_ps,
-        std::uint64_t lease_expiry_ps) const {
-    if (feedback_deadline_ps < receiver_feedback_time_ps) {
-        throw std::invalid_argument(
-            "rnic-cn refresh feedback deadline precedes receiver generation");
-    }
-    if (lease_expiry_ps <= feedback_deadline_ps) {
-        throw std::invalid_argument(
-            "rnic-cn refresh feedback lease must outlive its delivery deadline");
-    }
-    return grantFor(flow_id,
-                    receiver_feedback_time_ps,
-                    RnicCollectiveGrantKind::Update,
-                    feedback_deadline_ps,
-                    lease_expiry_ps,
-                    false);
+        const RnicCollectiveRateSnapshot& snapshot,
+        std::uint64_t governed_boundary_ps) const {
+    return grantFor(flow_id, snapshot, governed_boundary_ps,
+                    RnicCollectiveGrantKind::Update);
 }
 
 bool RnicCollectiveController::contains(std::uint64_t flow_id) const {
     return _active_nflow_by_flow.count(flow_id) != 0;
 }
 
-std::uint32_t RnicCollectiveController::effectiveFlowCount() const {
+std::uint32_t RnicCollectiveController::effectiveFlowPpm() const {
     std::uint64_t result = 0;
     for (const auto& active : _active_nflow_by_flow) {
         result += active.second;
@@ -200,24 +196,20 @@ std::uint32_t RnicCollectiveController::effectiveFlowCount() const {
 }
 
 std::uint64_t RnicCollectiveController::currentWireRateBps() const {
-    const std::uint32_t n_hat = effectiveFlowCount();
-    if (n_hat == 0) {
+    const std::uint32_t n_hat_ppm = effectiveFlowPpm();
+    if (n_hat_ppm == 0) {
         return 0;
     }
     const std::uint64_t numerator =
         _bottleneck_wire_capacity_bps * _margin_ppm;
-    const std::uint64_t denominator =
-        static_cast<std::uint64_t>(kPartsPerMillion) * n_hat;
-    return numerator / denominator;
+    return numerator / n_hat_ppm;
 }
 
 RnicCollectiveGrant RnicCollectiveController::grantFor(
         std::uint64_t flow_id,
-        std::uint64_t effective_time_ps,
-        RnicCollectiveGrantKind kind,
-        std::uint64_t feedback_deadline_ps,
-        std::uint64_t lease_expiry_ps,
-        bool marked_data_ack) const {
+        const RnicCollectiveRateSnapshot& snapshot,
+        std::uint64_t governed_boundary_ps,
+        RnicCollectiveGrantKind kind) const {
     if (kind != RnicCollectiveGrantKind::Accept &&
         kind != RnicCollectiveGrantKind::Update) {
         throw std::invalid_argument("rnic-cn grant kind must be explicit");
@@ -226,190 +218,171 @@ RnicCollectiveGrant RnicCollectiveController::grantFor(
         throw std::out_of_range(
             "grant requested for undeclared rnic-cn flow");
     }
-    const std::uint64_t wire_rate_bps = currentWireRateBps();
-    if (wire_rate_bps == 0) {
-        throw std::overflow_error(
-            "rnic-cn active membership produces a zero wire-rate grant");
+    if (snapshot.membership_epoch == 0 || snapshot.n_hat_ppm == 0 ||
+        snapshot.wire_rate_bps == 0) {
+        throw std::invalid_argument(
+            "rnic-cn feedback requires a nonempty window snapshot");
+    }
+    if (governed_boundary_ps == 0) {
+        throw std::invalid_argument(
+            "rnic-cn feedback requires a governed dwnd boundary");
     }
     return {flow_id,
-            _membership_epoch,
-            effectiveFlowCount(),
-            wire_rate_bps,
-            effective_time_ps,
+            snapshot.membership_epoch,
+            snapshot.n_hat_ppm,
+            snapshot.wire_rate_bps,
+            governed_boundary_ps,
             kind,
-            feedback_deadline_ps,
-            lease_expiry_ps,
-            marked_data_ack};
+            0,
+            0};
 }
 
-void RnicSenderGrantGate::declarationDispatched() {
+std::uint64_t RnicSenderGrantGate::scaledByOwnNflow(
+        std::uint64_t shared_wire_rate_bps,
+        std::uint32_t own_nflow_ppm) {
+    // own_nflow_ppm <= kFullFlowPpm, so the scaled rate never exceeds the
+    // shared rate; the 128-bit product guards the n_hat_ppm = 1 extreme.
+    const unsigned __int128 scaled =
+        static_cast<unsigned __int128>(shared_wire_rate_bps) * own_nflow_ppm /
+        RnicCollectiveController::kPartsPerMillion;
+    if (scaled == 0) {
+        throw std::overflow_error(
+            "rnic-cn own-fraction scaling produced a zero wire rate");
+    }
+    return static_cast<std::uint64_t>(scaled);
+}
+
+void RnicSenderGrantGate::declarationDispatched(
+        std::uint64_t shared_startup_rate_bps,
+        std::uint32_t own_nflow_ppm,
+        std::uint64_t one_way_control_deadline_ps) {
     if (_phase != Phase::Idle) {
         throw std::logic_error(
             "rnic-cn declaration dispatched in invalid sender phase");
     }
-    _phase = Phase::DeclarationInFlight;
+    if (shared_startup_rate_bps == 0) {
+        throw std::invalid_argument(
+            "rnic-cn declaration requires a positive startup rate");
+    }
+    if (own_nflow_ppm == 0 ||
+        own_nflow_ppm > RnicCollectiveController::kFullFlowPpm) {
+        throw std::invalid_argument(
+            "rnic-cn declaration nflow_ppm must be in [1, one flow]");
+    }
+    if (one_way_control_deadline_ps == 0) {
+        throw std::invalid_argument(
+            "rnic-cn declaration requires a positive one-way deadline");
+    }
+    _own_nflow_ppm = own_nflow_ppm;
+    _one_way_ps = one_way_control_deadline_ps;
+    // The startup reservation is this sender's fraction of the supplied
+    // shared rate, i.e. the full ledger allocation; window snapshots then
+    // re-time it at sender-local dwnd boundaries.
+    _current_wire_rate_bps =
+        scaledByOwnNflow(shared_startup_rate_bps, own_nflow_ppm);
+    _phase = Phase::Active;
 }
 
-bool RnicSenderGrantGate::receiveAccept(
+RnicSenderFeedbackOutcome RnicSenderGrantGate::receiveAccept(
         const RnicCollectiveGrant& grant,
         std::uint64_t arrival_time_ps) {
-    validateGrantIdentity(grant);
-    if (_phase == Phase::Retired) {
-        return false;
-    }
     if (grant.kind != RnicCollectiveGrantKind::Accept) {
         throw std::invalid_argument(
             "rnic-cn ACCEPT packet carries the wrong grant kind");
     }
-    if (grant.marked_data_ack) {
-        throw std::invalid_argument(
-            "rnic-cn ACCEPT cannot identify a marked DATA ACK");
-    }
-    if (grant.membership_epoch == 0 || grant.n_hat == 0 ||
-        grant.wire_rate_bps == 0) {
-        throw std::invalid_argument(
-            "rnic-cn ACCEPT has empty explicit-rate metadata");
-    }
-    if (grant.feedback_deadline_ps == 0 ||
-        grant.feedback_deadline_ps > grant.effective_time_ps ||
-        grant.lease_expiry_ps <= grant.feedback_deadline_ps ||
-        grant.lease_expiry_ps <= grant.effective_time_ps) {
-        throw std::invalid_argument(
-            "rnic-cn ACCEPT has an invalid deadline, join gate, or lease");
-    }
-    if (arrival_time_ps > grant.feedback_deadline_ps) {
-        throw std::runtime_error(
-            "rnic-cn ACCEPT missed its physical delivery deadline");
-    }
-    if (_phase == Phase::Idle) {
-        throw std::logic_error(
-            "rnic-cn ACCEPT arrived before declaration dispatch");
-    }
-    if (_phase == Phase::Active || _phase == Phase::LeaseExpired) {
-        throw std::logic_error(
-            "rnic-cn admitted sender received a second ACCEPT");
-    }
-    if (_pending_accept.has_value()) {
-        if (!grantsEqual(*_pending_accept, grant)) {
-            throw std::invalid_argument(
-                "rnic-cn conflicting ACCEPT for one sender");
-        }
-        return false;
-    }
-
-    _pending_accept = grant;
-    _phase = Phase::AcceptPendingEffectiveTime;
-    return true;
+    return applyRateFeedback(grant, arrival_time_ps);
 }
 
-bool RnicSenderGrantGate::applyRateFeedback(
+RnicSenderFeedbackOutcome RnicSenderGrantGate::applyRateFeedback(
         const RnicCollectiveGrant& grant,
         std::uint64_t arrival_time_ps) {
     validateGrantIdentity(grant);
-    if (grant.kind != RnicCollectiveGrantKind::Update) {
+    if (grant.kind != RnicCollectiveGrantKind::Accept &&
+        grant.kind != RnicCollectiveGrantKind::Update) {
         throw std::invalid_argument(
-            "rnic-cn rate feedback must carry a grant UPDATE");
+            "rnic-cn rate feedback requires an explicit grant kind");
     }
-    if (_phase == Phase::Idle || _phase == Phase::DeclarationInFlight ||
-        _phase == Phase::AcceptPendingEffectiveTime) {
+    if (_phase == Phase::Idle) {
         throw std::logic_error(
-            "rnic-cn rate feedback arrived before sender admission");
+            "rnic-cn rate feedback arrived before declaration dispatch");
     }
     if (_phase == Phase::Retired) {
-        return false;
+        return RnicSenderFeedbackOutcome::Ignored;
     }
     if (grant.membership_epoch == 0 || grant.n_hat == 0 ||
         grant.wire_rate_bps == 0) {
         throw std::invalid_argument(
             "rnic-cn rate feedback has empty explicit-rate metadata");
     }
-    if (grant.feedback_deadline_ps < grant.effective_time_ps ||
-        grant.lease_expiry_ps <= grant.feedback_deadline_ps) {
+    if (grant.feedback_deadline_ps != 0 || grant.lease_expiry_ps != 0) {
         throw std::invalid_argument(
-            "rnic-cn rate feedback has an invalid deadline or lease");
+            "rnic-cn rate feedback carries nonzero vestigial lease fields");
     }
-    if (arrival_time_ps < grant.effective_time_ps) {
-        throw std::runtime_error(
-            "rnic-cn rate feedback arrived before receiver generation");
+    if (grant.effective_time_ps < 2 * _one_way_ps ||
+        grant.effective_time_ps % _one_way_ps != 0) {
+        throw std::invalid_argument(
+            "rnic-cn feedback boundary is not dwnd aligned");
     }
-    if (arrival_time_ps > grant.feedback_deadline_ps) {
+    // A snapshot frozen at window k governs boundary (k + 2) * dwnd, so a
+    // physically delivered snapshot can never govern a boundary more than
+    // two windows past its arrival.
+    if (grant.effective_time_ps > arrival_time_ps + 2 * _one_way_ps) {
         throw std::runtime_error(
-            "rnic-cn rate feedback missed its physical delivery deadline");
-    }
-    if (arrival_time_ps >= grant.lease_expiry_ps) {
-        throw std::runtime_error(
-            "rnic-cn rate feedback arrived without a live grant lease");
+            "rnic-cn rate feedback carries a noncausal window snapshot");
     }
 
-    if (_applied_grant.has_value()) {
-        const RnicCollectiveGrant& applied = *_applied_grant;
-        if (grant.membership_epoch < applied.membership_epoch) {
-            return false;
-        }
-        if (grant.membership_epoch == applied.membership_epoch) {
-            if (grant.n_hat != applied.n_hat ||
-                grant.wire_rate_bps != applied.wire_rate_bps) {
+    const RnicCollectiveGrant* newest =
+        _pending_feedback.has_value()
+            ? &*_pending_feedback
+            : (_applied_feedback.has_value() ? &*_applied_feedback : nullptr);
+    if (newest != nullptr) {
+        if (grant.effective_time_ps < newest->effective_time_ps) {
+            if (grant.membership_epoch > newest->membership_epoch) {
                 throw std::invalid_argument(
-                    "rnic-cn rate feedback conflicts within one membership epoch");
+                    "rnic-cn older window snapshot carries a newer epoch");
             }
-            if (grant.effective_time_ps < applied.effective_time_ps) {
-                return false;
+            return RnicSenderFeedbackOutcome::Ignored;
+        }
+        if (grant.effective_time_ps == newest->effective_time_ps) {
+            // Same-window dedup: every ACK generated in one receiver window
+            // carries the identical frozen snapshot.
+            if (grant.membership_epoch != newest->membership_epoch ||
+                grant.n_hat != newest->n_hat ||
+                grant.wire_rate_bps != newest->wire_rate_bps) {
+                throw std::invalid_argument(
+                    "rnic-cn one receiver window froze two snapshots");
             }
-            if (grant.effective_time_ps == applied.effective_time_ps) {
-                if (grant.feedback_deadline_ps != applied.feedback_deadline_ps ||
-                    grant.lease_expiry_ps != applied.lease_expiry_ps) {
-                    throw std::invalid_argument(
-                        "rnic-cn rate feedback conflicts at one generation time");
-                }
-                return false;
-            }
-            if (grant.lease_expiry_ps <= applied.lease_expiry_ps) {
-                return false;
-            }
-        } else if (grant.effective_time_ps <= applied.effective_time_ps) {
+            return RnicSenderFeedbackOutcome::Ignored;
+        }
+        if (grant.membership_epoch < newest->membership_epoch) {
             throw std::invalid_argument(
-                "rnic-cn newer membership epoch has noncausal feedback time");
+                "rnic-cn newer window snapshot carries an older epoch");
         }
     }
 
-    applyGrant(grant);
-    return true;
+    const std::uint64_t activation_ps =
+        grant.effective_time_ps - _one_way_ps;
+    if (activation_ps <= arrival_time_ps) {
+        // The governed sender-local window already began; a late snapshot
+        // applies from delivery rather than pacing on stale state.
+        _pending_feedback.reset();
+        applyGrant(grant);
+        return RnicSenderFeedbackOutcome::AppliedNow;
+    }
+    _pending_feedback = grant;
+    return RnicSenderFeedbackOutcome::Scheduled;
 }
 
-bool RnicSenderGrantGate::activatePendingAccept(std::uint64_t now_ps) {
-    if (_phase != Phase::AcceptPendingEffectiveTime ||
-        !_pending_accept.has_value()) {
+bool RnicSenderGrantGate::activateScheduledRate(std::uint64_t now_ps) {
+    if (_phase != Phase::Active || !_pending_feedback.has_value()) {
         return false;
     }
-    if (_pending_accept->effective_time_ps != now_ps) {
-        throw std::invalid_argument(
-            "rnic-cn join gate opened outside its two-window boundary");
+    if (_pending_feedback->effective_time_ps - _one_way_ps != now_ps) {
+        return false;
     }
-    if (_pending_accept->lease_expiry_ps <= now_ps) {
-        throw std::runtime_error(
-            "rnic-cn pending ACCEPT has no live grant lease");
-    }
-    const RnicCollectiveGrant grant = *_pending_accept;
-    _pending_accept.reset();
+    const RnicCollectiveGrant grant = *_pending_feedback;
+    _pending_feedback.reset();
     applyGrant(grant);
-    return true;
-}
-
-bool RnicSenderGrantGate::expireLease(
-        std::uint64_t membership_epoch,
-        std::uint64_t lease_expiry_ps,
-        std::uint64_t now_ps) {
-    if (now_ps != lease_expiry_ps) {
-        throw std::invalid_argument(
-            "rnic-cn grant lease expired outside its published boundary");
-    }
-    if (_phase != Phase::Active ||
-        _membership_epoch != membership_epoch ||
-        _lease_expiry_ps != lease_expiry_ps) {
-        return false;
-    }
-    _phase = Phase::LeaseExpired;
-    _current_wire_rate_bps = 0;
     return true;
 }
 
@@ -417,25 +390,21 @@ void RnicSenderGrantGate::receiverRetirementCommitted() {
     if (_phase == Phase::Retired) {
         return;
     }
-    if (_phase != Phase::Active && _phase != Phase::LeaseExpired) {
+    if (_phase != Phase::Active) {
         throw std::logic_error(
-            "rnic-cn sender retirement requires an admitted grant");
-    }
-    if (_pending_accept.has_value()) {
-        throw std::logic_error(
-            "rnic-cn sender retired with a pending ACCEPT");
+            "rnic-cn sender retirement requires a dispatched declaration");
     }
     _phase = Phase::Retired;
     _current_wire_rate_bps = 0;
-    _lease_expiry_ps = 0;
+    _pending_feedback.reset();
 }
 
 std::optional<std::uint64_t>
-RnicSenderGrantGate::pendingAcceptTimePs() const {
-    if (!_pending_accept.has_value()) {
+RnicSenderGrantGate::scheduledActivationTimePs() const {
+    if (!_pending_feedback.has_value()) {
         return std::nullopt;
     }
-    return _pending_accept->effective_time_ps;
+    return _pending_feedback->effective_time_ps - _one_way_ps;
 }
 
 void RnicSenderGrantGate::validateGrantIdentity(
@@ -446,25 +415,38 @@ void RnicSenderGrantGate::validateGrantIdentity(
     }
 }
 
-bool RnicSenderGrantGate::grantsEqual(
-        const RnicCollectiveGrant& lhs,
-        const RnicCollectiveGrant& rhs) noexcept {
-    return lhs.flow_id == rhs.flow_id &&
-           lhs.membership_epoch == rhs.membership_epoch &&
-           lhs.n_hat == rhs.n_hat &&
-           lhs.wire_rate_bps == rhs.wire_rate_bps &&
-           lhs.effective_time_ps == rhs.effective_time_ps &&
-           lhs.kind == rhs.kind &&
-           lhs.feedback_deadline_ps == rhs.feedback_deadline_ps &&
-           lhs.lease_expiry_ps == rhs.lease_expiry_ps &&
-           lhs.marked_data_ack == rhs.marked_data_ack;
+void RnicSenderGrantGate::updateOwnNflow(std::uint32_t nflow_ppm) {
+    if (nflow_ppm == 0 ||
+        nflow_ppm > RnicCollectiveController::kFullFlowPpm) {
+        throw std::invalid_argument(
+            "rnic-cn declaration update nflow_ppm must be in [1, one flow]");
+    }
+    if (_phase == Phase::Retired) {
+        return;
+    }
+    if (_phase != Phase::Active) {
+        throw std::logic_error(
+            "rnic-cn declaration update requires a dispatched declaration");
+    }
+    if (nflow_ppm == _own_nflow_ppm) {
+        _pending_own_nflow.reset();
+        return;
+    }
+    // Adopted when a snapshot from a strictly newer epoch applies, i.e.
+    // once the receiver has folded the NFLOW_UPDATE into its window state
+    // (book 1.4); pacing never changes mid-window.
+    _pending_own_nflow = PendingOwnNflow{nflow_ppm, _membership_epoch};
 }
 
 void RnicSenderGrantGate::applyGrant(
         const RnicCollectiveGrant& grant) {
+    if (_pending_own_nflow.has_value() &&
+        grant.membership_epoch > _pending_own_nflow->epoch_threshold) {
+        _own_nflow_ppm = _pending_own_nflow->nflow_ppm;
+        _pending_own_nflow.reset();
+    }
     _membership_epoch = grant.membership_epoch;
-    _current_wire_rate_bps = grant.wire_rate_bps;
-    _lease_expiry_ps = grant.lease_expiry_ps;
-    _applied_grant = grant;
-    _phase = Phase::Active;
+    _current_wire_rate_bps =
+        scaledByOwnNflow(grant.wire_rate_bps, _own_nflow_ppm);
+    _applied_feedback = grant;
 }
