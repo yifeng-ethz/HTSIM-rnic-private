@@ -227,7 +227,9 @@ std::string renderRnicAtlahsModelManifest(const RnicAtlahsCliOptions& options,
                  << " global_seed=" << options.collective.global_prbs_seed
                  << " mixed_extent_hazard=adaptive-fixed-point-q32"
                  << " tie_break=flow-id" << '\n';
-        manifest << "[RNIC manifest] ring_window_ps=" << options.collective.ring_delay_window_ps
+        manifest << "[RNIC manifest] ring_window_ps="
+                 << derivedRingWindowPs(options, *assembly.topologyConfig(),
+                                        goal_layout.physical_node_count)
                  << " ring_tick_ps=" << options.collective.ring_release_tick_ps
                  << " ring_capacity_wire_bytes=" << options.collective.ring_wire_capacity_bytes
                  << " scope=node-shared"
