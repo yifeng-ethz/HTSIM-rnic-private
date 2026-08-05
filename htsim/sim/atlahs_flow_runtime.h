@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <functional>
 
+#include "atlahs_wqe.h"
+
 using AtlahsFlowId = std::uint64_t;
 
 // A GOAL node offset is allocated monotonically within one host schedule (see
@@ -41,6 +43,13 @@ public:
     virtual void setup(std::uint32_t node_count,
                        CompletionHandler complete_flow) = 0;
     virtual void send(const AtlahsFlowRequest& request) = 0;
+
+    // A runtime declares only its stable WQE-level transport object. Packet
+    // details remain private to the runtime. Topology-free manifold models
+    // intentionally retain the default None binding.
+    virtual AtlahsTransportKind transportKind() const noexcept {
+        return AtlahsTransportKind::None;
+    }
 
     // True until every physical effect owned by this runtime has drained.
     // This is deliberately stronger than "a completion callback is pending":

@@ -46,6 +46,8 @@ TEST(DcqcnAtlahsRuntimeTest, CompletesPacketizedFlowOnTheSharedNsTm3Clos) {
     config.goodput_trace_csv = goodput_trace.string();
     config.goodput_trace_bin_ps = 10000000;
     DcqcnAtlahsRuntime runtime(event_list, config, 64);
+    EXPECT_EQ(runtime.transportKind(),
+              AtlahsTransportKind::DcqcnQueuePair);
     EXPECT_EQ(DCQCNSrc::minRate(), config.dcqcn_min_rate_bps);
     std::vector<AtlahsFlowId> completed;
     runtime.setup(64, [&](AtlahsFlowId flow_id) { completed.push_back(flow_id); });

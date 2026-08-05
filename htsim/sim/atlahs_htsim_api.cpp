@@ -21,6 +21,10 @@ void AtlahsHtsimApi::setFlowRuntime(
     if (!_pending_flows.empty()) {
         throw std::logic_error("cannot replace an ATLAHS runtime with pending flows");
     }
+    if (_wqe_ledger != nullptr) {
+        throw std::logic_error(
+            "cannot replace an ATLAHS runtime after WQE setup");
+    }
     _flow_runtime = std::move(runtime);
     if (_logsim_interface != nullptr) {
         _logsim_interface->setNetworkTiming(
@@ -35,21 +39,32 @@ bool AtlahsHtsimApi::completeFlow(AtlahsFlowId flow_id) {
         return false;
     }
 
+    if (_eventlist == nullptr) {
+        throw std::logic_error(
+            "ATLAHS completed a runtime-owned flow without an EventList");
+    }
+    if (_wqe_ledger == nullptr) {
+        throw std::logic_error(
+            "ATLAHS completed a runtime-owned flow without WQE setup");
+    }
+    const simtime_picosec completion_time_ps = _eventlist->now();
+    if (completion_time_ps < pending_it->second.request.start_time_ps) {
+        throw std::logic_error(
+            "ATLAHS runtime-owned flow completed before it started");
+    }
+    const AtlahsWqeRecord& wqe =
+        _wqe_ledger->complete(pending_it->second.wqe_id, completion_time_ps);
+    if (!wqe.cq_post_sequence.has_value()
+        || !wqe.cq_consume_sequence.has_value()) {
+        throw std::logic_error(
+            "ATLAHS completed WQE without CQ post and consume records");
+    }
+
     // Remove before notifying LogSimInterface.  EventFinished is synchronous,
     // and the local copy keeps event.node alive throughout that call while a
     // duplicate/re-entrant completion observes the flow as already complete.
     PendingFlow pending = std::move(pending_it->second);
     _pending_flows.erase(pending_it);
-
-    if (_eventlist == nullptr) {
-        throw std::logic_error(
-            "ATLAHS completed a runtime-owned flow without an EventList");
-    }
-    const simtime_picosec completion_time_ps = _eventlist->now();
-    if (completion_time_ps < pending.request.start_time_ps) {
-        throw std::logic_error(
-            "ATLAHS runtime-owned flow completed before it started");
-    }
     _completed_flows.push_back(AtlahsCompletedFlowRecord{
         pending.request.flow_id,
         pending.request.source,
@@ -57,7 +72,17 @@ bool AtlahsHtsimApi::completeFlow(AtlahsFlowId flow_id) {
         pending.request.payload_bytes,
         pending.request.start_time_ps,
         completion_time_ps,
-        pending.request.tag});
+        pending.request.tag,
+        wqe.wqe_id,
+        wqe.sq_id,
+        wqe.rq_id,
+        wqe.cq_id,
+        wqe.sq_post_sequence,
+        wqe.sq_dispatch_sequence,
+        *wqe.cq_post_sequence,
+        *wqe.cq_consume_sequence,
+        wqe.transport_kind,
+        wqe.transport_object_id});
 
     EventOver event(
         static_cast<int>(pending.request.source),
@@ -69,6 +94,32 @@ bool AtlahsHtsimApi::completeFlow(AtlahsFlowId flow_id) {
     event.node = &pending.node;
     EventFinished(event);
     return true;
+}
+
+void AtlahsHtsimApi::validateWqeQuiescent() const {
+    if (_flow_runtime == nullptr) {
+        return;
+    }
+    if (_wqe_ledger == nullptr) {
+        throw std::logic_error(
+            "ATLAHS runtime has no WQE ledger at quiescence");
+    }
+    if (!_pending_flows.empty()) {
+        throw std::logic_error(
+            "ATLAHS API still has pending flows at WQE quiescence");
+    }
+    _wqe_ledger->validateQuiescent();
+    if (_wqe_ledger->completedCount() != _completed_flows.size()) {
+        throw std::logic_error(
+            "ATLAHS completed WQE count disagrees with completion rows");
+    }
+    for (const AtlahsCompletedFlowRecord& flow : _completed_flows) {
+        const AtlahsWqeRecord& wqe = _wqe_ledger->wqe(flow.wqe_id);
+        if (!wqe.completed() || wqe.flow_id != flow.flow_id) {
+            throw std::logic_error(
+                "ATLAHS completion row disagrees with its WQE record");
+        }
+    }
 }
     
 void AtlahsHtsimApi::Send(const SendEvent &event, graph_node_properties elem) {
@@ -102,16 +153,34 @@ void AtlahsHtsimApi::Send(const SendEvent &event, graph_node_properties elem) {
         request.start_time_ps = event.getStartTimeEvent();
         request.tag = elem.tag;
 
-        PendingFlow pending{elem, request};
-        const auto inserted = _pending_flows.emplace(request.flow_id, std::move(pending));
-        if (!inserted.second) {
+        if (_wqe_ledger == nullptr) {
+            throw std::logic_error("ATLAHS runtime-owned send before WQE setup");
+        }
+        if (_pending_flows.count(request.flow_id) != 0) {
             throw std::logic_error("duplicate ATLAHS GOAL host/offset flow ID");
         }
 
+        const AtlahsWqeId wqe_id = _wqe_ledger->postAndDispatch(
+            request.flow_id,
+            request.source,
+            request.destination,
+            request.payload_bytes,
+            request.start_time_ps);
         try {
+            PendingFlow pending{elem, request, wqe_id};
+            const auto inserted =
+                _pending_flows.emplace(request.flow_id, std::move(pending));
+            if (!inserted.second) {
+                throw std::logic_error(
+                    "duplicate ATLAHS GOAL host/offset flow ID");
+            }
             _flow_runtime->send(request);
         } catch (...) {
             _pending_flows.erase(request.flow_id);
+            if (_wqe_ledger->contains(wqe_id)
+                && !_wqe_ledger->wqe(wqe_id).completed()) {
+                _wqe_ledger->abort(wqe_id);
+            }
             throw;
         }
         return;
@@ -220,9 +289,20 @@ void AtlahsHtsimApi::Setup() {
         if (total_nodes < 0) {
             throw std::invalid_argument("ATLAHS node count must be non-negative");
         }
-        _flow_runtime->setup(
+        if (_wqe_ledger != nullptr) {
+            throw std::logic_error("ATLAHS WQE runtime setup twice");
+        }
+        _wqe_ledger = std::make_unique<AtlahsWqeLedger>(
             static_cast<std::uint32_t>(total_nodes),
-            [this](AtlahsFlowId flow_id) { completeFlow(flow_id); });
+            _flow_runtime->transportKind());
+        try {
+            _flow_runtime->setup(
+                static_cast<std::uint32_t>(total_nodes),
+                [this](AtlahsFlowId flow_id) { completeFlow(flow_id); });
+        } catch (...) {
+            _wqe_ledger.reset();
+            throw;
+        }
         return;
     }
 

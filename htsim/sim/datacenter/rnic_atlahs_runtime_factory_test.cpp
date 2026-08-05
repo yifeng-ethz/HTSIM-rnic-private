@@ -103,6 +103,10 @@ TEST(RnicAtlahsRuntimeFactoryTest,
     EXPECT_NE(dynamic_cast<RnicCollectiveNetworkRuntime*>(
                   &assembly->implementation()),
               nullptr);
+    EXPECT_EQ(assembly->implementation().transportKind(),
+              AtlahsTransportKind::RnicCnLinkPair);
+    EXPECT_EQ(assembly->transportKind(),
+              AtlahsTransportKind::RnicCnLinkPair);
     ASSERT_FALSE(assembly->physicalTopology()->switches_lp.empty());
     ASSERT_FALSE(assembly->physicalTopology()->switches_up.empty());
     EXPECT_TRUE(assembly->physicalTopology()->switches_c.empty());
@@ -136,6 +140,8 @@ TEST(RnicAtlahsRuntimeFactoryTest,
     auto* const runtime = dynamic_cast<RnicCollectiveNetworkRuntime*>(
         &assembly->implementation());
     ASSERT_NE(runtime, nullptr);
+    EXPECT_EQ(runtime->transportKind(),
+              AtlahsTransportKind::RnicCnLinkPair);
 
     std::size_t completions = 0;
     runtime->setup(32, [&completions](AtlahsFlowId) { ++completions; });
@@ -207,6 +213,10 @@ TEST(RnicAtlahsRuntimeFactoryTest,
     auto* const runtime = dynamic_cast<RnicCollectiveNetworkRuntime*>(
         &session_address->implementation());
     ASSERT_NE(runtime, nullptr);
+    EXPECT_EQ(runtime->transportKind(),
+              AtlahsTransportKind::RnicCnLinkPair);
+    EXPECT_EQ(session_address->transportKind(),
+              AtlahsTransportKind::RnicCnLinkPair);
     runtime->send({0x100000003ULL,
                    0,
                    31,
@@ -354,6 +364,8 @@ TEST(RnicAtlahsRuntimeFactoryTest,
     auto* const runtime = dynamic_cast<RnicPacketizedManifoldRuntime*>(
         &assembly->implementation());
     ASSERT_NE(runtime, nullptr);
+    EXPECT_EQ(runtime->transportKind(), AtlahsTransportKind::None);
+    EXPECT_EQ(assembly->transportKind(), AtlahsTransportKind::None);
     EXPECT_EQ(runtime->nodeLinkCapacity(), config.node_link_capacity_bps);
     EXPECT_EQ(runtime->packetization().maxWirePacketBytes(), 2048U);
     EXPECT_EQ(runtime->packetization().dataHeaderBytes(), 64U);
@@ -379,6 +391,8 @@ TEST(RnicAtlahsRuntimeFactoryTest,
     auto* const runtime = dynamic_cast<RnicFluidManifoldRuntime*>(
         &assembly->implementation());
     ASSERT_NE(runtime, nullptr);
+    EXPECT_EQ(runtime->transportKind(), AtlahsTransportKind::None);
+    EXPECT_EQ(assembly->transportKind(), AtlahsTransportKind::None);
     EXPECT_EQ(runtime->nodeLinkCapacity(), config.node_link_capacity_bps);
     EXPECT_EQ(runtime->propagationDelay(), config.propagation_delay_ps);
 }
