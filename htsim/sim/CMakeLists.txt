@@ -53,6 +53,7 @@ endfunction()
 # Define source files
 set(SOURCE_FILES
     aeolusqueue.cpp
+    atlahs_wqe.cpp
     callback_pipe.cpp
     cbr.cpp
     cbrpacket.cpp
@@ -154,6 +155,7 @@ target_link_libraries(parse_output PRIVATE htsim)
 if ( ENABLE_TESTS )
     # Unit tests.
     set(UNIT_TEST_FILES
+        atlahs_wqe_test
         dcqcn_test
         eventlist_microphase_test
         pipe_test

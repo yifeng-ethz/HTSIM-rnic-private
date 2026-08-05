@@ -64,6 +64,16 @@ struct AtlahsCompletedFlowRecord {
     simtime_picosec start_time_ps;
     simtime_picosec completion_time_ps;
     std::uint64_t tag;
+    AtlahsWqeId wqe_id;
+    AtlahsWqeObjectId sq_id;
+    AtlahsWqeObjectId rq_id;
+    AtlahsWqeObjectId cq_id;
+    std::uint64_t sq_post_sequence;
+    std::uint64_t sq_dispatch_sequence;
+    std::uint64_t cq_post_sequence;
+    std::uint64_t cq_consume_sequence;
+    AtlahsTransportKind transport_kind;
+    AtlahsWqeObjectId transport_object_id;
 
     simtime_picosec fct_ps() const {
         return completion_time_ps - start_time_ps;
@@ -130,6 +140,10 @@ public:
     const std::vector<AtlahsCompletedFlowRecord>& completedFlows() const {
         return _completed_flows;
     }
+    const AtlahsWqeLedger* wqeLedger() const noexcept {
+        return _wqe_ledger.get();
+    }
+    void validateWqeQuiescent() const;
 
     // Getter and setter for ComputeEvent
     void setComputeEvent(ComputeEvent* compute_event) { 
@@ -310,10 +324,12 @@ private:
     FatTreeTopologyCfg* _topo_cfg = nullptr;
     LogSimInterface* _logsim_interface = nullptr;
     std::unique_ptr<AtlahsFlowRuntime> _flow_runtime;
+    std::unique_ptr<AtlahsWqeLedger> _wqe_ledger;
 
     struct PendingFlow {
         graph_node_properties node;
         AtlahsFlowRequest request;
+        AtlahsWqeId wqe_id;
     };
     std::unordered_map<AtlahsFlowId, PendingFlow> _pending_flows;
     std::vector<AtlahsCompletedFlowRecord> _completed_flows;

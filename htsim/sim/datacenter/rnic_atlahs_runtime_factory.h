@@ -57,6 +57,7 @@ public:
                CompletionHandler complete_flow) override;
     void send(const AtlahsFlowRequest& request) override;
     bool hasPendingPhysicalWork() const noexcept override;
+    AtlahsTransportKind transportKind() const noexcept override;
 
     FatTreeTopologyCfg* topologyConfig() noexcept {
         return topology_config.get();

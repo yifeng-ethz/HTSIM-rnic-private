@@ -23,10 +23,20 @@ public:
 
     void send(const AtlahsFlowRequest& request) override {
         requests.push_back(request);
+        if (complete_synchronously) {
+            completion(request.flow_id);
+        }
+        if (throw_from_send) {
+            throw std::runtime_error("injected runtime send failure");
+        }
     }
 
     bool hasPendingPhysicalWork() const noexcept override {
         return pending_physical_work;
+    }
+
+    AtlahsTransportKind transportKind() const noexcept override {
+        return transport_kind;
     }
 
     void complete(AtlahsFlowId flow_id) {
@@ -39,6 +49,9 @@ public:
     CompletionHandler completion;
     std::vector<AtlahsFlowRequest> requests;
     bool pending_physical_work = false;
+    bool complete_synchronously = false;
+    bool throw_from_send = false;
+    AtlahsTransportKind transport_kind = AtlahsTransportKind::None;
 };
 
 class CapturingAtlahsHtsimApi final : public AtlahsHtsimApi {
@@ -301,6 +314,7 @@ TEST(AtlahsFlowRuntimeTest, DelegatesExactPayloadForConcurrentSameSourceFlows) {
     EXPECT_EQ(fake->requests[0].flow_id, makeAtlahsFlowId(4, 100));
     EXPECT_EQ(fake->requests[1].flow_id, makeAtlahsFlowId(4, 101));
     EXPECT_EQ(fake->requests[0].start_time_ps, 9000U);
+    EXPECT_THROW(api.validateWqeQuiescent(), std::logic_error);
 }
 
 TEST(AtlahsFlowRuntimeTest, RoutesEachFlowCompletionExactlyOnce) {
@@ -338,6 +352,89 @@ TEST(AtlahsFlowRuntimeTest, RoutesEachFlowCompletionExactlyOnce) {
     fake->complete(fake->requests.front().flow_id);
     EXPECT_EQ(api.completion_count, 1);
     EXPECT_EQ(api.completedFlows().size(), 1U);
+}
+
+TEST(AtlahsFlowRuntimeTest, SynchronousCompletionPublishesOneWqeBoundary) {
+    EventList event_list;
+    CapturingAtlahsHtsimApi api;
+    api.setEventList(&event_list);
+    api.total_nodes = 4;
+    auto runtime = std::make_unique<FakeFlowRuntime>();
+    runtime->complete_synchronously = true;
+    runtime->transport_kind = AtlahsTransportKind::DcqcnQueuePair;
+    api.setFlowRuntime(std::move(runtime));
+    api.Setup();
+
+    const auto flow = makeFlow(1, 60, 3, 512, 9);
+    EXPECT_NO_THROW(api.Send(SendEvent(1, 3, flow.size, flow.tag, 0), flow));
+    EXPECT_EQ(api.completion_count, 1);
+    ASSERT_NE(api.wqeLedger(), nullptr);
+    EXPECT_EQ(api.wqeLedger()->outstandingCount(), 0U);
+    EXPECT_EQ(api.wqeLedger()->completedCount(), 1U);
+
+    ASSERT_EQ(api.completedFlows().size(), 1U);
+    EXPECT_EQ(api.wqeLedger()->completedCount(),
+              api.completedFlows().size());
+    const AtlahsCompletedFlowRecord& completed = api.completedFlows().front();
+    const AtlahsWqeRecord& wqe = api.wqeLedger()->wqe(completed.wqe_id);
+    EXPECT_TRUE(wqe.completed());
+    EXPECT_EQ(completed.sq_id, wqe.sq_id);
+    EXPECT_EQ(completed.rq_id, wqe.rq_id);
+    EXPECT_EQ(completed.cq_id, wqe.cq_id);
+    EXPECT_EQ(completed.sq_post_sequence, 1U);
+    EXPECT_EQ(completed.sq_dispatch_sequence, 1U);
+    EXPECT_EQ(completed.cq_post_sequence, 1U);
+    EXPECT_EQ(completed.cq_consume_sequence, 1U);
+    EXPECT_EQ(completed.transport_kind,
+              AtlahsTransportKind::DcqcnQueuePair);
+    EXPECT_EQ(completed.transport_object_id,
+              api.wqeLedger()->transportBinding(1, 3).object_id);
+    EXPECT_EQ(wqe.post_time_ps, wqe.dispatch_time_ps);
+    EXPECT_EQ(*wqe.completion_time_ps, event_list.now());
+    EXPECT_EQ(api.wqeLedger()->completionQueue(1).pending_depth, 0U);
+    EXPECT_NO_THROW(api.validateWqeQuiescent());
+}
+
+TEST(AtlahsFlowRuntimeTest, RuntimeSendThrowAbortsOutstandingWqe) {
+    EventList event_list;
+    CapturingAtlahsHtsimApi api;
+    api.setEventList(&event_list);
+    api.total_nodes = 2;
+    auto runtime = std::make_unique<FakeFlowRuntime>();
+    runtime->throw_from_send = true;
+    api.setFlowRuntime(std::move(runtime));
+    api.Setup();
+
+    const auto flow = makeFlow(0, 70, 1, 64, 11);
+    EXPECT_THROW(api.Send(SendEvent(0, 1, flow.size, flow.tag, 0), flow),
+                 std::runtime_error);
+    ASSERT_NE(api.wqeLedger(), nullptr);
+    EXPECT_EQ(api.wqeLedger()->outstandingCount(), 0U);
+    EXPECT_EQ(api.wqeLedger()->completedCount(), 0U);
+    EXPECT_FALSE(api.wqeLedger()->containsFlow(makeAtlahsFlowId(0, 70)));
+    EXPECT_TRUE(api.completedFlows().empty());
+    EXPECT_EQ(api.completion_count, 0);
+    EXPECT_NO_THROW(api.validateWqeQuiescent());
+}
+
+TEST(AtlahsFlowRuntimeTest,
+     SynchronousCompletionThrowWithoutEventListRollsBackWqe) {
+    CapturingAtlahsHtsimApi api;
+    api.total_nodes = 2;
+    auto runtime = std::make_unique<FakeFlowRuntime>();
+    runtime->complete_synchronously = true;
+    api.setFlowRuntime(std::move(runtime));
+    api.Setup();
+
+    const auto flow = makeFlow(0, 71, 1, 64, 12);
+    EXPECT_THROW(api.Send(SendEvent(0, 1, flow.size, flow.tag, 0), flow),
+                 std::logic_error);
+    ASSERT_NE(api.wqeLedger(), nullptr);
+    EXPECT_EQ(api.wqeLedger()->outstandingCount(), 0U);
+    EXPECT_EQ(api.wqeLedger()->completedCount(), 0U);
+    EXPECT_FALSE(api.wqeLedger()->containsFlow(makeAtlahsFlowId(0, 71)));
+    EXPECT_TRUE(api.completedFlows().empty());
+    EXPECT_NO_THROW(api.validateWqeQuiescent());
 }
 
 }  // namespace

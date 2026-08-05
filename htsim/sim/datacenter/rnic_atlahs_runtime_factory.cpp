@@ -67,6 +67,11 @@ bool RnicAtlahsRuntimeAssembly::hasPendingPhysicalWork() const noexcept {
     return runtime->hasPendingPhysicalWork();
 }
 
+AtlahsTransportKind
+RnicAtlahsRuntimeAssembly::transportKind() const noexcept {
+    return runtime->transportKind();
+}
+
 std::unique_ptr<RnicAtlahsRuntimeAssembly> makeRnicAtlahsRuntime(
         EventList& event_list,
         RnicProfile profile,
