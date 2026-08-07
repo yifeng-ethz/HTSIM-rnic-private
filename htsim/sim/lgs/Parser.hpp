@@ -3,16 +3,13 @@
 #include <vector>
 #include <string>
 #include <string.h>
-#include <unistd.h>
 #include <stdio.h>
 #include <assert.h>
 #include <stdlib.h>
-#include <sys/stat.h>
 #include <inttypes.h>
-#include <sys/mman.h>
-#include <sys/types.h>
 
 #include "LogGOPSim.hpp"
+#include "portable_file.h"
 
 #define MAGIC_COOKIE 4223
 #define MAGIC_COOKIE_INVALID 2342
@@ -324,13 +321,12 @@ class Graph {
 			filesize += (sizeof(uint32_t)*num_edges); //appendix
 
 			// enlarge the file
-			lseek(fd, filesize-1, SEEK_SET);
-			int r = write(fd, "", 1);
-			assert(r == 1);
+			int r = htsim_resize_file(fd, filesize);
+			assert(r == 0);
 			
 			// mmap the file
-			mapping_start = (char*) mmap(NULL, filesize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-			if (mapping_start == MAP_FAILED) {
+			mapping_start = (char*) htsim_map_file(fd, filesize, true);
+			if (mapping_start == NULL) {
 				perror("couldn't mmap the output file");
 				exit(EXIT_FAILURE);
 			}
@@ -349,13 +345,12 @@ class Graph {
 
 
 			// enlarge the file
-			lseek(fd, filesize-1, SEEK_SET);
-			int r = write(fd, "", 1);
-			assert(r == 1);
+			int r = htsim_resize_file(fd, filesize);
+			assert(r == 0);
 
 			// mmap the file
-			mapping_start = (char*) mmap(NULL, filesize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-			if (mapping_start == MAP_FAILED) {
+			mapping_start = (char*) htsim_map_file(fd, filesize, true);
+			if (mapping_start == NULL) {
 				perror("mmap failed");
 				exit(EXIT_FAILURE);
 			}
@@ -398,7 +393,7 @@ class Graph {
 				const uint32_t size = (**it).DependOnMe.size();
 				memcpy(pos, &size, sizeof(uint32_t));                 		pos += sizeof(uint32_t);	// number of actions that depend on this actions termination
 			}
-			memcpy(&pos, &num_in_appendix, sizeof(uint32_t));   				pos += sizeof(uint32_t);	// start index of dependent actions (in appendix)
+			memcpy(pos, &num_in_appendix, sizeof(uint32_t));    				pos += sizeof(uint32_t);	// start index of dependent actions (in appendix)
 			num_in_appendix += (**it).DependOnMe.size();
 			{
 				const uint32_t size = (**it).StartDependOnMe.size();
@@ -431,7 +426,7 @@ class Graph {
 		//printf("s: %llu e: %llu\n", (long long unsigned int) end_of_lastrank, (long long unsigned int) (pos - mapping_start));
 
 		// munmap the files so that the contents get written
-		int r = munmap(mapping_start-sizeof(uint64_t), (size_t) (pos - mapping_start));
+		int r = htsim_unmap_file(mapping_start-sizeof(uint64_t), (size_t) (pos - mapping_start));
 		assert(r == 0);	
 	}
 
@@ -778,11 +773,7 @@ class Parser {
 	FILE *schedules_fd;
 
 	uint64_t get_file_size(FILE* fd) {
-		
-		struct stat f_info;
-		int r = fstat(fileno(fd), &f_info);
-		assert(r == 0);
-		return f_info.st_size;
+		return htsim_file_size(fd);
 	}
 
 	public:
@@ -837,19 +828,19 @@ class Parser {
 			// mmap can fail with map_private and prot_write on machines where the virtual mem is smaller than
 			// the mapped region - so we fall back to map_shared. This destroys the schedule, so we invalidate
 			// the magic cookie if we do this
-			mapping_start = (char*) mmap(NULL, mapping_length, PROT_READ | PROT_WRITE, MAP_SHARED, fileno(schedules_fd), 0); 
+			mapping_start = (char*) htsim_map_file(htsim_fileno(schedules_fd), mapping_length, true);
 			//*((uint64_t*) mapping_start) = MAGIC_COOKIE_INVALID;
 			printf("The schedule will be invalid after this simulation!\n");
 		}
 		
 		else if (save_mem == false) {
-			mapping_start = (char*) mmap(NULL, mapping_length, PROT_READ | PROT_WRITE, MAP_PRIVATE, fileno(schedules_fd), 0);
+			mapping_start = (char*) htsim_map_file(htsim_fileno(schedules_fd), mapping_length, false);
 			// THIS NEEDS MORE MEMORY - but it is also more convinient for interacrive use
 			// because it preserves the schedules
 			// Note that there is no fall-through to MAP_SHARED, we put the user in charge now!
 		}
 		
-		if (mapping_start == MAP_FAILED) {
+		if (mapping_start == NULL) {
 			fprintf(stderr, "mmap does not work on your system! Try to use the --save-mem option.\n");
 			exit(EXIT_FAILURE);
 		}
@@ -869,7 +860,7 @@ class Parser {
 
 
 	~Parser() {
-		int r = munmap(mapping_start, mapping_length);
+		int r = htsim_unmap_file(mapping_start, mapping_length);
 		assert(r == 0);
 		fclose(schedules_fd);
 	}

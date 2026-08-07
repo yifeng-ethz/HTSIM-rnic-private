@@ -10,6 +10,34 @@ This repository is a SPCL fork of the official UEC repository. We plan to suppor
 - General htsim performance improvements.
 - Ability to run datacenter traces.
 
+# Building on Linux and Windows
+
+HTSIM uses one C++17 source tree on both platforms. Linux builds support
+GCC or Clang; native Windows builds support MSVC from Visual Studio 2022
+Build Tools with the **Desktop development with C++** workload.
+
+Linux:
+
+```bash
+cmake -S htsim/sim -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_TESTS=ON
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure --parallel
+```
+
+Windows PowerShell:
+
+```powershell
+cmake -S htsim/sim -B build -G "Visual Studio 17 2022" -A x64 -DENABLE_TESTS=ON
+cmake --build build --config Release --parallel
+ctest --test-dir build -C Release --output-on-failure --parallel
+```
+
+Multi-configuration Windows executables are under `build/Release` and
+`build/datacenter/Release`; Linux executables are directly under `build`
+and `build/datacenter`. The build includes `txt2bin`, `htsim_rnic`, and
+`htsim_dcqcn_atlahs`. Source-tree executable symlinks are retained on
+Unix and disabled by default on Windows.
+
 # ATLAHS Integration
 This repository also supports [ATLAHS](https://arxiv.org/abs/2505.08936) integration to run GOAL files in htsim. 
 

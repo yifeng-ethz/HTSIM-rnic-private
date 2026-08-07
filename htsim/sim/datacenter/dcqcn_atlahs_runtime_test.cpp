@@ -89,6 +89,8 @@ TEST(DcqcnAtlahsRuntimeTest, CompletesPacketizedFlowOnTheSharedNsTm3Clos) {
     EXPECT_NE(goodput_text.find("bin_start_ps,bin_end_ps,flow_id,source,destination,"),
               std::string::npos);
     EXPECT_FALSE(std::filesystem::exists(goodput_trace.string() + ".tmp"));
+    trace_input.close();
+    goodput_input.close();
     std::filesystem::remove(state_trace);
     std::filesystem::remove(goodput_trace);
     const std::string manifest =

@@ -7,7 +7,6 @@
 #include <string.h>
 
 #include <math.h>
-#include <unistd.h>
 #include "network.h"
 #include "pipe.h"
 #include "eventlist.h"
