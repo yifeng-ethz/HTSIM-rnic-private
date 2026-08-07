@@ -88,13 +88,13 @@ class Goal {
 			graph.addDependency(src, dest);
 		}
 
-		void SerializeSchedule(char* filename) {
+		void SerializeSchedule(const char* filename) {
 			
 			static int fd;
 			
 			// create/open binary schedule if it is the first rank (rank 0)
 			if (rank==0) {
-				fd = open(filename, O_RDWR | O_CREAT | O_TRUNC, S_IWUSR | S_IRUSR);
+				fd = htsim_open_rw_truncate(filename);
 				if (fd == -1) {
 					fprintf(stderr, "Couldn't open %s for schedule serialization!\n", filename);		
 					perror("system error message:");
@@ -106,8 +106,8 @@ class Goal {
 			
 			// close the binary schedule if it is the last rank
 			if (rank == num_ranks-1) {
-				close(fd);
-				sync();
+				const int close_result = htsim_close_file(fd);
+				assert(close_result == 0);
 			}
 			
 		}

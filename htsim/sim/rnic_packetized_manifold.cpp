@@ -1,5 +1,6 @@
 // -*- c-basic-offset: 4; indent-tabs-mode: nil -*-
 #include "rnic_packetized_manifold.h"
+#include "rnic_wide_integer.h"
 
 #include <algorithm>
 #include <limits>
@@ -10,7 +11,7 @@
 namespace {
 
 constexpr uint64_t kSerializationNumeratorPerByte = UINT64_C(8000000000000);
-using Wide = unsigned __int128;
+using Wide = RnicWideInteger;
 
 constexpr Wide kWideMax = ~static_cast<Wide>(0);
 

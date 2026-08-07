@@ -7,6 +7,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <algorithm>
 #include <string>
 #include <sstream>
 double drand();
@@ -14,10 +15,25 @@ double drand();
 
 #ifdef _WIN32
 // Ways to refer to integer types
-typedef unsigned __int64 uint64_t;
-typedef unsigned __int32 uint32_t;
-typedef unsigned __int16 uint16_t;
 typedef signed __int64 sint64_t;
+typedef uint32_t id_t;
+double drand48();
+long random();
+void srand48(long seed);
+void srandom(unsigned seed);
+#ifdef _MSC_VER
+// MSVC's Universal CRT does not allow an executable to override rand/srand.
+// Keep HTSIM's deterministic generator under project-local symbol names and
+// map existing simulation call sites after the CRT headers have been parsed.
+int htsim_rand();
+void htsim_srand(unsigned seed);
+long htsim_random();
+void htsim_srandom(unsigned seed);
+#define rand htsim_rand
+#define srand htsim_srand
+#define random htsim_random
+#define srandom htsim_srandom
+#endif
 #else
 typedef long long sint64_t;
 #endif
@@ -62,11 +78,6 @@ void print_path(std::iostream &paths,const Route* rt);
 // Gumph
 #if defined (__cplusplus) && !defined(__STL_NO_NAMESPACES)
 using namespace std;
-#endif
-
-#ifdef _WIN32
-#define max(a,b) (((a)>(b))?(a):(b))
-#define min(a,b) (((a)<(b))?(a):(b))
 #endif
 
 #endif

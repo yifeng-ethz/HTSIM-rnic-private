@@ -6,17 +6,14 @@
 #include <string>
 #include <limits>
 #include <stdio.h>
-#include <unistd.h>
 #include <string.h>
 #include <stdlib.h>
 #include <assert.h>
 #include <inttypes.h>
 #include <sys/stat.h>
-#include <sys/mman.h>
 #include <sys/types.h>
 
 #include "Goal.hpp"
-#include "cmdline_txt2bin.h"
 
 typedef unsigned int uint;
 typedef unsigned char uchar;
@@ -31,7 +28,39 @@ typedef unsigned char uchar;
 
 #define	RET(i)	{s->cur = cursor; return i;}
 
-gengetopt_args_info args_info;
+struct Txt2BinArgs {
+	std::string input;
+	std::string output;
+	bool progress = false;
+};
+
+Txt2BinArgs args_info;
+
+static bool parse_command_line(int argc, char** argv) {
+	for (int index = 1; index < argc; ++index) {
+		const std::string argument(argv[index]);
+		if (argument == "-p" || argument == "--progress") {
+			args_info.progress = true;
+		} else if (argument == "-i" || argument == "--input") {
+			if (++index >= argc) return false;
+			args_info.input = argv[index];
+		} else if (argument.rfind("--input=", 0) == 0) {
+			args_info.input = argument.substr(8);
+		} else if (argument == "-o" || argument == "--output") {
+			if (++index >= argc) return false;
+			args_info.output = argv[index];
+		} else if (argument.rfind("--output=", 0) == 0) {
+			args_info.output = argument.substr(9);
+		} else if (argument == "-h" || argument == "--help") {
+			printf("Usage: txt2bin -i INPUT.goal -o OUTPUT.bin [--progress]\n");
+			exit(EXIT_SUCCESS);
+		} else {
+			fprintf(stderr, "Unknown argument: %s\n", argument.c_str());
+			return false;
+		}
+	}
+	return !args_info.input.empty() && !args_info.output.empty();
+}
 
 typedef struct Scanner {
     FILE*		fd;
@@ -234,7 +263,7 @@ int scan(Scanner *s) {
 
 s_0:
 
-	if ((cursor == s->eof) and (cursor != NULL)) {
+	if ((cursor == s->eof) && (cursor != NULL)) {
 		fprintf(stderr, "Reached the end of the inputfile - did you forget a closing bracket?\n");
 		return s->rank;
 	}
@@ -2921,20 +2950,20 @@ s_err:
 }
 }
 
-main(int argc, char **argv){
+int main(int argc, char **argv){
     
 	Scanner in;
 	int lastprogress = 0;
 
-	if (cmdline_parser(argc, argv, &args_info) != 0) {
+	if (!parse_command_line(argc, argv)) {
 		fprintf(stderr, "Couldn't parse command line arguments!\n");
 		exit(EXIT_FAILURE);
 	}
 
     memset((char*) &in, 0, sizeof(in));
-   	in.fd = fopen(args_info.input_arg, "r");
+	in.fd = fopen(args_info.input.c_str(), "r");
 	if (in.fd == NULL) {
-		fprintf(stderr, "Couldn't open input file %s!\n", args_info.input_arg);
+		fprintf(stderr, "Couldn't open input file %s!\n", args_info.input.c_str());
 		exit(EXIT_FAILURE);
 	}
 	in.idtbl = new std::map<std::string, goalop_t>;
@@ -2956,10 +2985,10 @@ main(int argc, char **argv){
 
 		in.schedule->SetRank(in.curr_rank);
 		in.schedule->SetNumRanks(in.num_ranks);
-		in.schedule->SerializeSchedule(args_info.output_arg);
+		in.schedule->SerializeSchedule(args_info.output.c_str());
 		delete in.schedule;
 		int newprogress = round((((double) in.curr_rank) / in.num_ranks)*100);
-		if (args_info.progress_given && (newprogress > lastprogress) ) {
+		if (args_info.progress && (newprogress > lastprogress) ) {
 			lastprogress = newprogress;
 			printf("Progress %i%% - parsed schedule %i/%i\n", lastprogress, in.curr_rank, in.num_ranks);
 		}

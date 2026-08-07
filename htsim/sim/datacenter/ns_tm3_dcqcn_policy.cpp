@@ -1,5 +1,6 @@
 // -*- c-basic-offset: 4; indent-tabs-mode: nil -*-
 #include "ns_tm3_dcqcn_policy.h"
+#include "../rnic_wide_integer.h"
 
 #include "ecn.h"
 #include "eth_pause_packet.h"
@@ -273,7 +274,7 @@ bool NsTm3DcqcnPolicy::should_mark_ecn(
         const std::uint64_t span = static_cast<std::uint64_t>(
             _config.ecn_kmax_bytes - _config.ecn_kmin_bytes);
         probability_ppm = static_cast<std::uint32_t>(
-            (static_cast<__uint128_t>(_config.ecn_pmax_ppm) * offset)
+            (static_cast<RnicWideInteger>(_config.ecn_pmax_ppm) * offset)
             / span);
     }
     if (probability_ppm == 0) {

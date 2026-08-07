@@ -1,5 +1,6 @@
 // -*- c-basic-offset: 4; indent-tabs-mode: nil -*-
 #include "atlahs_goodput_trace.h"
+#include "../rnic_wide_integer.h"
 
 #include <filesystem>
 #include <fstream>
@@ -10,7 +11,7 @@
 
 namespace {
 
-using Wide = unsigned __int128;
+using Wide = RnicWideInteger;
 
 std::uint64_t checkedBinBoundary(std::uint64_t bin_index,
                                  std::uint64_t bin_width_ps) {

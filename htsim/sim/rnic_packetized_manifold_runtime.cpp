@@ -1,5 +1,6 @@
 // -*- c-basic-offset: 4; indent-tabs-mode: nil -*-
 #include "rnic_packetized_manifold_runtime.h"
+#include "rnic_wide_integer.h"
 
 #include <algorithm>
 #include <limits>
@@ -10,7 +11,7 @@
 
 namespace {
 
-using Wide = unsigned __int128;
+using Wide = RnicWideInteger;
 
 std::uint64_t checkedAdd(
         std::uint64_t lhs, std::uint64_t rhs, const char* message) {

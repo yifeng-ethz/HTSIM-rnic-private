@@ -3,23 +3,49 @@ include(FetchContent)
 
 project(htsim_project LANGUAGES CXX)
 option(ENABLE_TESTS "enable the test suite" OFF)
+if(WIN32)
+    option(HTSIM_CREATE_SOURCE_SYMLINKS
+        "create source-tree symlinks for built executables" OFF)
+else()
+    option(HTSIM_CREATE_SOURCE_SYMLINKS
+        "create source-tree symlinks for built executables" ON)
+endif()
 
 # Set C++ standard and compiler flags
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF) # Ensures GNU extensions are disabled
-set(CMAKE_CXX_FLAGS_RELEASE -O3) # Prevent -DNDEBUG, htsim requires 
-                                 # asserts to be enabled.
-# Set compiler flags
-add_compile_options(
-    -Wall
-    -g
-    -Wsign-compare
-    -Wuninitialized
-    -fPIE
-    -Wno-deprecated
-    -O3
-)
+# Prevent -DNDEBUG: htsim requires assertions to remain enabled. Compiler
+# options must be selected per toolchain because MSVC does not understand
+# GCC-style flags.
+if(MSVC)
+    set(CMAKE_CXX_FLAGS_RELEASE "/O2")
+    add_compile_options(/W4 /EHsc /permissive-)
+    add_compile_definitions(
+        _CRT_SECURE_NO_WARNINGS
+        _SILENCE_STDEXT_HASH_DEPRECATION_WARNINGS
+        NOMINMAX
+        WIN32_LEAN_AND_MEAN
+    )
+else()
+    set(CMAKE_CXX_FLAGS_RELEASE "-O3")
+    add_compile_options(
+        -Wall
+        -g
+        -Wsign-compare
+        -Wuninitialized
+        -fPIE
+        -Wno-deprecated
+        -O3
+    )
+endif()
+
+# MinGW executables otherwise depend on whichever libstdc++/libgcc DLLs
+# happen to appear first on PATH, which is especially fragile on developer
+# workstations with several GCC distributions installed.
+if(MINGW)
+    add_link_options(-static -static-libgcc -static-libstdc++)
+endif()
 # Optionally enable sanitizers
 # -fsanitize=address -fno-omit-frame-pointer -fsanitize=undefined"
 
@@ -39,6 +65,9 @@ endif()
 # Used to create a symlink in the source directory to the executable 
 # in the build directory for easier access and backward compatibility.
 function(add_symlink_target EXECUTABLE TARGET_DIR)
+    if(NOT HTSIM_CREATE_SOURCE_SYMLINKS)
+        return()
+    endif()
     add_custom_command(
         TARGET ${EXECUTABLE}
         POST_BUILD
@@ -152,7 +181,42 @@ add_subdirectory(datacenter)
 add_executable(parse_output parse_output.cpp)
 target_link_libraries(parse_output PRIVATE htsim)
 
+# Build the GOAL text-to-binary converter from the checked-in generated
+# source. This avoids requiring re2c/gengetopt for ordinary builds and gives
+# Windows callers a native txt2bin.exe from the same source as Linux.
+add_executable(txt2bin lgs/txt2bin.cpp)
+target_include_directories(txt2bin PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/lgs)
+
 if ( ENABLE_TESTS )
+    # Cross-platform behavioral and structural regression checks for the
+    # CMake-built GOAL converter and binary parser.
+    file(SHA256
+        ${CMAKE_CURRENT_SOURCE_DIR}/lgs/txt2bin
+        HTSIM_SOURCE_TXT2BIN_SHA256)
+
+    add_test(
+        NAME PortabilityRegression.Txt2BinSourceArtifactUnchanged
+        COMMAND ${CMAKE_COMMAND}
+            "-DCASE=source_txt2bin"
+            "-DSOURCE_TXT2BIN=${CMAKE_CURRENT_SOURCE_DIR}/lgs/txt2bin"
+            "-DEXPECTED_SHA256=${HTSIM_SOURCE_TXT2BIN_SHA256}"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/portability_regression.cmake)
+    set_tests_properties(
+        PortabilityRegression.Txt2BinSourceArtifactUnchanged
+        PROPERTIES LABELS "portability;structural" TIMEOUT 10)
+
+    add_test(
+        NAME PortabilityRegression.BinaryGoalRoundTrip26Ranks
+        COMMAND ${CMAKE_COMMAND}
+            "-DCASE=rank_26_round_trip"
+            "-DTXT2BIN=$<TARGET_FILE:txt2bin>"
+            "-DHTSIM_RNIC=$<TARGET_FILE:htsim_rnic>"
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/portability/$<CONFIG>"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/portability_regression.cmake)
+    set_tests_properties(
+        PortabilityRegression.BinaryGoalRoundTrip26Ranks
+        PROPERTIES LABELS "portability;behavioral" TIMEOUT 60)
+
     # Unit tests.
     set(UNIT_TEST_FILES
         atlahs_wqe_test

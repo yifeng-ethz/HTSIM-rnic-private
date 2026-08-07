@@ -829,7 +829,7 @@ void EqdsSrc::updateCwndOnAck_SmaRTT(bool skip, simtime_picosec rtt, mem_b newly
                 _cwnd = _mtu;
         }
 
-    } else if (skip == true and delay < _target_Qdelay) {
+    } else if (skip == true && delay < _target_Qdelay) {
         // Fair Decrease                                                                              
         if (can_decrease_exp_avg) {
             _cwnd -= _cwnd * _gamma_g * newly_acked_bytes / _maxwnd;
@@ -2270,7 +2270,7 @@ void EqdsPullPacer::updateReceiverCc(bool ecn, bool trim) {
     updateCcState();
 
     simtime_picosec now = eventlist().now();
-    _receipt_records.push_back({.arrival_time = now, .ecn = ecn || trim});
+    _receipt_records.push_back({now, ecn || trim});
     if (ecn || trim) {
         _receipt_ecn_count++;
     }

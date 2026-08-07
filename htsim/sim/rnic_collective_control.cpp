@@ -1,5 +1,6 @@
 // -*- c-basic-offset: 4; indent-tabs-mode: nil -*-
 #include "rnic_collective_control.h"
+#include "rnic_wide_integer.h"
 
 #include <algorithm>
 #include <limits>
@@ -242,8 +243,8 @@ std::uint64_t RnicSenderGrantGate::scaledByOwnNflow(
         std::uint32_t own_nflow_ppm) {
     // own_nflow_ppm <= kFullFlowPpm, so the scaled rate never exceeds the
     // shared rate; the 128-bit product guards the n_hat_ppm = 1 extreme.
-    const unsigned __int128 scaled =
-        static_cast<unsigned __int128>(shared_wire_rate_bps) * own_nflow_ppm /
+    const RnicWideInteger scaled =
+        static_cast<RnicWideInteger>(shared_wire_rate_bps) * own_nflow_ppm /
         RnicCollectiveController::kPartsPerMillion;
     if (scaled == 0) {
         throw std::overflow_error(

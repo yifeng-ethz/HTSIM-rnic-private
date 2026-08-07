@@ -1,5 +1,6 @@
 // -*- c-basic-offset: 4; indent-tabs-mode: nil -*-
 #include "rnic_max_min_allocator.h"
+#include "rnic_wide_integer.h"
 
 #include <algorithm>
 #include <array>
@@ -18,7 +19,7 @@ using FlowId = RnicMaxMinAllocator::FlowId;
 using NodeId = RnicMaxMinAllocator::NodeId;
 using RateBps = RnicMaxMinAllocator::RateBps;
 using CapacityMap = RnicMaxMinAllocator::CapacityMap;
-using WideInteger = unsigned __int128;
+using WideInteger = RnicWideInteger;
 
 static_assert(std::numeric_limits<size_t>::digits <= 128,
               "size_t must fit the exact rational integer type");
