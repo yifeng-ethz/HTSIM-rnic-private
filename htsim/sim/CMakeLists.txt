@@ -186,7 +186,6 @@ target_link_libraries(parse_output PRIVATE htsim)
 # Windows callers a native txt2bin.exe from the same source as Linux.
 add_executable(txt2bin lgs/txt2bin.cpp)
 target_include_directories(txt2bin PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/lgs)
-add_symlink_target(txt2bin ${CMAKE_CURRENT_SOURCE_DIR}/lgs)
 
 if ( ENABLE_TESTS )
     # Cross-platform behavioral and structural regression checks for the

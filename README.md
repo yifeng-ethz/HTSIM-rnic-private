@@ -32,11 +32,11 @@ cmake --build build --config Release --parallel
 ctest --test-dir build -C Release --output-on-failure --parallel
 ```
 
-Multi-configuration Windows executables are under `build/Release` and
-`build/datacenter/Release`; Linux executables are directly under `build`
-and `build/datacenter`. The build includes `txt2bin`, `htsim_rnic`, and
-`htsim_dcqcn_atlahs`. Source-tree executable symlinks are retained on
-Unix and disabled by default on Windows.
+The `txt2bin` executable remains in the build tree on every platform: use
+`build/txt2bin` on Linux and `build/Release/txt2bin.exe` on Windows. The
+simulator executables are under `build/datacenter` on Linux and
+`build/datacenter/Release` on Windows. Unix source-tree symlinks are retained
+for simulator executables only and are disabled by default on Windows.
 
 # ATLAHS Integration
 This repository also supports [ATLAHS](https://arxiv.org/abs/2505.08936) integration to run GOAL files in htsim. 

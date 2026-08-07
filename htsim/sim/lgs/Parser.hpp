@@ -783,7 +783,7 @@ class Parser {
 
 	Parser(std::string filename, bool save_mem) {
 		
-		schedules_fd = fopen(filename.c_str(), "r+");
+		schedules_fd = fopen(filename.c_str(), "r+b");
 	    
 		if (schedules_fd == NULL) {
 			fprintf(stderr, "Couldn't open input file %s!\n", filename.c_str());
@@ -866,4 +866,3 @@ class Parser {
 	}
 	
 };
-
