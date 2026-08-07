@@ -189,6 +189,35 @@ target_include_directories(txt2bin PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/lgs)
 add_symlink_target(txt2bin ${CMAKE_CURRENT_SOURCE_DIR}/lgs)
 
 if ( ENABLE_TESTS )
+    # Cross-platform behavioral and structural regression checks for the
+    # CMake-built GOAL converter and binary parser.
+    file(SHA256
+        ${CMAKE_CURRENT_SOURCE_DIR}/lgs/txt2bin
+        HTSIM_SOURCE_TXT2BIN_SHA256)
+
+    add_test(
+        NAME PortabilityRegression.Txt2BinSourceArtifactUnchanged
+        COMMAND ${CMAKE_COMMAND}
+            "-DCASE=source_txt2bin"
+            "-DSOURCE_TXT2BIN=${CMAKE_CURRENT_SOURCE_DIR}/lgs/txt2bin"
+            "-DEXPECTED_SHA256=${HTSIM_SOURCE_TXT2BIN_SHA256}"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/portability_regression.cmake)
+    set_tests_properties(
+        PortabilityRegression.Txt2BinSourceArtifactUnchanged
+        PROPERTIES LABELS "portability;structural" TIMEOUT 10)
+
+    add_test(
+        NAME PortabilityRegression.BinaryGoalRoundTrip26Ranks
+        COMMAND ${CMAKE_COMMAND}
+            "-DCASE=rank_26_round_trip"
+            "-DTXT2BIN=$<TARGET_FILE:txt2bin>"
+            "-DHTSIM_RNIC=$<TARGET_FILE:htsim_rnic>"
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/portability/$<CONFIG>"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/portability_regression.cmake)
+    set_tests_properties(
+        PortabilityRegression.BinaryGoalRoundTrip26Ranks
+        PROPERTIES LABELS "portability;behavioral" TIMEOUT 60)
+
     # Unit tests.
     set(UNIT_TEST_FILES
         atlahs_wqe_test
