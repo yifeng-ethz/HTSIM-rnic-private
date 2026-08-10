@@ -34,6 +34,7 @@ bool LogSimInterface::print_stats_flows = false;
 // Settable for the paper-algorithm main (Llama traces would print millions of
 // lines); default true preserves the fork's current output byte-for-byte.
 bool LogSimInterface::lgs_print_event_stats = true;
+bool LogSimInterface::artifact_send_semantics = false;
 static const bool exclusive_op = false;
 
 LogSimInterface::LogSimInterface() {}
@@ -100,7 +101,8 @@ void LogSimInterface::htsim_schedule(uint32_t host, int to, int size, int tag, u
 
 void LogSimInterface::execute_compute(graph_node_properties comp_elem, int size_p) {
     if (_protocolName == EQDS_PROTOCOL || _protocolName == NDP_PROTOCOL
-        || _protocolName == UEC_PROTOCOL || _protocolName == RNIC_PROTOCOL) {
+        || _protocolName == UEC_PROTOCOL || _protocolName == RNIC_PROTOCOL
+        || _protocolName == SENDER_PROTOCOL) { // paper-algorithm port
         compute_events_handler->setCompute(comp_elem.size * 1);
         ComputeAtlahsEvent *compute_event = new ComputeAtlahsEvent(comp_elem.size);
         htsim_api->Calc(*compute_event);
@@ -109,7 +111,8 @@ void LogSimInterface::execute_compute(graph_node_properties comp_elem, int size_
 
 void LogSimInterface::execute_null_compute(graph_node_properties comp_elem, int size_p) {
   if (_protocolName == EQDS_PROTOCOL || _protocolName == NDP_PROTOCOL
-      || _protocolName == UEC_PROTOCOL || _protocolName == RNIC_PROTOCOL) {
+      || _protocolName == UEC_PROTOCOL || _protocolName == RNIC_PROTOCOL
+      || _protocolName == SENDER_PROTOCOL) { // paper-algorithm port
       
       null_events_handler->setCompute(comp_elem.size);
   }
@@ -218,9 +221,12 @@ void LogSimInterface::htsim_simulate_until(int64_t until) {
 
     if (until != -1) {
       // Clamp to at least current HTSIM time to avoid scheduling in the past
-      int64_t htsim_now_ns = static_cast<int64_t>(htsim_api->getGlobalTimeNs());
-      if (until < htsim_now_ns) {
-          until = htsim_now_ns;
+      // (PR#17 fix; the artifact predates it, so artifact mode skips it).
+      if (!LogSimInterface::artifact_send_semantics) {
+          int64_t htsim_now_ns = static_cast<int64_t>(htsim_api->getGlobalTimeNs());
+          if (until < htsim_now_ns) {
+              until = htsim_now_ns;
+          }
       }
       compute_started++;
       null_events_handler->setCompute(until);
@@ -238,12 +244,30 @@ void LogSimInterface::htsim_simulate_until(int64_t until) {
             htsim_api->send_done_return_control = false;
             //printf("While2\n");
 
+            if (LogSimInterface::artifact_send_semantics) {
+                // Artifact boundary semantics: return control immediately,
+                // flagging have_more when the next event shares this time.
+                if (!_eventlist->getPendingSources().empty()
+                    && _eventlist->now() == _eventlist->getPendingSources().begin()->first) {
+                    have_more = true;
+                }
+                returned_control = true;
+                break;
+            }
             boundary_waiting_for_same_time_quiescence = true;
         }
 
         ////printf("While3\n");
         if (_latest_recv->updated) {
           this->reset_latest_receive();
+          if (LogSimInterface::artifact_send_semantics) {
+              if (!_eventlist->getPendingSources().empty()
+                  && _eventlist->now() == _eventlist->getPendingSources().begin()->first) {
+                  have_more = true;
+              }
+              returned_control = true;
+              break;
+          }
           if (_network_timing == AtlahsNetworkTiming::LegacyLogSimGap) {
             boundary_waiting_for_same_time_quiescence = true;
           } else {
@@ -258,6 +282,15 @@ void LogSimInterface::htsim_simulate_until(int64_t until) {
         //printf("While4\n");
         if (compute_if_finished) {
           //printf("While5\n");
+            if (LogSimInterface::artifact_send_semantics) {
+                if (!_eventlist->getPendingSources().empty()
+                    && _eventlist->now() == _eventlist->getPendingSources().begin()->first) {
+                    have_more = true;
+                }
+                compute_if_finished = false;
+                returned_control = true;
+                break;
+            }
             boundary_waiting_for_same_time_quiescence = true;
             compute_if_finished = false;
         }
@@ -276,6 +309,17 @@ void LogSimInterface::htsim_simulate_until(int64_t until) {
     }
 
     if (!returned_control && (sends_active > 0 || compute_started > 0)) {
+      // Diagnostic on the failure path only: identify the stalled work.
+      fprintf(stderr,
+              "[LGS-EXHAUST] sends_active=%d compute_started=%d active_sends=%zu at %lu ps\n",
+              sends_active, compute_started, active_sends.size(),
+              (unsigned long)_eventlist->now());
+      for (const auto& kv : active_sends) {
+          fprintf(stderr,
+                  "[LGS-EXHAUST] pending send key=%s bytes_left=%d start=%lu\n",
+                  kv.first.c_str(), kv.second.bytes_left_to_recv,
+                  (unsigned long)kv.second.start_time);
+      }
       throw std::logic_error(
           "HTSIM event list exhausted while LogSim work remains active");
     }
@@ -672,7 +716,14 @@ int start_lgs(std::string filename_goal,
                   resource_time = std::max(resource_time, nextgs[elem.host][elem.nic]);
               }
 
-              if(resource_time <= elem.time) { // required local resources available
+              // The artifact only gates on NIC availability here (it still
+              // reinserts at max(nexto, nextgs) on the else branch, exactly
+              // like this code does).
+              const bool send_admitted = LogSimInterface::artifact_send_semantics
+                  ? (nextgs[elem.host][elem.nic] <= elem.time)
+                  : (resource_time <= elem.time);
+
+              if(send_admitted) { // required local resources available
                   if(myprint) 
                     printf("-- satisfy local irequires\n");
 
@@ -703,8 +754,10 @@ int start_lgs(std::string filename_goal,
                           (num_packets + 1) * 4160; // Parameterize this. This accounts for the header size
                       elem.size = updated_size;
 
-                      uint64_t bandwidth_cost2 = std::max(static_cast<uint64_t>(1),
-                                                           static_cast<uint64_t>(std::ceil((double)(elem.size) * G)));
+                      uint64_t bandwidth_cost2 = LogSimInterface::artifact_send_semantics
+                          ? static_cast<uint64_t>((elem.size) * G) // artifact: truncates, can be 0
+                          : std::max(static_cast<uint64_t>(1),
+                                     static_cast<uint64_t>(std::ceil((double)(elem.size) * G)));
                       nextgs[elem.host][elem.nic] = elem.time + g + bandwidth_cost2;
                       can_simulate_until = nextgs[elem.host][elem.nic];
                       lgs_interface->nic_available[elem.host] = false;

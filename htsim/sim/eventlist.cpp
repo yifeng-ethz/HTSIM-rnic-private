@@ -70,6 +70,13 @@ EventList::doNextEvent()
     _pendingsources.erase(i);
     assert(nexteventtime >= _lasteventtime);
     _lasteventtime = nexteventtime; // set this before calling doNextEvent, so that this::now() is accurate
+    // Fidelity-debug hook: dump the dispatch order when HTSIM_TRACE_EVENTS is
+    // set (checked once).  Inert in normal runs.
+    static const bool ev_trace = (getenv("HTSIM_TRACE_EVENTS") != nullptr);
+    if (ev_trace) {
+        printf("EV t=%lu %s\n", (unsigned long)nexteventtime,
+               nextsource->str().c_str());
+    }
     nextsource->doNextEvent();
     return true;
 }
@@ -92,6 +99,12 @@ void EventList::sourceIsPending(EventSource& src, simtime_picosec when) {
     /* printf("EventList::sourceIsPending: source %s at time %lu ps -- %lu %lu %lu\n",
                src.str().c_str(), static_cast<unsigned long>(when), _endtime, when, _endtime); */
     assert(when >= now());
+    // Fidelity-debug hook, inert unless HTSIM_TRACE_EVENTS is set.
+    static const bool ev_trace = (getenv("HTSIM_TRACE_EVENTS") != nullptr);
+    if (ev_trace) {
+        printf("IN t=%lu when=%lu %s\n", (unsigned long)now(),
+               (unsigned long)when, src.str().c_str());
+    }
     if (_endtime == 0 || when < _endtime) {
         _pendingsources.insert(make_pair(when, &src));
         /* printf("EventList1::sourceIsPending: source %s at time %lu ps\n",

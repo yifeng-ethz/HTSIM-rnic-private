@@ -12,6 +12,10 @@
 #include <sstream>
 double drand();
 
+// Opt into an exact glibc rand()/random() reimplementation (paper-algorithm
+// port only; see rng.cpp).  Default is the portable mt19937.
+void rng_use_glibc_compat();
+
 
 #ifdef _WIN32
 // Ways to refer to integer types

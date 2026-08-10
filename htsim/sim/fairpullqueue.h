@@ -42,6 +42,9 @@ class FifoPullQueue : public BasePullQueue<PullPkt>{
     list <PullPkt*> _pull_queue; // needs insert middle, so can't use circular buffer
 };
 
+// Paper-algorithm compatibility switch (see fairpullqueue.cpp); default false.
+extern bool _fairpull_legacy_anchor;
+
 template<class PullPkt>
 class FairPullQueue : public BasePullQueue<PullPkt>{
  public:

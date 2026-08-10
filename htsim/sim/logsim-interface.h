@@ -119,6 +119,12 @@ class LogSimInterface {
     uint32_t lgs_S = 0;
     static bool print_stats_flows;
     static bool lgs_print_event_stats;
+    // Paper-algorithm compatibility: the ATLAHS artifact admits a send when
+    // the NIC is free (nextgs <= t) and charges a truncated bandwidth cost
+    // (uint64)(size*G).  The fork additionally honours CPU occupancy
+    // (max(nexto, nextgs) <= t) and charges max(1, ceil(size*G)).  Default
+    // false = fork behavior; only htsim_uec_paper sets it.
+    static bool artifact_send_semantics;
 
   private:
     bool debug_prints = false;

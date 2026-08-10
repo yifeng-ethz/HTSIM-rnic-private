@@ -5,6 +5,13 @@
 // Define once in exactly one TU
 int _packets_per_burst = 1;
 
+// Paper-algorithm compatibility: the artifact's FairPullQueue never anchors
+// the round-robin cursor on enqueue; after the map drains, the next busy
+// period always starts from the smallest flow id (begin()).  This rewrite
+// anchors at the first-enqueued flow instead.  Default false keeps the
+// fork's behavior; only htsim_uec_paper enables the legacy anchor.
+bool _fairpull_legacy_anchor = false;
+
 // =============================== BasePullQueue ===============================
 
 template <class PullPkt>
@@ -72,7 +79,10 @@ void FairPullQueue<PullPkt>::enqueue(PullPkt& pkt, int /*priority*/) {
     if (it == _queue_map.end()) {
         q = new CircularBuffer<PullPkt*>();
         it = _queue_map.insert(std::make_pair(pkt.flow_id(), q)).first;
-        if (_queue_map.size() == 1) {
+        // Legacy (artifact) behavior never anchors the cursor on enqueue;
+        // dequeue wraps end() -> begin() and thus restarts a busy period at
+        // the smallest flow id.
+        if (!_fairpull_legacy_anchor && _queue_map.size() == 1) {
             _current_queue = _queue_map.begin();
             _scheduled     = 0;
         }
@@ -105,13 +115,19 @@ PullPkt* FairPullQueue<PullPkt>::dequeue() {
         delete q;
         _queue_map.erase(to_erase);
         _scheduled = 0;
-        if (_current_queue == _queue_map.end() && !_queue_map.empty())
+        // Legacy mode leaves the cursor at end(); the wrap happens at the
+        // start of the next dequeue, so flows enqueued in between (with
+        // smaller ids) are picked up first, as in the artifact.
+        if (!_fairpull_legacy_anchor
+            && _current_queue == _queue_map.end() && !_queue_map.empty())
             _current_queue = _queue_map.begin();
     } else if (_scheduled >= _packets_per_burst) {
         // Move to next active flow (round-robin)
         ++_current_queue;
         _scheduled = 0;
-        if (_current_queue == _queue_map.end()) _current_queue = _queue_map.begin();
+        if (!_fairpull_legacy_anchor
+            && _current_queue == _queue_map.end())
+            _current_queue = _queue_map.begin();
     }
 
     return packet;
@@ -163,7 +179,7 @@ template <class PullPkt>
 CircularBuffer<PullPkt*>* FairPullQueue<PullPkt>::create_queue(const PullPkt& pkt) {
     CircularBuffer<PullPkt*>* new_queue = new CircularBuffer<PullPkt*>;
     auto res = _queue_map.insert(std::make_pair(pkt.flow_id(), new_queue));
-    if (_queue_map.size() == 1) {
+    if (!_fairpull_legacy_anchor && _queue_map.size() == 1) {
         _current_queue = _queue_map.begin();
         _scheduled     = 0;
     }

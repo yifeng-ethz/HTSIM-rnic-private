@@ -16,6 +16,7 @@ mem_b CompositeQueue::_header_bound_factor_trim = 2;
 mem_b CompositeQueue::_header_bound_factor_arrival = 2;
 bool CompositeQueue::_ecn_on_deque_headers = false;
 int CompositeQueue::_ratio_high_default = 100000;
+bool CompositeQueue::_stamp_ts_on_arrival = false;
 
 CompositeQueue::CompositeQueue(linkspeed_bps bitrate, mem_b maxsize, EventList& eventlist, 
                                QueueLogger* logger, uint16_t trim_size, bool disable_trim)
@@ -188,6 +189,10 @@ void CompositeQueue::receivePacket(Packet& pkt)
     if (_logger) _logger->logQueue(*this, QueueLogger::PKT_ARRIVE, pkt);
 
     if (!pkt.header_only()){
+        if (_stamp_ts_on_arrival && pkt.timestamp_sent == 0) {
+            pkt.timestamp_sent = eventlist().now();
+        }
+
         if (_queuesize_low+pkt.size() <= _maxsize  || drand()<0.5) {
             //regular packet; don't drop the arriving packet
 

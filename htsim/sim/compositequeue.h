@@ -75,6 +75,12 @@ class CompositeQueue : public Queue {
         _ecn_on_deque_headers = value;
     }
     static void set_high_prio_ratio(int value) { _ratio_high_default = value; }
+    // The artifact stamps timestamp_sent on first queue arrival when the
+    // sender left it zero (which happens for every packet sent at t=0); the
+    // paper transport's RTT measurement depends on it.  Default off.
+    static void set_stamp_ts_on_arrival(bool value) {
+        _stamp_ts_on_arrival = value;
+    }
 
     int _num_packets;
     int _num_headers; // only includes data packets stripped to headers, not acks or nacks
@@ -117,6 +123,7 @@ class CompositeQueue : public Queue {
     static mem_b _header_bound_factor_arrival;
     static bool _ecn_on_deque_headers;
     static int _ratio_high_default;
+    static bool _stamp_ts_on_arrival;
 };
 
 #endif

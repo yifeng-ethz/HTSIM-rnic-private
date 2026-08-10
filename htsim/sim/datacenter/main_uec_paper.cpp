@@ -72,6 +72,9 @@ void exit_error(char *progr) {
 }
 
 int main(int argc, char **argv) {
+    // NOTE: the artifact binary and this fork both override libc rand/random
+    // with the same mt19937 (rng.cpp), so seeded runs draw identical
+    // sequences with no further action needed here.
     Packet::set_packet_size(4096);
     // eventlist.setEndtime(timeFromSec(1));
     Clock c(timeFromSec(5 / 100.), eventlist);
@@ -634,9 +637,15 @@ int main(int argc, char **argv) {
     CompositeQueue::set_header_bound_factors(20000, 200000);
     CompositeQueue::set_ecn_on_deque_headers(true);
     CompositeQueue::set_high_prio_ratio(10000);
+    CompositeQueue::set_stamp_ts_on_arrival(true);
+    // Artifact fair-queue cursor semantics (see fairpullqueue.cpp).
+    _fairpull_legacy_anchor = true;
     // The artifact main never printed per-event LGS lines; the Llama trace
     // would otherwise print millions of them.
     LogSimInterface::lgs_print_event_stats = false;
+    // Artifact send admission (NIC-only gating) and truncated bandwidth cost;
+    // the fork's stricter semantics serialize the replay schedule.
+    LogSimInterface::artifact_send_semantics = true;
 
     // Calculate Network Info
     int hops = 4; // hardcoded for now
