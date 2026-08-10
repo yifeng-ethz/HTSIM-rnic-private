@@ -7,6 +7,30 @@
 
 #include <stdexcept>
 
+namespace {
+
+AtlahsWqeCompletionProjection legacyProjection(
+        const AtlahsWqeRecord& wqe) {
+    if (!wqe.cq_post_sequence.has_value()
+        || !wqe.cq_consume_sequence.has_value()) {
+        throw std::logic_error(
+            "ATLAHS completed WQE without CQ post and consume records");
+    }
+    return AtlahsWqeCompletionProjection{
+        wqe.wqe_id,
+        wqe.sq_id,
+        wqe.rq_id,
+        wqe.cq_id,
+        wqe.sq_post_sequence,
+        wqe.sq_dispatch_sequence,
+        *wqe.cq_post_sequence,
+        *wqe.cq_consume_sequence,
+        wqe.transport_kind,
+        wqe.transport_object_id};
+}
+
+}  // namespace
+
 void AtlahsHtsimApi::setLogSimInterface(LogSimInterface* logsim_interface) {
     _logsim_interface = logsim_interface;
     if (_logsim_interface != nullptr) {
@@ -21,7 +45,8 @@ void AtlahsHtsimApi::setFlowRuntime(
     if (!_pending_flows.empty()) {
         throw std::logic_error("cannot replace an ATLAHS runtime with pending flows");
     }
-    if (_wqe_ledger != nullptr) {
+    if (_flow_runtime_setup || _active_wqe_authority.has_value()
+        || _wqe_ledger != nullptr) {
         throw std::logic_error(
             "cannot replace an ATLAHS runtime after WQE setup");
     }
@@ -43,21 +68,40 @@ bool AtlahsHtsimApi::completeFlow(AtlahsFlowId flow_id) {
         throw std::logic_error(
             "ATLAHS completed a runtime-owned flow without an EventList");
     }
-    if (_wqe_ledger == nullptr) {
-        throw std::logic_error(
-            "ATLAHS completed a runtime-owned flow without WQE setup");
-    }
     const simtime_picosec completion_time_ps = _eventlist->now();
     if (completion_time_ps < pending_it->second.request.start_time_ps) {
         throw std::logic_error(
             "ATLAHS runtime-owned flow completed before it started");
     }
-    const AtlahsWqeRecord& wqe =
-        _wqe_ledger->complete(pending_it->second.wqe_id, completion_time_ps);
-    if (!wqe.cq_post_sequence.has_value()
-        || !wqe.cq_consume_sequence.has_value()) {
+    if (!_active_wqe_authority.has_value()) {
         throw std::logic_error(
-            "ATLAHS completed WQE without CQ post and consume records");
+            "ATLAHS completed a runtime-owned flow before authority setup");
+    }
+
+    AtlahsWqeCompletionProjection projection;
+    if (*_active_wqe_authority
+        == AtlahsWqeAuthorityMode::LegacyLedger) {
+        if (_wqe_ledger == nullptr
+            || !pending_it->second.legacy_wqe_id.has_value()) {
+            throw std::logic_error(
+                "ATLAHS legacy flow completed without WQE setup");
+        }
+        projection = legacyProjection(_wqe_ledger->complete(
+            *pending_it->second.legacy_wqe_id,
+            completion_time_ps));
+    } else {
+        if (_wqe_ledger != nullptr
+            || pending_it->second.legacy_wqe_id.has_value()) {
+            throw std::logic_error(
+                "ATLAHS structural flow reached the legacy WQE ledger");
+        }
+        const auto native_projection =
+            _flow_runtime->completionProjection(flow_id);
+        if (!native_projection.has_value()) {
+            throw std::logic_error(
+                "ATLAHS native runtime omitted its completion projection");
+        }
+        projection = *native_projection;
     }
 
     // Remove before notifying LogSimInterface.  EventFinished is synchronous,
@@ -73,16 +117,16 @@ bool AtlahsHtsimApi::completeFlow(AtlahsFlowId flow_id) {
         pending.request.start_time_ps,
         completion_time_ps,
         pending.request.tag,
-        wqe.wqe_id,
-        wqe.sq_id,
-        wqe.rq_id,
-        wqe.cq_id,
-        wqe.sq_post_sequence,
-        wqe.sq_dispatch_sequence,
-        *wqe.cq_post_sequence,
-        *wqe.cq_consume_sequence,
-        wqe.transport_kind,
-        wqe.transport_object_id});
+        projection.wqe_id,
+        projection.sq_id,
+        projection.rq_id,
+        projection.cq_id,
+        projection.sq_post_sequence,
+        projection.sq_dispatch_sequence,
+        projection.cq_post_sequence,
+        projection.cq_consume_sequence,
+        projection.transport_kind,
+        projection.transport_object_id});
 
     EventOver event(
         static_cast<int>(pending.request.source),
@@ -100,13 +144,29 @@ void AtlahsHtsimApi::validateWqeQuiescent() const {
     if (_flow_runtime == nullptr) {
         return;
     }
-    if (_wqe_ledger == nullptr) {
+    if (!_flow_runtime_setup || !_active_wqe_authority.has_value()) {
         throw std::logic_error(
-            "ATLAHS runtime has no WQE ledger at quiescence");
+            "ATLAHS runtime authority was not set up");
     }
     if (!_pending_flows.empty()) {
         throw std::logic_error(
             "ATLAHS API still has pending flows at WQE quiescence");
+    }
+    if (_flow_runtime->hasPendingPhysicalWork()) {
+        throw std::logic_error(
+            "ATLAHS runtime retains physical work at WQE quiescence");
+    }
+    if (*_active_wqe_authority
+        == AtlahsWqeAuthorityMode::NativeRuntime) {
+        if (_wqe_ledger != nullptr) {
+            throw std::logic_error(
+                "ATLAHS structural runtime constructed the legacy WQE ledger");
+        }
+        return;
+    }
+    if (_wqe_ledger == nullptr) {
+        throw std::logic_error(
+            "ATLAHS bypass runtime has no WQE ledger at quiescence");
     }
     _wqe_ledger->validateQuiescent();
     if (_wqe_ledger->completedCount() != _completed_flows.size()) {
@@ -153,21 +213,33 @@ void AtlahsHtsimApi::Send(const SendEvent &event, graph_node_properties elem) {
         request.start_time_ps = event.getStartTimeEvent();
         request.tag = elem.tag;
 
-        if (_wqe_ledger == nullptr) {
-            throw std::logic_error("ATLAHS runtime-owned send before WQE setup");
+        if (!_flow_runtime_setup || !_active_wqe_authority.has_value()) {
+            throw std::logic_error(
+                "ATLAHS runtime-owned send before WQE setup");
         }
         if (_pending_flows.count(request.flow_id) != 0) {
             throw std::logic_error("duplicate ATLAHS GOAL host/offset flow ID");
         }
 
-        const AtlahsWqeId wqe_id = _wqe_ledger->postAndDispatch(
-            request.flow_id,
-            request.source,
-            request.destination,
-            request.payload_bytes,
-            request.start_time_ps);
+        std::optional<AtlahsWqeId> legacy_wqe_id;
+        if (*_active_wqe_authority
+            == AtlahsWqeAuthorityMode::LegacyLedger) {
+            if (_wqe_ledger == nullptr) {
+                throw std::logic_error(
+                    "ATLAHS bypass send has no WQE ledger");
+            }
+            legacy_wqe_id = _wqe_ledger->postAndDispatch(
+                request.flow_id,
+                request.source,
+                request.destination,
+                request.payload_bytes,
+                request.start_time_ps);
+        } else if (_wqe_ledger != nullptr) {
+            throw std::logic_error(
+                "ATLAHS structural send reached the legacy WQE ledger");
+        }
         try {
-            PendingFlow pending{elem, request, wqe_id};
+            PendingFlow pending{elem, request, legacy_wqe_id};
             const auto inserted =
                 _pending_flows.emplace(request.flow_id, std::move(pending));
             if (!inserted.second) {
@@ -177,9 +249,10 @@ void AtlahsHtsimApi::Send(const SendEvent &event, graph_node_properties elem) {
             _flow_runtime->send(request);
         } catch (...) {
             _pending_flows.erase(request.flow_id);
-            if (_wqe_ledger->contains(wqe_id)
-                && !_wqe_ledger->wqe(wqe_id).completed()) {
-                _wqe_ledger->abort(wqe_id);
+            if (_wqe_ledger != nullptr && legacy_wqe_id.has_value()
+                && _wqe_ledger->contains(*legacy_wqe_id)
+                && !_wqe_ledger->wqe(*legacy_wqe_id).completed()) {
+                _wqe_ledger->abort(*legacy_wqe_id);
             }
             throw;
         }
@@ -289,18 +362,26 @@ void AtlahsHtsimApi::Setup() {
         if (total_nodes < 0) {
             throw std::invalid_argument("ATLAHS node count must be non-negative");
         }
-        if (_wqe_ledger != nullptr) {
+        if (_flow_runtime_setup || _active_wqe_authority.has_value()
+            || _wqe_ledger != nullptr) {
             throw std::logic_error("ATLAHS WQE runtime setup twice");
         }
-        _wqe_ledger = std::make_unique<AtlahsWqeLedger>(
-            static_cast<std::uint32_t>(total_nodes),
-            _flow_runtime->transportKind());
+        const AtlahsWqeAuthorityMode authority =
+            _flow_runtime->wqeAuthorityMode();
+        std::unique_ptr<AtlahsWqeLedger> candidate_ledger;
+        if (authority == AtlahsWqeAuthorityMode::LegacyLedger) {
+            candidate_ledger = std::make_unique<AtlahsWqeLedger>(
+                static_cast<std::uint32_t>(total_nodes),
+                _flow_runtime->transportKind());
+        }
         try {
             _flow_runtime->setup(
                 static_cast<std::uint32_t>(total_nodes),
                 [this](AtlahsFlowId flow_id) { completeFlow(flow_id); });
+            _wqe_ledger = std::move(candidate_ledger);
+            _active_wqe_authority = authority;
+            _flow_runtime_setup = true;
         } catch (...) {
-            _wqe_ledger.reset();
             throw;
         }
         return;

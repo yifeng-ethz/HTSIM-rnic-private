@@ -143,6 +143,9 @@ public:
     const AtlahsWqeLedger* wqeLedger() const noexcept {
         return _wqe_ledger.get();
     }
+    std::optional<AtlahsWqeAuthorityMode> activeWqeAuthority() const noexcept {
+        return _active_wqe_authority;
+    }
     void validateWqeQuiescent() const;
 
     // Getter and setter for ComputeEvent
@@ -325,11 +328,13 @@ private:
     LogSimInterface* _logsim_interface = nullptr;
     std::unique_ptr<AtlahsFlowRuntime> _flow_runtime;
     std::unique_ptr<AtlahsWqeLedger> _wqe_ledger;
+    std::optional<AtlahsWqeAuthorityMode> _active_wqe_authority;
+    bool _flow_runtime_setup = false;
 
     struct PendingFlow {
         graph_node_properties node;
         AtlahsFlowRequest request;
-        AtlahsWqeId wqe_id;
+        std::optional<AtlahsWqeId> legacy_wqe_id;
     };
     std::unordered_map<AtlahsFlowId, PendingFlow> _pending_flows;
     std::vector<AtlahsCompletedFlowRecord> _completed_flows;

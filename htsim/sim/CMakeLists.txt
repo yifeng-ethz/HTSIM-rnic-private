@@ -3,6 +3,11 @@ include(FetchContent)
 
 project(htsim_project LANGUAGES CXX)
 option(ENABLE_TESTS "enable the test suite" OFF)
+option(HTSIM_ENABLE_SIMLLM_RNIC
+       "build the composed SimLLM RNIC runtime and Tier A producer"
+       OFF)
+set(SIMLLM_REPOSITORY_ROOT "" CACHE PATH
+    "path to a SimLLM checkout that owns the versioned RNIC ABI")
 
 # Set C++ standard and compiler flags
 set(CMAKE_CXX_STANDARD 17)
@@ -145,6 +150,50 @@ set(SOURCE_FILES
 add_library(htsim STATIC ${SOURCE_FILES})
 target_include_directories(htsim PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}) # Needed for header-only libraries (e.g., loggertypes.h).
 
+if(HTSIM_ENABLE_SIMLLM_RNIC)
+    if(SIMLLM_REPOSITORY_ROOT STREQUAL "")
+        message(FATAL_ERROR
+            "HTSIM_ENABLE_SIMLLM_RNIC requires SIMLLM_REPOSITORY_ROOT")
+    endif()
+    get_filename_component(
+        SIMLLM_REPOSITORY_ROOT
+        "${SIMLLM_REPOSITORY_ROOT}"
+        ABSOLUTE)
+    set(SIMLLM_RNIC_SOURCE_DIR
+        "${SIMLLM_REPOSITORY_ROOT}/simllm/backends/rnic")
+    set(SIMLLM_TIER_A_NATIVE_DIR
+        "${SIMLLM_REPOSITORY_ROOT}/examples/rnic_live_v1/native")
+    foreach(REQUIRED_SIMLLM_SOURCE IN ITEMS
+            "${SIMLLM_RNIC_SOURCE_DIR}/CMakeLists.txt"
+            "${SIMLLM_TIER_A_NATIVE_DIR}/tier_a_port_factory.h"
+            "${SIMLLM_TIER_A_NATIVE_DIR}/tier_a_producer.cpp")
+        if(NOT EXISTS "${REQUIRED_SIMLLM_SOURCE}")
+            message(FATAL_ERROR
+                "required SimLLM source is missing: ${REQUIRED_SIMLLM_SOURCE}")
+        endif()
+    endforeach()
+
+    set(SIMLLM_RNIC_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(SIMLLM_RNIC_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+    set(SIMLLM_RNIC_WARNINGS_AS_ERRORS ON CACHE BOOL "" FORCE)
+    add_subdirectory(
+        "${SIMLLM_RNIC_SOURCE_DIR}"
+        "${CMAKE_BINARY_DIR}/simllm-rnic")
+
+    target_sources(htsim PRIVATE
+        simllm_atlahs_flow_runtime.cpp
+        simllm_htsim_network_port.cpp)
+    target_link_libraries(htsim PUBLIC simllm::rnic)
+
+    add_executable(htsim_rnic_tier_a
+        simllm_htsim_tier_a_port_factory.cpp
+        "${SIMLLM_TIER_A_NATIVE_DIR}/tier_a_producer.cpp")
+    target_include_directories(htsim_rnic_tier_a PRIVATE
+        "${SIMLLM_TIER_A_NATIVE_DIR}")
+    target_link_libraries(htsim_rnic_tier_a PRIVATE htsim simllm::rnic)
+    target_compile_features(htsim_rnic_tier_a PRIVATE cxx_std_17)
+endif()
+
 # Add subdirectories
 add_subdirectory(datacenter)
 
@@ -172,6 +221,12 @@ if ( ENABLE_TESTS )
         rnic_ring_cam_test
     )
 
+    if(HTSIM_ENABLE_SIMLLM_RNIC)
+        list(APPEND UNIT_TEST_FILES
+            simllm_atlahs_flow_runtime_test
+            simllm_htsim_network_port_test)
+    endif()
+
     foreach(UNIT_TEST_FILE ${UNIT_TEST_FILES}) 
         add_executable(${UNIT_TEST_FILE} ${UNIT_TEST_FILE}.cpp)
         target_link_libraries(${UNIT_TEST_FILE} PRIVATE htsim gtest_main gmock_main)
@@ -180,6 +235,11 @@ if ( ENABLE_TESTS )
             PROPERTIES TIMEOUT 60
         )
     endforeach()
+
+    if(HTSIM_ENABLE_SIMLLM_RNIC)
+        target_link_libraries(
+            simllm_atlahs_flow_runtime_test PRIVATE htsim_dc htsim)
+    endif()
 
     # AtlahsHtsimApi retains its legacy Clos/UEC path alongside the injected
     # runtime seam, so this focused test also needs the datacenter definitions.

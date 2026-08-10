@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 
 #include "atlahs_wqe.h"
 
@@ -34,6 +35,27 @@ enum class AtlahsNetworkTiming {
     RuntimeOwned,
 };
 
+// Authority is selected once before setup. Existing HTSIM runtimes retain
+// the timing-neutral legacy ledger. A composed SimLLM runtime owns the WQE
+// lifecycle internally and exposes only an immutable completion projection.
+enum class AtlahsWqeAuthorityMode {
+    LegacyLedger,
+    NativeRuntime,
+};
+
+struct AtlahsWqeCompletionProjection {
+    AtlahsWqeId wqe_id{0};
+    AtlahsWqeObjectId sq_id{0};
+    AtlahsWqeObjectId rq_id{0};
+    AtlahsWqeObjectId cq_id{0};
+    std::uint64_t sq_post_sequence{0};
+    std::uint64_t sq_dispatch_sequence{0};
+    std::uint64_t cq_post_sequence{0};
+    std::uint64_t cq_consume_sequence{0};
+    AtlahsTransportKind transport_kind{AtlahsTransportKind::None};
+    AtlahsWqeObjectId transport_object_id{0};
+};
+
 class AtlahsFlowRuntime {
 public:
     using CompletionHandler = std::function<void(AtlahsFlowId)>;
@@ -49,6 +71,15 @@ public:
     // intentionally retain the default None binding.
     virtual AtlahsTransportKind transportKind() const noexcept {
         return AtlahsTransportKind::None;
+    }
+
+    virtual AtlahsWqeAuthorityMode wqeAuthorityMode() const noexcept {
+        return AtlahsWqeAuthorityMode::LegacyLedger;
+    }
+
+    virtual std::optional<AtlahsWqeCompletionProjection>
+    completionProjection(AtlahsFlowId) const {
+        return std::nullopt;
     }
 
     // True until every physical effect owned by this runtime has drained.

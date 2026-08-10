@@ -72,6 +72,17 @@ RnicAtlahsRuntimeAssembly::transportKind() const noexcept {
     return runtime->transportKind();
 }
 
+AtlahsWqeAuthorityMode
+RnicAtlahsRuntimeAssembly::wqeAuthorityMode() const noexcept {
+    return runtime->wqeAuthorityMode();
+}
+
+std::optional<AtlahsWqeCompletionProjection>
+RnicAtlahsRuntimeAssembly::completionProjection(
+        AtlahsFlowId flow_id) const {
+    return runtime->completionProjection(flow_id);
+}
+
 std::unique_ptr<RnicAtlahsRuntimeAssembly> makeRnicAtlahsRuntime(
         EventList& event_list,
         RnicProfile profile,

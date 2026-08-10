@@ -58,6 +58,9 @@ public:
     void send(const AtlahsFlowRequest& request) override;
     bool hasPendingPhysicalWork() const noexcept override;
     AtlahsTransportKind transportKind() const noexcept override;
+    AtlahsWqeAuthorityMode wqeAuthorityMode() const noexcept override;
+    std::optional<AtlahsWqeCompletionProjection> completionProjection(
+        AtlahsFlowId flow_id) const override;
 
     FatTreeTopologyCfg* topologyConfig() noexcept {
         return topology_config.get();
