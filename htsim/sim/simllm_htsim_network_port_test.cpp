@@ -38,6 +38,33 @@ public:
     std::vector<AtlahsFlowRequest> requests;
 };
 
+class DeferredFlowRuntime final : public AtlahsFlowRuntime {
+public:
+    void setup(
+            std::uint32_t,
+            CompletionHandler complete_flow) override {
+        completion_ = std::move(complete_flow);
+    }
+
+    void send(const AtlahsFlowRequest& request) override {
+        requests.push_back(request);
+    }
+
+    bool hasPendingPhysicalWork() const noexcept override {
+        return requests.size() != completed;
+    }
+
+    void completeAll() {
+        for (; completed < requests.size(); ++completed) {
+            completion_(requests[completed].flow_id);
+        }
+    }
+
+    CompletionHandler completion_;
+    std::vector<AtlahsFlowRequest> requests;
+    std::size_t completed{0};
+};
+
 NetworkTxDescriptor descriptor(
         std::uint64_t wqe_id, std::uint64_t flow_id) {
     NetworkTxDescriptor value;
@@ -162,7 +189,7 @@ TEST(HtsimNetworkPortTest,
     HtsimNetworkPortConfig config;
     config.endpoint_count = 4;
     HtsimNetworkPort port(config);
-    port.bindRuntime(runtime, 4, [](std::uint64_t) {});
+    port.bindRuntime(runtime, 4, 4, [](std::uint64_t) {});
 
     EXPECT_THROW(port.trySubmit(descriptor(1, 501), 0), std::runtime_error);
     EXPECT_TRUE(port.issued().empty());
@@ -174,6 +201,49 @@ TEST(HtsimNetworkPortTest,
     EXPECT_EQ(runtime.requests.size(), 2U);
     EXPECT_TRUE(port.issued().empty());
     EXPECT_TRUE(port.liveTokens().empty());
+}
+
+TEST(HtsimNetworkPortTest,
+     RuntimeCapacityReplacesFixtureCapacityWithoutFabricatedDrops) {
+    EventList event_list;
+    DeferredFlowRuntime runtime;
+    HtsimNetworkPortConfig config;
+    config.capacity = 1;
+    config.endpoint_count = 4;
+    HtsimNetworkPort port(config);
+    std::vector<std::uint64_t> ready_times;
+    port.bindRuntime(
+        runtime,
+        4,
+        2,
+        [&](std::uint64_t at_ps) { ready_times.push_back(at_ps); });
+
+    const auto first = port.trySubmit(descriptor(1, 601), 0);
+    const auto second = port.trySubmit(descriptor(2, 602), 0);
+    EXPECT_EQ(first.status, NetworkSubmitStatus::Accepted);
+    EXPECT_EQ(second.status, NetworkSubmitStatus::Accepted);
+    EXPECT_EQ(port.effectiveCapacity(), 2U);
+    ASSERT_EQ(runtime.requests.size(), 2U);
+    EXPECT_TRUE(port.terminals().empty());
+
+    runtime.completeAll();
+    EXPECT_EQ(ready_times, (std::vector<std::uint64_t>{0, 0}));
+    const auto terminals = port.takeDue(0);
+    ASSERT_EQ(terminals.size(), 2U);
+    EXPECT_EQ(terminals[0].kind, NetworkEventKind::Delivered);
+    EXPECT_EQ(terminals[1].kind, NetworkEventKind::Delivered);
+    EXPECT_TRUE(port.liveTokens().empty());
+}
+
+TEST(HtsimNetworkPortTest, RuntimeBindingRejectsAdapterDropInjection) {
+    DeferredFlowRuntime runtime;
+    HtsimNetworkPortConfig config;
+    config.drop_first = true;
+    HtsimNetworkPort port(config);
+    EXPECT_THROW(
+        port.bindRuntime(runtime, 4, 4, [](std::uint64_t) {}),
+        std::invalid_argument);
+    EXPECT_FALSE(port.hasBoundRuntime());
 }
 
 }  // namespace

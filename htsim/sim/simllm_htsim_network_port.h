@@ -20,6 +20,9 @@ inline constexpr std::uint32_t kHtsimNetworkPortConfigVersion = 1;
 
 struct HtsimNetworkPortConfig {
     std::uint32_t version{kHtsimNetworkPortConfigVersion};
+    // Capacity belongs to the unbound Tier A serializer. A runtime-bound
+    // composition replaces it with the complete native-session capacity so
+    // HTSIM remains the only admission and drop authority.
     std::size_t capacity{1};
     std::uint64_t link_rate_bps{400000000000ULL};
     std::uint64_t data_header_bytes{0};
@@ -76,6 +79,7 @@ public:
     void bindRuntime(
         AtlahsFlowRuntime& runtime,
         std::uint32_t node_count,
+        std::size_t runtime_capacity,
         TerminalReadyHandler terminal_ready);
 
     simllm::rnic::NetworkSubmitResult trySubmit(
@@ -87,6 +91,9 @@ public:
         simllm::rnic::Picoseconds now_ps);
     bool hasPendingPhysicalWork() const noexcept;
     bool hasBoundRuntime() const noexcept { return runtime_ != nullptr; }
+    std::size_t effectiveCapacity() const noexcept {
+        return runtime_capacity_.value_or(config_.capacity);
+    }
 
     const HtsimNetworkPortConfig& config() const noexcept { return config_; }
     const std::vector<HtsimIssuedToken>& issued() const noexcept {
@@ -124,6 +131,7 @@ private:
 
     HtsimNetworkPortConfig config_;
     AtlahsFlowRuntime* runtime_{nullptr};
+    std::optional<std::size_t> runtime_capacity_;
     TerminalReadyHandler terminal_ready_;
     simllm::rnic::NetworkToken next_token_{1};
     bool drop_emitted_{false};

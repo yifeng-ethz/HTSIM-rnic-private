@@ -24,6 +24,15 @@ enum class AtlahsTransportKind {
 
 const char* atlahsTransportKindName(AtlahsTransportKind kind) noexcept;
 
+// Stable session-local identity for a directed transport pair. Queue objects
+// occupy the first 3 * node_count IDs, matching AtlahsWqeLedger. Packet and
+// flow correlation tokens are intentionally excluded from this namespace.
+AtlahsWqeObjectId atlahsTransportObjectId(
+    std::uint32_t node_count,
+    AtlahsTransportKind kind,
+    std::uint32_t source,
+    std::uint32_t destination);
+
 enum class AtlahsWqeQueueKind {
     Send,
     Receive,

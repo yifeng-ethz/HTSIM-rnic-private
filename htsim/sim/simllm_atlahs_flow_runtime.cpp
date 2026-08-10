@@ -14,8 +14,6 @@ using simllm::rnic::CompletionStatus;
 using simllm::rnic::NetworkEvent;
 using simllm::rnic::Picoseconds;
 using simllm::rnic::PostStatus;
-using simllm::rnic::RnicAuthorityAudit;
-using simllm::rnic::RnicAuthoritySelection;
 using simllm::rnic::RnicDevice;
 using simllm::rnic::RnicDeviceAttachments;
 using simllm::rnic::RnicDeviceConfig;
@@ -71,21 +69,6 @@ RnicDeviceConfig defaultSimllmAtlahsDeviceConfig() {
     return config;
 }
 
-RnicAuthorityAudit SimllmAtlahsFlowRuntime::makeAuthorityAudit(
-        const RnicAuthoritySelection& selection) {
-    if (selection.native_session_enabled
-        && selection.legacy_ledger_enabled) {
-        throw std::invalid_argument(
-            "structural and bypass authorities are mutually exclusive");
-    }
-    if (!selection.native_session_enabled
-        && !selection.legacy_ledger_enabled) {
-        throw std::invalid_argument(
-            "one composition authority is required");
-    }
-    return RnicAuthorityAudit(RnicHardwareMode::Structural, selection);
-}
-
 void SimllmAtlahsFlowRuntime::validateConfig(
         const SimllmAtlahsRuntimeConfig& config) {
     if (config.version != kSimllmAtlahsRuntimeConfigVersion) {
@@ -119,6 +102,21 @@ void SimllmAtlahsFlowRuntime::validateConfig(
         throw std::invalid_argument(
             "SimLLM ATLAHS device identity projections disagree");
     }
+    if (config.authority.native_session_enabled
+        && config.authority.legacy_ledger_enabled) {
+        throw std::invalid_argument(
+            "structural and bypass authorities are mutually exclusive");
+    }
+    if (!config.authority.native_session_enabled
+        && !config.authority.legacy_ledger_enabled) {
+        throw std::invalid_argument(
+            "one composition authority is required");
+    }
+    if (!config.authority.native_session_enabled
+        || config.authority.legacy_ledger_enabled) {
+        throw std::invalid_argument(
+            "structural RNIC mode requires only the native authority");
+    }
 }
 
 SimllmAtlahsFlowRuntime::SimllmAtlahsFlowRuntime(
@@ -127,7 +125,6 @@ SimllmAtlahsFlowRuntime::SimllmAtlahsFlowRuntime(
         std::unique_ptr<AtlahsFlowRuntime> network_runtime)
     : EventSource(event_list, "simllm-atlahs-flow-runtime"),
       config_(std::move(config)),
-      authority_audit_(makeAuthorityAudit(config_.authority)),
       network_runtime_(std::move(network_runtime)),
       port_(config_.port) {
     validateConfig(config_);
@@ -137,14 +134,26 @@ SimllmAtlahsFlowRuntime::SimllmAtlahsFlowRuntime(
     }
     validateTransportPolicy(config_.transport_policy, *network_runtime_);
     run_record_.session_id = config_.session_id;
-    run_record_.hardware_mode = authority_audit_.hardwareMode();
-    run_record_.authority = authority_audit_.authority();
+    run_record_.hardware_mode = RnicHardwareMode::Structural;
+    run_record_.authority =
+        simllm::rnic::RnicWqeAuthority::SimllmNativeRnicSession;
     run_record_.transport_policy = config_.transport_policy;
     run_record_.seed = config_.seed;
     run_record_.topology_identity = config_.topology_identity;
     run_record_.htsim_source_revision = config_.htsim_source_revision;
     run_record_.simllm_source_revision = config_.simllm_source_revision;
     refreshRunRecord();
+}
+
+std::size_t SimllmAtlahsFlowRuntime::runtimePortCapacity(
+        std::uint32_t node_count) const {
+    const std::size_t sq_depth = config_.device.work_queue.sq_depth;
+    if (sq_depth == 0
+        || node_count > std::numeric_limits<std::size_t>::max() / sq_depth) {
+        throw std::overflow_error(
+            "SimLLM ATLAHS native session capacity overflows");
+    }
+    return static_cast<std::size_t>(node_count) * sq_depth;
 }
 
 SimllmAtlahsFlowRuntime::~SimllmAtlahsFlowRuntime() {
@@ -174,6 +183,7 @@ void SimllmAtlahsFlowRuntime::setup(
         throw std::invalid_argument(
             "SimLLM ATLAHS endpoint count disagrees with the port");
     }
+    const std::size_t port_capacity = runtimePortCapacity(node_count);
 
     std::vector<std::unique_ptr<RnicDevice>> devices;
     devices.reserve(node_count);
@@ -204,6 +214,7 @@ void SimllmAtlahsFlowRuntime::setup(
         port_.bindRuntime(
             *network_runtime_,
             node_count,
+            port_capacity,
             [this](Picoseconds terminal_at_ps) {
                 if (terminal_at_ps < EventList::now()) {
                     throw std::logic_error(
@@ -219,6 +230,7 @@ void SimllmAtlahsFlowRuntime::setup(
     node_count_ = node_count;
     complete_flow_ = std::move(complete_flow);
     setup_ = true;
+    authority_counters_.native_session_constructed = 1;
     refreshRunRecord();
 }
 
@@ -261,12 +273,17 @@ void SimllmAtlahsFlowRuntime::send(const AtlahsFlowRequest& request) {
     work_request.signaled = true;
 
     RnicDevice& source = *devices_.at(request.source);
+    if (authority_counters_.native_posts
+        == std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error(
+            "SimLLM ATLAHS native-post counter overflows");
+    }
     const auto post = source.postSend(work_request, now_ps);
     if (post.status != PostStatus::Accepted || post.wqe_id == 0) {
         throw std::runtime_error(
             "SimLLM ATLAHS native SQ rejected a GOAL flow");
     }
-    authority_audit_.noteNativePost();
+    ++authority_counters_.native_posts;
     const auto inserted = pending_flows_.emplace(
         request.flow_id,
         PendingFlow{request, request.source, post.wqe_id});
@@ -353,7 +370,11 @@ void SimllmAtlahsFlowRuntime::retireCompletion(
         completion.cqe_sequence,
         completion.cqe_sequence,
         transportKind(),
-        *record.network_token};
+        atlahsTransportObjectId(
+            node_count_,
+            transportKind(),
+            pending->second.request.source,
+            pending->second.request.destination)};
     if (!completion_projections_.emplace(flow_id, projection).second) {
         throw std::logic_error(
             "SimLLM ATLAHS flow completed twice");
@@ -453,6 +474,18 @@ SimllmAtlahsFlowRuntime::completionProjection(
     return projection->second;
 }
 
+AtlahsWqeAuthorityCounters
+SimllmAtlahsFlowRuntime::observedWqeAuthorityCounters() const noexcept {
+    AtlahsWqeAuthorityCounters observed;
+    observed.native_session_constructed =
+        authority_counters_.native_session_constructed;
+    observed.legacy_ledger_constructed =
+        authority_counters_.legacy_ledger_constructed;
+    observed.native_posts = authority_counters_.native_posts;
+    observed.legacy_mutations = authority_counters_.legacy_mutations;
+    return observed;
+}
+
 const simllm::rnic::RnicSessionConfigRecord&
 SimllmAtlahsFlowRuntime::sessionConfigRecord() const {
     if (!session_config_.has_value()) {
@@ -483,10 +516,11 @@ void SimllmAtlahsFlowRuntime::validateQuiescent() const {
         throw std::logic_error(
             "SimLLM ATLAHS session is not physically quiescent");
     }
-    if (authority_audit_.counters().native_posts
+    if (authority_counters_.native_session_constructed != 1
+        || authority_counters_.native_posts
             != run_record_.submitted_flows
-        || authority_audit_.counters().legacy_ledger_constructed != 0
-        || authority_audit_.counters().legacy_mutations != 0) {
+        || authority_counters_.legacy_ledger_constructed != 0
+        || authority_counters_.legacy_mutations != 0) {
         throw std::logic_error(
             "SimLLM ATLAHS authority counters are not exclusive");
     }
@@ -503,7 +537,7 @@ void SimllmAtlahsFlowRuntime::validateQuiescent() const {
 }
 
 void SimllmAtlahsFlowRuntime::refreshRunRecord() {
-    run_record_.authority_counters = authority_audit_.counters();
+    run_record_.authority_counters = authority_counters_;
     run_record_.quiescent = setup_ && !hasPendingPhysicalWork()
                             && run_record_.submitted_flows
                                    == run_record_.completed_flows;

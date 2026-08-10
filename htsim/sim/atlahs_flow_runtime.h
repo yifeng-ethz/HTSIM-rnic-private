@@ -56,6 +56,17 @@ struct AtlahsWqeCompletionProjection {
     AtlahsWqeObjectId transport_object_id{0};
 };
 
+// Read-only lifecycle observations. Implementations report only work that
+// actually committed; mode selection alone never advances these counters.
+struct AtlahsWqeAuthorityCounters {
+    std::uint64_t native_session_constructed{0};
+    std::uint64_t legacy_ledger_constructed{0};
+    std::uint64_t native_posts{0};
+    std::uint64_t legacy_posts{0};
+    std::uint64_t legacy_aborts{0};
+    std::uint64_t legacy_mutations{0};
+};
+
 class AtlahsFlowRuntime {
 public:
     using CompletionHandler = std::function<void(AtlahsFlowId)>;
@@ -80,6 +91,11 @@ public:
     virtual std::optional<AtlahsWqeCompletionProjection>
     completionProjection(AtlahsFlowId) const {
         return std::nullopt;
+    }
+
+    virtual AtlahsWqeAuthorityCounters
+    observedWqeAuthorityCounters() const noexcept {
+        return {};
     }
 
     // True until every physical effect owned by this runtime has drained.

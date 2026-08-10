@@ -146,6 +146,9 @@ public:
     std::optional<AtlahsWqeAuthorityMode> activeWqeAuthority() const noexcept {
         return _active_wqe_authority;
     }
+    const AtlahsWqeAuthorityCounters& authorityCounters() const noexcept {
+        return _authority_counters;
+    }
     void validateWqeQuiescent() const;
 
     // Getter and setter for ComputeEvent
@@ -321,6 +324,8 @@ public:
     void setMultipathFactory(std::function<std::unique_ptr<UecMultipath>()> f) { mp_factory = std::move(f); }
 
 private:
+    void refreshNativeAuthorityCounters();
+
     EventList* _eventlist = nullptr;
     UecRtxTimerScanner* _uecRtxScanner = nullptr;
     FatTreeTopology* _topo = nullptr;
@@ -330,6 +335,7 @@ private:
     std::unique_ptr<AtlahsWqeLedger> _wqe_ledger;
     std::optional<AtlahsWqeAuthorityMode> _active_wqe_authority;
     bool _flow_runtime_setup = false;
+    AtlahsWqeAuthorityCounters _authority_counters;
 
     struct PendingFlow {
         graph_node_properties node;

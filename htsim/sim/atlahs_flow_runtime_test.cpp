@@ -392,6 +392,13 @@ TEST(AtlahsFlowRuntimeTest, SynchronousCompletionPublishesOneWqeBoundary) {
     EXPECT_EQ(wqe.post_time_ps, wqe.dispatch_time_ps);
     EXPECT_EQ(*wqe.completion_time_ps, event_list.now());
     EXPECT_EQ(api.wqeLedger()->completionQueue(1).pending_depth, 0U);
+    const auto& counters = api.authorityCounters();
+    EXPECT_EQ(counters.native_session_constructed, 0U);
+    EXPECT_EQ(counters.legacy_ledger_constructed, 1U);
+    EXPECT_EQ(counters.native_posts, 0U);
+    EXPECT_EQ(counters.legacy_posts, 1U);
+    EXPECT_EQ(counters.legacy_aborts, 0U);
+    EXPECT_EQ(counters.legacy_mutations, 2U);
     EXPECT_NO_THROW(api.validateWqeQuiescent());
 }
 
@@ -414,6 +421,11 @@ TEST(AtlahsFlowRuntimeTest, RuntimeSendThrowAbortsOutstandingWqe) {
     EXPECT_FALSE(api.wqeLedger()->containsFlow(makeAtlahsFlowId(0, 70)));
     EXPECT_TRUE(api.completedFlows().empty());
     EXPECT_EQ(api.completion_count, 0);
+    const auto& counters = api.authorityCounters();
+    EXPECT_EQ(counters.legacy_ledger_constructed, 1U);
+    EXPECT_EQ(counters.legacy_posts, 1U);
+    EXPECT_EQ(counters.legacy_aborts, 1U);
+    EXPECT_EQ(counters.legacy_mutations, 2U);
     EXPECT_NO_THROW(api.validateWqeQuiescent());
 }
 

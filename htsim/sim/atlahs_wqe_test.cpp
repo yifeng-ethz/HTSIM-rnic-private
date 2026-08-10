@@ -38,6 +38,10 @@ TEST(AtlahsWqeLedgerTest, DirectedBindingTablesAreStableForTwoAndFourNodes) {
                 EXPECT_NE(left.source, left.destination);
                 EXPECT_TRUE(object_ids.insert(left.object_id).second);
                 EXPECT_TRUE(pairs.emplace(left.source, left.destination).second);
+                EXPECT_EQ(
+                    left.object_id,
+                    atlahsTransportObjectId(
+                        node_count, kind, left.source, left.destination));
                 EXPECT_EQ(&first.transportBinding(left.source, left.destination),
                           &left);
             }
@@ -45,6 +49,33 @@ TEST(AtlahsWqeLedgerTest, DirectedBindingTablesAreStableForTwoAndFourNodes) {
                       static_cast<std::size_t>(node_count * (node_count - 1)));
         }
     }
+}
+
+TEST(AtlahsWqeLedgerTest, DirectedPairIdentityRejectsInvalidPairs) {
+    EXPECT_EQ(
+        atlahsTransportObjectId(
+            4, AtlahsTransportKind::None, 3, 1),
+        0U);
+    EXPECT_EQ(
+        atlahsTransportObjectId(
+            4, AtlahsTransportKind::DcqcnQueuePair, 3, 1),
+        23U);
+    EXPECT_EQ(
+        atlahsTransportObjectId(
+            4, AtlahsTransportKind::RnicCnLinkPair, 3, 1),
+        23U);
+    EXPECT_THROW(
+        atlahsTransportObjectId(
+            0, AtlahsTransportKind::DcqcnQueuePair, 0, 1),
+        std::invalid_argument);
+    EXPECT_THROW(
+        atlahsTransportObjectId(
+            4, AtlahsTransportKind::DcqcnQueuePair, 1, 1),
+        std::invalid_argument);
+    EXPECT_THROW(
+        atlahsTransportObjectId(
+            4, AtlahsTransportKind::DcqcnQueuePair, 4, 1),
+        std::out_of_range);
 }
 
 TEST(AtlahsWqeLedgerTest, FrozenLifecycleMatrixMatchesExactQueueAccounting) {

@@ -29,6 +29,41 @@ const char* atlahsTransportKindName(AtlahsTransportKind kind) noexcept {
     return "unknown";
 }
 
+AtlahsWqeObjectId atlahsTransportObjectId(
+        std::uint32_t node_count,
+        AtlahsTransportKind kind,
+        std::uint32_t source,
+        std::uint32_t destination) {
+    if (kind == AtlahsTransportKind::None) {
+        return 0;
+    }
+    if (node_count == 0) {
+        throw std::invalid_argument(
+            "ATLAHS transport identity requires at least one node");
+    }
+    if (source >= node_count || destination >= node_count) {
+        throw std::out_of_range(
+            "ATLAHS transport identity endpoint is outside the session");
+    }
+    if (source == destination) {
+        throw std::invalid_argument(
+            "ATLAHS transport identity requires distinct endpoints");
+    }
+
+    const std::uint64_t nodes = node_count;
+    const std::uint64_t base = nodes * 3 + 1;
+    const std::uint64_t destination_ordinal =
+        destination < source ? destination : destination - 1;
+    const std::uint64_t pair_index =
+        static_cast<std::uint64_t>(source) * (nodes - 1)
+        + destination_ordinal;
+    if (pair_index > std::numeric_limits<AtlahsWqeObjectId>::max() - base) {
+        throw std::overflow_error(
+            "ATLAHS directed transport object-id space exhausted");
+    }
+    return checkedObjectId(base + pair_index);
+}
+
 AtlahsWqeLedger::AtlahsWqeLedger(
         std::uint32_t node_count,
         AtlahsTransportKind transport_kind)
@@ -73,10 +108,15 @@ AtlahsWqeLedger::AtlahsWqeLedger(
                 _transport_binding_index.emplace(
                     std::make_pair(source, destination), index);
                 _transport_bindings.push_back(
-                    {checkedObjectId(next_object_id++),
+                    {atlahsTransportObjectId(
+                         _node_count,
+                         _transport_kind,
+                         source,
+                         destination),
                      _transport_kind,
                      source,
                      destination});
+                ++next_object_id;
             }
         }
     }

@@ -155,14 +155,21 @@ TEST(SimllmAtlahsFlowRuntimeTest,
     EXPECT_EQ(api.completedFlows().front().completion_time_ps, 1000U);
     EXPECT_EQ(api.completedFlows().front().rq_id, 0U);
     EXPECT_NE(api.completedFlows().front().wqe_id, 0U);
-    EXPECT_EQ(api.completedFlows().front().transport_object_id, 1U);
+    EXPECT_EQ(api.completedFlows().front().transport_object_id, 0U);
     EXPECT_EQ(api.wqeLedger(), nullptr);
 
-    const auto& counters = native->authorityAudit().counters();
+    const auto& counters = native->authorityCounters();
     EXPECT_EQ(counters.native_session_constructed, 1U);
     EXPECT_EQ(counters.native_posts, 1U);
     EXPECT_EQ(counters.legacy_ledger_constructed, 0U);
     EXPECT_EQ(counters.legacy_mutations, 0U);
+    const auto& api_counters = api.authorityCounters();
+    EXPECT_EQ(api_counters.native_session_constructed, 1U);
+    EXPECT_EQ(api_counters.native_posts, 1U);
+    EXPECT_EQ(api_counters.legacy_ledger_constructed, 0U);
+    EXPECT_EQ(api_counters.legacy_posts, 0U);
+    EXPECT_EQ(api_counters.legacy_aborts, 0U);
+    EXPECT_EQ(api_counters.legacy_mutations, 0U);
     EXPECT_EQ(native->runRecord().submitted_flows, 1U);
     EXPECT_EQ(native->runRecord().completed_flows, 1U);
     EXPECT_TRUE(native->runRecord().quiescent);
@@ -247,6 +254,103 @@ TEST(SimllmAtlahsFlowRuntimeTest,
     EXPECT_EQ(native->networkPort().terminals().size(), 1U);
     EXPECT_EQ(api.wqeLedger(), nullptr);
     EXPECT_NO_THROW(native->validateQuiescent());
+}
+
+TEST(SimllmAtlahsFlowRuntimeTest,
+     RuntimeBoundOverlappingFlowsRetainNativeFifoWithoutAdapterDrops) {
+    EventList event_list;
+    EventList::setEndtime(std::numeric_limits<simtime_picosec>::max());
+    CapturingApi api;
+    api.setEventList(&event_list);
+    api.total_nodes = 4;
+
+    auto network = makeRnicAtlahsRuntime(
+        event_list,
+        RnicProfile::PacketizedManifold,
+        RnicPacketizedManifoldRuntimeConfig{
+            UINT64_C(400000000000),
+            RnicDataPacketizationConfig(4096, 0),
+            0});
+    auto runtime = makeComposedSimllmAtlahsFlowRuntime(
+        event_list, runtimeConfig(0), std::move(network));
+    SimllmAtlahsFlowRuntime* native = runtime.get();
+    api.setFlowRuntime(std::move(runtime));
+    api.Setup();
+
+    std::vector<graph_node_properties> nodes(3, flow());
+    for (std::size_t index = 0; index < nodes.size(); ++index) {
+        nodes[index].offset = static_cast<std::uint32_t>(42 + index);
+        nodes[index].target = static_cast<std::uint32_t>(index);
+        api.Send(
+            SendEvent(
+                3,
+                static_cast<int>(index),
+                nodes[index].size,
+                nodes[index].tag,
+                0),
+            nodes[index]);
+    }
+
+    EXPECT_EQ(native->networkPort().config().capacity, 1U);
+    EXPECT_EQ(native->networkPort().effectiveCapacity(), 256U);
+    ASSERT_EQ(native->networkPort().issued().size(), 3U);
+    for (const auto& issued : native->networkPort().issued()) {
+        EXPECT_EQ(issued.accepted_at_ps, 0U);
+    }
+
+    std::size_t iterations = 0;
+    while (api.runtimeHasPendingPhysicalWork()) {
+        ASSERT_LT(++iterations, 1000U);
+        ASSERT_TRUE(EventList::doNextEvent());
+    }
+
+    ASSERT_EQ(api.completedFlows().size(), 3U);
+    ASSERT_EQ(native->networkPort().terminals().size(), 3U);
+    for (std::size_t index = 0; index < 3; ++index) {
+        EXPECT_EQ(api.completedFlows()[index].sq_post_sequence, index + 1);
+        EXPECT_EQ(api.completedFlows()[index].sq_dispatch_sequence, index + 1);
+        EXPECT_EQ(api.completedFlows()[index].transport_object_id, 0U);
+        EXPECT_EQ(native->networkPort().terminals()[index].kind,
+                  simllm::rnic::NetworkEventKind::Delivered);
+        if (index != 0) {
+            EXPECT_LT(api.completedFlows()[index - 1].completion_time_ps,
+                      api.completedFlows()[index].completion_time_ps);
+        }
+    }
+    EXPECT_NO_THROW(native->validateQuiescent());
+    EXPECT_NO_THROW(api.validateWqeQuiescent());
+}
+
+TEST(SimllmAtlahsFlowRuntimeTest,
+     CompletionProjectionUsesStableDirectedTransportIdentity) {
+    EventList event_list;
+    EventList::setEndtime(std::numeric_limits<simtime_picosec>::max());
+    CapturingApi api;
+    api.setEventList(&event_list);
+    api.total_nodes = 4;
+
+    auto runtime = makeComposedSimllmAtlahsFlowRuntime(
+        event_list,
+        runtimeConfig(0, "rnic-cn"),
+        std::make_unique<CapturingNetworkRuntime>(
+            AtlahsTransportKind::RnicCnLinkPair, true));
+    api.setFlowRuntime(std::move(runtime));
+    api.Setup();
+
+    const graph_node_properties node = flow();
+    api.Send(SendEvent(3, 1, node.size, node.tag, 0), node);
+    while (api.runtimeHasPendingPhysicalWork()) {
+        ASSERT_TRUE(EventList::doNextEvent());
+    }
+
+    ASSERT_EQ(api.completedFlows().size(), 1U);
+    EXPECT_EQ(api.completedFlows().front().transport_kind,
+              AtlahsTransportKind::RnicCnLinkPair);
+    EXPECT_EQ(
+        api.completedFlows().front().transport_object_id,
+        atlahsTransportObjectId(
+            4, AtlahsTransportKind::RnicCnLinkPair, 3, 1));
+    EXPECT_NE(api.completedFlows().front().transport_object_id, 1U);
 }
 
 TEST(SimllmAtlahsFlowRuntimeTest,

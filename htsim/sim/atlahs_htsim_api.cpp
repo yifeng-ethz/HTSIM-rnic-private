@@ -9,6 +9,14 @@
 
 namespace {
 
+void incrementAuthorityCounter(
+        std::uint64_t& counter, const char* message) {
+    if (counter == std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error(message);
+    }
+    ++counter;
+}
+
 AtlahsWqeCompletionProjection legacyProjection(
         const AtlahsWqeRecord& wqe) {
     if (!wqe.cq_post_sequence.has_value()
@@ -58,6 +66,26 @@ void AtlahsHtsimApi::setFlowRuntime(
     }
 }
 
+void AtlahsHtsimApi::refreshNativeAuthorityCounters() {
+    if (_flow_runtime == nullptr
+        || !_active_wqe_authority.has_value()
+        || *_active_wqe_authority
+               != AtlahsWqeAuthorityMode::NativeRuntime) {
+        throw std::logic_error(
+            "ATLAHS native authority observation has no structural runtime");
+    }
+    const AtlahsWqeAuthorityCounters observed =
+        _flow_runtime->observedWqeAuthorityCounters();
+    if (observed.legacy_ledger_constructed != 0
+        || observed.legacy_posts != 0
+        || observed.legacy_aborts != 0
+        || observed.legacy_mutations != 0) {
+        throw std::logic_error(
+            "ATLAHS structural runtime reported legacy lifecycle activity");
+    }
+    _authority_counters = observed;
+}
+
 bool AtlahsHtsimApi::completeFlow(AtlahsFlowId flow_id) {
     auto pending_it = _pending_flows.find(flow_id);
     if (pending_it == _pending_flows.end()) {
@@ -89,6 +117,9 @@ bool AtlahsHtsimApi::completeFlow(AtlahsFlowId flow_id) {
         projection = legacyProjection(_wqe_ledger->complete(
             *pending_it->second.legacy_wqe_id,
             completion_time_ps));
+        incrementAuthorityCounter(
+            _authority_counters.legacy_mutations,
+            "ATLAHS legacy-mutation counter overflows");
     } else {
         if (_wqe_ledger != nullptr
             || pending_it->second.legacy_wqe_id.has_value()) {
@@ -102,6 +133,7 @@ bool AtlahsHtsimApi::completeFlow(AtlahsFlowId flow_id) {
                 "ATLAHS native runtime omitted its completion projection");
         }
         projection = *native_projection;
+        refreshNativeAuthorityCounters();
     }
 
     // Remove before notifying LogSimInterface.  EventFinished is synchronous,
@@ -162,11 +194,45 @@ void AtlahsHtsimApi::validateWqeQuiescent() const {
             throw std::logic_error(
                 "ATLAHS structural runtime constructed the legacy WQE ledger");
         }
+        const AtlahsWqeAuthorityCounters observed =
+            _flow_runtime->observedWqeAuthorityCounters();
+        if (observed.native_session_constructed != 1
+            || observed.legacy_ledger_constructed != 0
+            || observed.legacy_posts != 0
+            || observed.legacy_aborts != 0
+            || observed.legacy_mutations != 0
+            || observed.native_posts
+                   != _completed_flows.size()
+            || _authority_counters.native_session_constructed
+                   != observed.native_session_constructed
+            || _authority_counters.legacy_ledger_constructed
+                   != observed.legacy_ledger_constructed
+            || _authority_counters.native_posts != observed.native_posts
+            || _authority_counters.legacy_posts != observed.legacy_posts
+            || _authority_counters.legacy_aborts != observed.legacy_aborts
+            || _authority_counters.legacy_mutations
+                   != observed.legacy_mutations) {
+            throw std::logic_error(
+                "ATLAHS structural authority counters are not observed");
+        }
         return;
     }
     if (_wqe_ledger == nullptr) {
         throw std::logic_error(
             "ATLAHS bypass runtime has no WQE ledger at quiescence");
+    }
+    if (_authority_counters.native_session_constructed != 0
+        || _authority_counters.native_posts != 0
+        || _authority_counters.legacy_ledger_constructed != 1
+        || _authority_counters.legacy_posts
+               != _completed_flows.size()
+                      + _authority_counters.legacy_aborts
+        || _authority_counters.legacy_mutations
+               != _authority_counters.legacy_posts
+                      + _completed_flows.size()
+                      + _authority_counters.legacy_aborts) {
+        throw std::logic_error(
+            "ATLAHS legacy authority counters are not observed");
     }
     _wqe_ledger->validateQuiescent();
     if (_wqe_ledger->completedCount() != _completed_flows.size()) {
@@ -234,6 +300,12 @@ void AtlahsHtsimApi::Send(const SendEvent &event, graph_node_properties elem) {
                 request.destination,
                 request.payload_bytes,
                 request.start_time_ps);
+            incrementAuthorityCounter(
+                _authority_counters.legacy_posts,
+                "ATLAHS legacy-post counter overflows");
+            incrementAuthorityCounter(
+                _authority_counters.legacy_mutations,
+                "ATLAHS legacy-mutation counter overflows");
         } else if (_wqe_ledger != nullptr) {
             throw std::logic_error(
                 "ATLAHS structural send reached the legacy WQE ledger");
@@ -247,12 +319,27 @@ void AtlahsHtsimApi::Send(const SendEvent &event, graph_node_properties elem) {
                     "duplicate ATLAHS GOAL host/offset flow ID");
             }
             _flow_runtime->send(request);
+            if (*_active_wqe_authority
+                == AtlahsWqeAuthorityMode::NativeRuntime) {
+                refreshNativeAuthorityCounters();
+            }
         } catch (...) {
             _pending_flows.erase(request.flow_id);
+            if (_active_wqe_authority.has_value()
+                && *_active_wqe_authority
+                       == AtlahsWqeAuthorityMode::NativeRuntime) {
+                refreshNativeAuthorityCounters();
+            }
             if (_wqe_ledger != nullptr && legacy_wqe_id.has_value()
                 && _wqe_ledger->contains(*legacy_wqe_id)
                 && !_wqe_ledger->wqe(*legacy_wqe_id).completed()) {
                 _wqe_ledger->abort(*legacy_wqe_id);
+                incrementAuthorityCounter(
+                    _authority_counters.legacy_aborts,
+                    "ATLAHS legacy-abort counter overflows");
+                incrementAuthorityCounter(
+                    _authority_counters.legacy_mutations,
+                    "ATLAHS legacy-mutation counter overflows");
             }
             throw;
         }
@@ -374,15 +461,32 @@ void AtlahsHtsimApi::Setup() {
                 static_cast<std::uint32_t>(total_nodes),
                 _flow_runtime->transportKind());
         }
-        try {
-            _flow_runtime->setup(
-                static_cast<std::uint32_t>(total_nodes),
-                [this](AtlahsFlowId flow_id) { completeFlow(flow_id); });
-            _wqe_ledger = std::move(candidate_ledger);
-            _active_wqe_authority = authority;
-            _flow_runtime_setup = true;
-        } catch (...) {
-            throw;
+        _flow_runtime->setup(
+            static_cast<std::uint32_t>(total_nodes),
+            [this](AtlahsFlowId flow_id) { completeFlow(flow_id); });
+
+        AtlahsWqeAuthorityCounters observed;
+        if (authority == AtlahsWqeAuthorityMode::NativeRuntime) {
+            observed = _flow_runtime->observedWqeAuthorityCounters();
+            if (observed.native_session_constructed != 1
+                || observed.legacy_ledger_constructed != 0
+                || observed.legacy_posts != 0
+                || observed.legacy_aborts != 0
+                || observed.legacy_mutations != 0) {
+                throw std::logic_error(
+                    "ATLAHS structural runtime did not report construction");
+            }
+        }
+
+        _wqe_ledger = std::move(candidate_ledger);
+        _active_wqe_authority = authority;
+        _flow_runtime_setup = true;
+        if (authority == AtlahsWqeAuthorityMode::LegacyLedger) {
+            incrementAuthorityCounter(
+                _authority_counters.legacy_ledger_constructed,
+                "ATLAHS legacy-ledger counter overflows");
+        } else {
+            _authority_counters = observed;
         }
         return;
     }

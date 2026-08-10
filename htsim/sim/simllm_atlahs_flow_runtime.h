@@ -86,17 +86,20 @@ public:
     }
     std::optional<AtlahsWqeCompletionProjection> completionProjection(
         AtlahsFlowId flow_id) const override;
+    AtlahsWqeAuthorityCounters
+    observedWqeAuthorityCounters() const noexcept override;
 
     bool isSetup() const noexcept { return setup_; }
     std::uint32_t nodeCount() const noexcept { return node_count_; }
-    const simllm::rnic::RnicAuthorityAudit& authorityAudit() const noexcept {
-        return authority_audit_;
+    const simllm::rnic::RnicAuthorityCounters& authorityCounters() const noexcept {
+        return authority_counters_;
     }
     const simllm::rnic::RnicSessionConfigRecord& sessionConfigRecord() const;
     const SimllmAtlahsRunRecord& runRecord() const noexcept {
         return run_record_;
     }
     const HtsimNetworkPort& networkPort() const noexcept { return port_; }
+    AtlahsFlowRuntime& networkRuntime() noexcept { return *network_runtime_; }
     const AtlahsFlowRuntime* networkRuntime() const noexcept {
         return network_runtime_.get();
     }
@@ -110,9 +113,8 @@ private:
         simllm::rnic::WqeId wqe_id{0};
     };
 
-    static simllm::rnic::RnicAuthorityAudit makeAuthorityAudit(
-        const simllm::rnic::RnicAuthoritySelection& selection);
     static void validateConfig(const SimllmAtlahsRuntimeConfig& config);
+    std::size_t runtimePortCapacity(std::uint32_t node_count) const;
     void doNextEvent() override;
     bool isTraffic() override { return true; }
     void driveAt(simllm::rnic::Picoseconds now_ps);
@@ -125,7 +127,7 @@ private:
     void refreshRunRecord();
 
     SimllmAtlahsRuntimeConfig config_;
-    simllm::rnic::RnicAuthorityAudit authority_audit_;
+    simllm::rnic::RnicAuthorityCounters authority_counters_;
     std::unique_ptr<AtlahsFlowRuntime> network_runtime_;
     HtsimNetworkPort port_;
     CompletionHandler complete_flow_;

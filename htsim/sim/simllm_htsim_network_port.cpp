@@ -36,6 +36,7 @@ HtsimNetworkPort::HtsimNetworkPort(HtsimNetworkPortConfig config)
 void HtsimNetworkPort::bindRuntime(
         AtlahsFlowRuntime& runtime,
         std::uint32_t node_count,
+        std::size_t runtime_capacity,
         TerminalReadyHandler terminal_ready) {
     if (runtime_ != nullptr || !live_.empty() || !issued_.empty()) {
         throw std::logic_error(
@@ -45,12 +46,21 @@ void HtsimNetworkPort::bindRuntime(
         throw std::invalid_argument(
             "HTSIM NetworkPort runtime requires at least one endpoint");
     }
+    if (runtime_capacity == 0) {
+        throw std::invalid_argument(
+            "HTSIM NetworkPort runtime capacity must be positive");
+    }
+    if (config_.drop_first) {
+        throw std::invalid_argument(
+            "runtime-bound HTSIM drops must originate in the runtime");
+    }
     if (!terminal_ready) {
         throw std::invalid_argument(
             "HTSIM NetworkPort runtime requires a terminal-ready handler");
     }
 
     runtime_ = &runtime;
+    runtime_capacity_ = runtime_capacity;
     terminal_ready_ = std::move(terminal_ready);
     try {
         runtime_->setup(
@@ -58,6 +68,7 @@ void HtsimNetworkPort::bindRuntime(
             [this](AtlahsFlowId flow_id) { runtimeCompleted(flow_id); });
     } catch (...) {
         runtime_ = nullptr;
+        runtime_capacity_.reset();
         terminal_ready_ = nullptr;
         throw;
     }
@@ -165,13 +176,12 @@ NetworkSubmitResult HtsimNetworkPort::trySubmit(
         const simllm::rnic::NetworkTxDescriptor& descriptor,
         Picoseconds now_ps) {
     validateDescriptor(descriptor, now_ps);
-    if (live_.size() >= config_.capacity) {
+    if (live_.size() >= effectiveCapacity()) {
+        if (runtime_ != nullptr) {
+            throw std::logic_error(
+                "runtime-bound HTSIM port exceeded native session capacity");
+        }
         if (scheduled_.empty()) {
-            if (runtime_ != nullptr) {
-                return NetworkSubmitResult::rejected(
-                    DropLocation::TxPort,
-                    DropReason::PolicyRejected);
-            }
             throw std::logic_error(
                 "HTSIM NetworkPort has no future capacity event");
         }
@@ -343,7 +353,9 @@ std::vector<NetworkEvent> HtsimNetworkPort::takeDue(Picoseconds now_ps) {
         event.token = token;
         event.wqe_id = live->second.descriptor.wqe_id;
         event.event_time_ps = terminal_at_ps;
-        const bool emit_drop = config_.drop_first && !drop_emitted_;
+        const bool emit_drop = runtime_ == nullptr
+                               && config_.drop_first
+                               && !drop_emitted_;
         if (emit_drop) {
             event.kind = NetworkEventKind::Dropped;
             event.drop_location = DropLocation::Fabric;

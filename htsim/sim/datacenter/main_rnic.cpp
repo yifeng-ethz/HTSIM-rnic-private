@@ -15,7 +15,35 @@
 #include "rnic_atlahs_cli.h"
 #include "rnic_atlahs_driver.h"
 
+#ifdef HTSIM_ENABLE_SIMLLM_RNIC
+#include "simllm_atlahs_flow_runtime.h"
+#endif
+
 namespace {
+
+#ifdef HTSIM_ENABLE_SIMLLM_RNIC
+htsim::simllm_rnic::SimllmAtlahsRuntimeConfig structuralRuntimeConfig(
+        const RnicAtlahsCliOptions& options,
+        const AtlahsHtsimApi::GoalLayout& goal_layout) {
+    htsim::simllm_rnic::SimllmAtlahsRuntimeConfig config;
+    config.session_id = "htsim-rnic-goal";
+    config.transport_policy = rnicProfileName(options.profile);
+    config.seed = options.profile == RnicProfile::CollectiveNetwork
+                      ? options.collective.global_prbs_seed
+                      : 0;
+    config.topology_identity =
+        std::string(rnicProfileName(options.profile)) + ":nodes="
+        + std::to_string(goal_layout.physical_node_count);
+    config.htsim_source_revision = HTSIM_COMPOSED_SOURCE_REVISION;
+    config.simllm_source_revision = SIMLLM_COMPOSED_SOURCE_REVISION;
+    config.device =
+        htsim::simllm_rnic::defaultSimllmAtlahsDeviceConfig();
+    config.port.endpoint_count = goal_layout.physical_node_count;
+    config.port.link_rate_bps = options.link_capacity_bps;
+    config.port.traffic_class = 3;
+    return config;
+}
+#endif
 
 std::optional<AtlahsHtsimApi::GoalRankMapping> goalRankMappingOverride(
     RnicAtlahsGoalRankMapping mapping) {
@@ -72,7 +100,26 @@ void writeCompletionCsv(const std::string& path,
 }
 
 void validateRuntimeQuiescence(AtlahsHtsimApi& api) {
-    auto* assembly = dynamic_cast<RnicAtlahsRuntimeAssembly*>(api.getFlowRuntime());
+    AtlahsFlowRuntime* runtime = api.getFlowRuntime();
+#ifdef HTSIM_ENABLE_SIMLLM_RNIC
+    auto* structural =
+        dynamic_cast<htsim::simllm_rnic::SimllmAtlahsFlowRuntime*>(runtime);
+    if (structural != nullptr) {
+        structural->validateQuiescent();
+        const auto& record = structural->runRecord();
+        std::cout << "[RNIC manifest] hardware_mode=structural"
+                  << " wqe_authority=simllm-native-rnic-session"
+                  << " hardware_config_sha256="
+                  << record.hardware_config_sha256
+                  << " native_posts="
+                  << record.authority_counters.native_posts << '\n';
+        runtime = &structural->networkRuntime();
+    } else {
+        std::cout << "[RNIC manifest] hardware_mode=bypass"
+                  << " wqe_authority=atlahs-wqe-ledger\n";
+    }
+#endif
+    auto* assembly = dynamic_cast<RnicAtlahsRuntimeAssembly*>(runtime);
     if (assembly == nullptr) {
         throw std::logic_error("RNIC ATLAHS runtime is not an assembled profile");
     }
@@ -141,7 +188,19 @@ int main(int argc, char* argv[]) {
                 api.setTopologyCfg(session->topologyConfig());
                 api.setTopology(session->physicalTopology());
                 std::cout << renderRnicAtlahsModelManifest(options, goal_layout, *session);
+#ifdef HTSIM_ENABLE_SIMLLM_RNIC
+                if (options.profile != RnicProfile::FluidManifold) {
+                    api.setFlowRuntime(
+                        htsim::simllm_rnic::makeComposedSimllmAtlahsFlowRuntime(
+                            event_list,
+                            structuralRuntimeConfig(options, goal_layout),
+                            std::move(session)));
+                } else {
+                    api.setFlowRuntime(std::move(session));
+                }
+#else
                 api.setFlowRuntime(std::move(session));
+#endif
             });
         if (result != 0) {
             throw std::runtime_error("ATLAHS GOAL execution returned " + std::to_string(result));
