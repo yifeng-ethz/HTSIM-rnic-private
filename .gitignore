@@ -26,3 +26,7 @@ sim_progress.log
 core_*
 htsim/sim/datacenter/core_*
 *.err
+
+# Local agent rule files stay uncommitted on purpose
+/AGENTS.md
+/CLAUDE.md
