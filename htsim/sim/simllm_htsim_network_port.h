@@ -4,11 +4,13 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
 #include <vector>
 
+#include "atlahs_flow_runtime.h"
 #include "rnic_wire_serialization.h"
 #include "simllm/rnic/network_port.h"
 
@@ -62,7 +64,19 @@ struct HtsimTerminalToken {
 // queues, QPs, PCIe, DMA and scheduling remain in the SimLLM device.
 class HtsimNetworkPort final : public simllm::rnic::NetworkPort {
 public:
+    using TerminalReadyHandler =
+        std::function<void(simllm::rnic::Picoseconds)>;
+
     explicit HtsimNetworkPort(HtsimNetworkPortConfig config);
+
+    // Bind the compatibility port to the htsim transport and fabric runtime.
+    // The runtime remains externally owned and must outlive this port. Its
+    // completion callback is reduced to one ABI-v1 terminal event without
+    // exposing any native queue or QP object.
+    void bindRuntime(
+        AtlahsFlowRuntime& runtime,
+        std::uint32_t node_count,
+        TerminalReadyHandler terminal_ready);
 
     simllm::rnic::NetworkSubmitResult trySubmit(
         const simllm::rnic::NetworkTxDescriptor& descriptor,
@@ -72,6 +86,7 @@ public:
     std::vector<simllm::rnic::NetworkEvent> takeDue(
         simllm::rnic::Picoseconds now_ps);
     bool hasPendingPhysicalWork() const noexcept;
+    bool hasBoundRuntime() const noexcept { return runtime_ != nullptr; }
 
     const HtsimNetworkPortConfig& config() const noexcept { return config_; }
     const std::vector<HtsimIssuedToken>& issued() const noexcept {
@@ -89,6 +104,7 @@ private:
         simllm::rnic::Picoseconds accepted_at_ps{0};
         simllm::rnic::Picoseconds port_tx_at_ps{0};
         simllm::rnic::Picoseconds terminal_at_ps{0};
+        bool terminal_queued{false};
     };
 
     static void validateConfig(const HtsimNetworkPortConfig& config);
@@ -98,14 +114,25 @@ private:
     simllm::rnic::Picoseconds terminalTime(
         std::uint64_t payload_bytes,
         simllm::rnic::Picoseconds now_ps) const;
+    void runtimeCompleted(AtlahsFlowId flow_id);
+    void validateTerminal(
+        const simllm::rnic::NetworkEvent& event,
+        const LiveToken& live) const;
+    void rollbackSubmission(
+        simllm::rnic::NetworkToken token,
+        simllm::rnic::FlowId flow_id) noexcept;
 
     HtsimNetworkPortConfig config_;
+    AtlahsFlowRuntime* runtime_{nullptr};
+    TerminalReadyHandler terminal_ready_;
     simllm::rnic::NetworkToken next_token_{1};
     bool drop_emitted_{false};
     std::map<simllm::rnic::NetworkToken, LiveToken> live_;
     std::multimap<simllm::rnic::Picoseconds,
                   simllm::rnic::NetworkToken> scheduled_;
     std::set<simllm::rnic::FlowId> seen_flows_;
+    std::map<simllm::rnic::FlowId, simllm::rnic::NetworkToken>
+        token_by_flow_;
     std::map<simllm::rnic::NetworkToken, std::uint32_t> token_sources_;
     std::vector<HtsimIssuedToken> issued_;
     std::vector<HtsimTerminalToken> terminals_;

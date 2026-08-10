@@ -67,7 +67,8 @@ class SimllmAtlahsFlowRuntime final : public AtlahsFlowRuntime,
 public:
     SimllmAtlahsFlowRuntime(
         EventList& event_list,
-        SimllmAtlahsRuntimeConfig config);
+        SimllmAtlahsRuntimeConfig config,
+        std::unique_ptr<AtlahsFlowRuntime> network_runtime);
     ~SimllmAtlahsFlowRuntime() override;
 
     SimllmAtlahsFlowRuntime(const SimllmAtlahsFlowRuntime&) = delete;
@@ -96,6 +97,9 @@ public:
         return run_record_;
     }
     const HtsimNetworkPort& networkPort() const noexcept { return port_; }
+    const AtlahsFlowRuntime* networkRuntime() const noexcept {
+        return network_runtime_.get();
+    }
     const simllm::rnic::RnicDevice& device(std::uint32_t endpoint) const;
     void validateQuiescent() const;
 
@@ -116,11 +120,13 @@ private:
         std::uint32_t endpoint,
         const simllm::rnic::CompletionEntry& completion);
     std::optional<simllm::rnic::Picoseconds> nextEventTime() const;
+    void scheduleAt(simllm::rnic::Picoseconds at_ps);
     void reschedule();
     void refreshRunRecord();
 
     SimllmAtlahsRuntimeConfig config_;
     simllm::rnic::RnicAuthorityAudit authority_audit_;
+    std::unique_ptr<AtlahsFlowRuntime> network_runtime_;
     HtsimNetworkPort port_;
     CompletionHandler complete_flow_;
     bool setup_{false};
@@ -138,6 +144,12 @@ private:
     std::optional<EventList::Handle> event_handle_;
     std::optional<simllm::rnic::Picoseconds> scheduled_at_ps_;
 };
+
+std::unique_ptr<SimllmAtlahsFlowRuntime>
+makeComposedSimllmAtlahsFlowRuntime(
+    EventList& event_list,
+    SimllmAtlahsRuntimeConfig config,
+    std::unique_ptr<AtlahsFlowRuntime> network_runtime);
 
 }  // namespace htsim::simllm_rnic
 

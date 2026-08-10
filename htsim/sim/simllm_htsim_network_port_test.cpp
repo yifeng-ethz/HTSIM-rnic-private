@@ -3,8 +3,10 @@
 
 #include <cstdint>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
+#include "eventlist.h"
 #include "simllm_htsim_network_port.h"
 
 namespace {
@@ -16,6 +18,25 @@ using simllm::rnic::DropReason;
 using simllm::rnic::NetworkEventKind;
 using simllm::rnic::NetworkSubmitStatus;
 using simllm::rnic::NetworkTxDescriptor;
+
+class ThrowingFlowRuntime final : public AtlahsFlowRuntime {
+public:
+    void setup(
+            std::uint32_t,
+            CompletionHandler complete_flow) override {
+        completion_ = std::move(complete_flow);
+    }
+
+    void send(const AtlahsFlowRequest& request) override {
+        requests.push_back(request);
+        throw std::runtime_error("injected htsim admission failure");
+    }
+
+    bool hasPendingPhysicalWork() const noexcept override { return false; }
+
+    CompletionHandler completion_;
+    std::vector<AtlahsFlowRequest> requests;
+};
 
 NetworkTxDescriptor descriptor(
         std::uint64_t wqe_id, std::uint64_t flow_id) {
@@ -132,6 +153,27 @@ TEST(HtsimNetworkPortTest, RejectsDeferredPacketAndControlVocabulary) {
     NetworkTxDescriptor wrong_class = descriptor(2, 402);
     wrong_class.traffic_class = 4;
     EXPECT_THROW(port.trySubmit(wrong_class, 0), std::invalid_argument);
+}
+
+TEST(HtsimNetworkPortTest,
+     RuntimeSendFailureUnwindsEveryProvisionalCorrelation) {
+    EventList event_list;
+    ThrowingFlowRuntime runtime;
+    HtsimNetworkPortConfig config;
+    config.endpoint_count = 4;
+    HtsimNetworkPort port(config);
+    port.bindRuntime(runtime, 4, [](std::uint64_t) {});
+
+    EXPECT_THROW(port.trySubmit(descriptor(1, 501), 0), std::runtime_error);
+    EXPECT_TRUE(port.issued().empty());
+    EXPECT_TRUE(port.terminals().empty());
+    EXPECT_TRUE(port.liveTokens().empty());
+    EXPECT_FALSE(port.hasPendingPhysicalWork());
+
+    EXPECT_THROW(port.trySubmit(descriptor(1, 501), 0), std::runtime_error);
+    EXPECT_EQ(runtime.requests.size(), 2U);
+    EXPECT_TRUE(port.issued().empty());
+    EXPECT_TRUE(port.liveTokens().empty());
 }
 
 }  // namespace

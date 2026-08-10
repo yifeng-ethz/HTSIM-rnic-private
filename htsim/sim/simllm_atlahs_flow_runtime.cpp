@@ -32,6 +32,20 @@ bool blank(const std::string& value) {
                });
 }
 
+void validateTransportPolicy(
+        const std::string& policy,
+        const AtlahsFlowRuntime& runtime) {
+    const AtlahsTransportKind transport = runtime.transportKind();
+    if ((policy == "rnic-nn" && transport != AtlahsTransportKind::None)
+        || (policy == "rnic-cn"
+            && transport != AtlahsTransportKind::RnicCnLinkPair)
+        || (policy == "dcqcn"
+            && transport != AtlahsTransportKind::DcqcnQueuePair)) {
+        throw std::invalid_argument(
+            "SimLLM ATLAHS policy disagrees with the htsim runtime");
+    }
+}
+
 }  // namespace
 
 RnicDeviceConfig defaultSimllmAtlahsDeviceConfig() {
@@ -108,12 +122,20 @@ void SimllmAtlahsFlowRuntime::validateConfig(
 }
 
 SimllmAtlahsFlowRuntime::SimllmAtlahsFlowRuntime(
-        EventList& event_list, SimllmAtlahsRuntimeConfig config)
+        EventList& event_list,
+        SimllmAtlahsRuntimeConfig config,
+        std::unique_ptr<AtlahsFlowRuntime> network_runtime)
     : EventSource(event_list, "simllm-atlahs-flow-runtime"),
       config_(std::move(config)),
       authority_audit_(makeAuthorityAudit(config_.authority)),
+      network_runtime_(std::move(network_runtime)),
       port_(config_.port) {
     validateConfig(config_);
+    if (network_runtime_ == nullptr) {
+        throw std::invalid_argument(
+            "SimLLM ATLAHS composition requires an htsim runtime");
+    }
+    validateTransportPolicy(config_.transport_policy, *network_runtime_);
     run_record_.session_id = config_.session_id;
     run_record_.hardware_mode = authority_audit_.hardwareMode();
     run_record_.authority = authority_audit_.authority();
@@ -129,6 +151,9 @@ SimllmAtlahsFlowRuntime::~SimllmAtlahsFlowRuntime() {
     if (event_handle_.has_value()) {
         EventList::cancelPendingSourceByHandle(*this, *event_handle_);
     }
+    // The inner runtime owns EventList sources whose completion callback
+    // targets the port. Destroy it while the port is still alive.
+    network_runtime_.reset();
 }
 
 void SimllmAtlahsFlowRuntime::setup(
@@ -173,6 +198,19 @@ void SimllmAtlahsFlowRuntime::setup(
                 "SimLLM ATLAHS endpoint hardware hashes disagree");
         }
         devices.push_back(std::move(device));
+    }
+
+    if (network_runtime_ != nullptr) {
+        port_.bindRuntime(
+            *network_runtime_,
+            node_count,
+            [this](Picoseconds terminal_at_ps) {
+                if (terminal_at_ps < EventList::now()) {
+                    throw std::logic_error(
+                        "HTSIM terminal-ready callback moved backwards");
+                }
+                scheduleAt(terminal_at_ps);
+            });
     }
 
     devices_ = std::move(devices);
@@ -355,14 +393,30 @@ void SimllmAtlahsFlowRuntime::reschedule() {
         throw std::logic_error(
             "SimLLM ATLAHS event schedule moved backwards");
     }
-    if (scheduled_at_ps_ == next) {
+    scheduleAt(*next);
+}
+
+void SimllmAtlahsFlowRuntime::scheduleAt(Picoseconds at_ps) {
+    if (at_ps < EventList::now()) {
+        throw std::logic_error(
+            "SimLLM ATLAHS event schedule moved backwards");
+    }
+    if (scheduled_at_ps_.has_value()
+        && *scheduled_at_ps_ <= at_ps) {
         return;
     }
     if (event_handle_.has_value()) {
         EventList::cancelPendingSourceByHandle(*this, *event_handle_);
     }
-    event_handle_ = EventList::sourceIsPendingGetHandle(*this, *next);
-    scheduled_at_ps_ = next;
+    const EventList::Handle handle =
+        EventList::sourceIsPendingGetHandle(*this, at_ps);
+    if (handle == EventList::nullHandle()) {
+        event_handle_.reset();
+        scheduled_at_ps_.reset();
+        return;
+    }
+    event_handle_ = handle;
+    scheduled_at_ps_ = at_ps;
 }
 
 bool SimllmAtlahsFlowRuntime::hasPendingPhysicalWork() const noexcept {
@@ -377,6 +431,9 @@ bool SimllmAtlahsFlowRuntime::hasPendingPhysicalWork() const noexcept {
 
 AtlahsTransportKind
 SimllmAtlahsFlowRuntime::transportKind() const noexcept {
+    if (network_runtime_ != nullptr) {
+        return network_runtime_->transportKind();
+    }
     if (config_.transport_policy == "rnic-cn") {
         return AtlahsTransportKind::RnicCnLinkPair;
     }
@@ -450,6 +507,17 @@ void SimllmAtlahsFlowRuntime::refreshRunRecord() {
     run_record_.quiescent = setup_ && !hasPendingPhysicalWork()
                             && run_record_.submitted_flows
                                    == run_record_.completed_flows;
+}
+
+std::unique_ptr<SimllmAtlahsFlowRuntime>
+makeComposedSimllmAtlahsFlowRuntime(
+        EventList& event_list,
+        SimllmAtlahsRuntimeConfig config,
+        std::unique_ptr<AtlahsFlowRuntime> network_runtime) {
+    return std::make_unique<SimllmAtlahsFlowRuntime>(
+        event_list,
+        std::move(config),
+        std::move(network_runtime));
 }
 
 }  // namespace htsim::simllm_rnic

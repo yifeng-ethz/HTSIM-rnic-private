@@ -5,6 +5,8 @@
 #include <stdexcept>
 #include <utility>
 
+#include "eventlist.h"
+
 namespace htsim::simllm_rnic {
 namespace {
 
@@ -29,6 +31,36 @@ Picoseconds checkedAdd(
 HtsimNetworkPort::HtsimNetworkPort(HtsimNetworkPortConfig config)
     : config_(std::move(config)) {
     validateConfig(config_);
+}
+
+void HtsimNetworkPort::bindRuntime(
+        AtlahsFlowRuntime& runtime,
+        std::uint32_t node_count,
+        TerminalReadyHandler terminal_ready) {
+    if (runtime_ != nullptr || !live_.empty() || !issued_.empty()) {
+        throw std::logic_error(
+            "HTSIM NetworkPort runtime binding is immutable");
+    }
+    if (node_count == 0) {
+        throw std::invalid_argument(
+            "HTSIM NetworkPort runtime requires at least one endpoint");
+    }
+    if (!terminal_ready) {
+        throw std::invalid_argument(
+            "HTSIM NetworkPort runtime requires a terminal-ready handler");
+    }
+
+    runtime_ = &runtime;
+    terminal_ready_ = std::move(terminal_ready);
+    try {
+        runtime_->setup(
+            node_count,
+            [this](AtlahsFlowId flow_id) { runtimeCompleted(flow_id); });
+    } catch (...) {
+        runtime_ = nullptr;
+        terminal_ready_ = nullptr;
+        throw;
+    }
 }
 
 void HtsimNetworkPort::validateConfig(
@@ -134,7 +166,16 @@ NetworkSubmitResult HtsimNetworkPort::trySubmit(
         Picoseconds now_ps) {
     validateDescriptor(descriptor, now_ps);
     if (live_.size() >= config_.capacity) {
-        if (scheduled_.empty() || scheduled_.begin()->first <= now_ps) {
+        if (scheduled_.empty()) {
+            if (runtime_ != nullptr) {
+                return NetworkSubmitResult::rejected(
+                    DropLocation::TxPort,
+                    DropReason::PolicyRejected);
+            }
+            throw std::logic_error(
+                "HTSIM NetworkPort has no future capacity event");
+        }
+        if (scheduled_.begin()->first <= now_ps) {
             throw std::logic_error(
                 "HTSIM NetworkPort due terminals must be drained before retry");
         }
@@ -147,27 +188,24 @@ NetworkSubmitResult HtsimNetworkPort::trySubmit(
     }
 
     const NetworkToken token = next_token_;
-    const Picoseconds terminal_at_ps = terminalTime(
-        descriptor.payload_bytes, now_ps);
+    const Picoseconds terminal_at_ps = runtime_ == nullptr
+        ? terminalTime(descriptor.payload_bytes, now_ps)
+        : 0;
     const LiveToken live{
         descriptor,
         now_ps,
         now_ps,
-        terminal_at_ps};
+        terminal_at_ps,
+        runtime_ == nullptr};
 
     const auto live_inserted = live_.emplace(token, live);
     if (!live_inserted.second) {
         throw std::logic_error("HTSIM NetworkPort recycled a live token");
     }
-    auto scheduled = scheduled_.end();
-    bool flow_inserted = false;
-    bool source_inserted = false;
     try {
-        scheduled = scheduled_.emplace(terminal_at_ps, token);
-        flow_inserted = seen_flows_.insert(descriptor.flow_id).second;
-        source_inserted = token_sources_.emplace(
-            token, descriptor.source).second;
-        if (!flow_inserted || !source_inserted) {
+        if (!seen_flows_.insert(descriptor.flow_id).second
+            || !token_by_flow_.emplace(descriptor.flow_id, token).second
+            || !token_sources_.emplace(token, descriptor.source).second) {
             throw std::logic_error(
                 "HTSIM NetworkPort correlation insertion failed");
         }
@@ -182,22 +220,104 @@ NetworkSubmitResult HtsimNetworkPort::trySubmit(
             now_ps,
             now_ps,
             descriptor.payload_bytes});
+        if (runtime_ == nullptr) {
+            scheduled_.emplace(terminal_at_ps, token);
+        } else {
+            AtlahsFlowRequest request;
+            request.flow_id = descriptor.flow_id;
+            request.source = descriptor.source;
+            request.destination = descriptor.destination;
+            request.payload_bytes = descriptor.payload_bytes;
+            request.start_time_ps = now_ps;
+            request.tag = descriptor.flow_tag;
+            runtime_->send(request);
+        }
     } catch (...) {
-        if (scheduled != scheduled_.end()) {
-            scheduled_.erase(scheduled);
-        }
-        if (flow_inserted) {
-            seen_flows_.erase(descriptor.flow_id);
-        }
-        if (source_inserted) {
-            token_sources_.erase(token);
-        }
-        live_.erase(token);
+        rollbackSubmission(token, descriptor.flow_id);
         throw;
     }
 
     ++next_token_;
     return NetworkSubmitResult::accepted(token);
+}
+
+void HtsimNetworkPort::runtimeCompleted(AtlahsFlowId flow_id) {
+    if (runtime_ == nullptr) {
+        throw std::logic_error(
+            "HTSIM NetworkPort received a completion without a runtime");
+    }
+    const auto token = token_by_flow_.find(flow_id);
+    if (token == token_by_flow_.end()) {
+        throw std::invalid_argument(
+            "HTSIM runtime completed an unknown flow token");
+    }
+    const auto live = live_.find(token->second);
+    if (live == live_.end() || live->second.terminal_queued) {
+        throw std::invalid_argument(
+            "HTSIM runtime completed a flow token more than once");
+    }
+    const Picoseconds now_ps = EventList::now();
+    if (now_ps < live->second.accepted_at_ps) {
+        throw std::logic_error(
+            "HTSIM runtime completed a flow before admission");
+    }
+
+    scheduled_.emplace(now_ps, token->second);
+    live->second.terminal_at_ps = now_ps;
+    live->second.terminal_queued = true;
+    terminal_ready_(now_ps);
+}
+
+void HtsimNetworkPort::validateTerminal(
+        const NetworkEvent& event,
+        const LiveToken& live) const {
+    if (event.abi_version != simllm::rnic::kNetworkPortAbiVersion) {
+        throw std::invalid_argument(
+            "HTSIM terminal carries an unsupported ABI version");
+    }
+    if (event.token == 0 || event.wqe_id != live.descriptor.wqe_id) {
+        throw std::invalid_argument(
+            "HTSIM terminal changed native WQE correlation");
+    }
+    if (!live.terminal_queued
+        || event.event_time_ps != live.terminal_at_ps
+        || event.event_time_ps < live.accepted_at_ps) {
+        throw std::invalid_argument(
+            "HTSIM terminal changed its committed time or lifecycle");
+    }
+    if (event.kind == NetworkEventKind::Delivered) {
+        if (event.drop_location != DropLocation::None
+            || event.drop_reason != DropReason::None) {
+            throw std::invalid_argument(
+                "HTSIM delivery carries contradictory drop evidence");
+        }
+        return;
+    }
+    if (event.kind != NetworkEventKind::Dropped
+        || event.drop_location == DropLocation::None
+        || event.drop_reason == DropReason::None) {
+        throw std::invalid_argument(
+            "HTSIM drop omitted typed terminal evidence");
+    }
+}
+
+void HtsimNetworkPort::rollbackSubmission(
+        NetworkToken token, simllm::rnic::FlowId flow_id) noexcept {
+    for (auto scheduled = scheduled_.begin();
+         scheduled != scheduled_.end();) {
+        if (scheduled->second == token) {
+            scheduled = scheduled_.erase(scheduled);
+        } else {
+            ++scheduled;
+        }
+    }
+    if (!issued_.empty() && issued_.back().token == token) {
+        issued_.pop_back();
+    }
+    token_sources_.erase(token);
+    token_by_flow_.erase(flow_id);
+    seen_flows_.erase(flow_id);
+    live_.erase(token);
 }
 
 std::optional<Picoseconds> HtsimNetworkPort::nextEventTime() const {
@@ -210,9 +330,9 @@ std::optional<Picoseconds> HtsimNetworkPort::nextEventTime() const {
 std::vector<NetworkEvent> HtsimNetworkPort::takeDue(Picoseconds now_ps) {
     std::vector<NetworkEvent> events;
     while (!scheduled_.empty() && scheduled_.begin()->first <= now_ps) {
-        const Picoseconds terminal_at_ps = scheduled_.begin()->first;
-        const NetworkToken token = scheduled_.begin()->second;
-        scheduled_.erase(scheduled_.begin());
+        const auto scheduled = scheduled_.begin();
+        const Picoseconds terminal_at_ps = scheduled->first;
+        const NetworkToken token = scheduled->second;
 
         const auto live = live_.find(token);
         if (live == live_.end()) {
@@ -223,16 +343,17 @@ std::vector<NetworkEvent> HtsimNetworkPort::takeDue(Picoseconds now_ps) {
         event.token = token;
         event.wqe_id = live->second.descriptor.wqe_id;
         event.event_time_ps = terminal_at_ps;
-        if (config_.drop_first && !drop_emitted_) {
+        const bool emit_drop = config_.drop_first && !drop_emitted_;
+        if (emit_drop) {
             event.kind = NetworkEventKind::Dropped;
             event.drop_location = DropLocation::Fabric;
             event.drop_reason = DropReason::Injected;
-            drop_emitted_ = true;
         } else {
             event.kind = NetworkEventKind::Delivered;
             event.drop_location = DropLocation::None;
             event.drop_reason = DropReason::None;
         }
+        validateTerminal(event, live->second);
         terminals_.push_back(HtsimTerminalToken{
             token,
             event.wqe_id,
@@ -242,6 +363,10 @@ std::vector<NetworkEvent> HtsimNetworkPort::takeDue(Picoseconds now_ps) {
             event.ecn_marked,
             event.drop_location,
             event.drop_reason});
+        if (emit_drop) {
+            drop_emitted_ = true;
+        }
+        scheduled_.erase(scheduled);
         live_.erase(live);
         events.push_back(event);
     }
@@ -249,7 +374,8 @@ std::vector<NetworkEvent> HtsimNetworkPort::takeDue(Picoseconds now_ps) {
 }
 
 bool HtsimNetworkPort::hasPendingPhysicalWork() const noexcept {
-    return !live_.empty() || !scheduled_.empty();
+    return !live_.empty() || !scheduled_.empty()
+           || (runtime_ != nullptr && runtime_->hasPendingPhysicalWork());
 }
 
 std::vector<NetworkToken> HtsimNetworkPort::liveTokens() const {
