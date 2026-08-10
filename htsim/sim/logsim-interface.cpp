@@ -1174,7 +1174,10 @@ int start_lgs(std::string filename_goal,
     }
     
     if (ok) {
-      if(p <= 16 && !batchmode_given) { // myprint all hosts
+      // The artifact prints per-rank end times for up to 128 ranks; the fork
+      // lowered the threshold to 16.  Keep 16 unless the paper main opted in.
+      if(p <= (LogSimInterface::artifact_send_semantics ? 128u : 16u)
+         && !batchmode_given) { // myprint all hosts
         printf("Times: \n");
         host = 0;
         for(uint i=0; i<p; ++i) {
