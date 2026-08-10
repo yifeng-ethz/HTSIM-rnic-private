@@ -31,7 +31,9 @@ int LogSimInterface::percentage_lgs = 0;
 bool LogSimInterface::print_stats_flows = false;
 
 
-static const bool lgs_print_event_stats = true;
+// Settable for the paper-algorithm main (Llama traces would print millions of
+// lines); default true preserves the fork's current output byte-for-byte.
+bool LogSimInterface::lgs_print_event_stats = true;
 static const bool exclusive_op = false;
 
 LogSimInterface::LogSimInterface() {}
@@ -623,7 +625,7 @@ int start_lgs(std::string filename_goal,
                     btime_t noise = 0; // No noise with HTSIM
                     uint64_t cpu_time = elem.time + elem.size + noise;
 
-                    if (lgs_print_event_stats) {
+                    if (LogSimInterface::lgs_print_event_stats) {
                       printf("LGS Compute Event - Host %d - CPU %d - StartTime %lu - Time %lu - Size %d\n",
                              elem.host, elem.proc,
                              elem.time, cpu_time,

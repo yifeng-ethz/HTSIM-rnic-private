@@ -9,13 +9,21 @@
 static int global_queue_id=0;
 #define DEBUG_QUEUE_ID -1 // set to queue ID to enable debugging
 
+// Paper-algorithm compatibility knobs; these defaults are the fork's
+// long-standing hardcoded values, so behavior is unchanged unless the paper
+// main overrides them.
+mem_b CompositeQueue::_header_bound_factor_trim = 2;
+mem_b CompositeQueue::_header_bound_factor_arrival = 2;
+bool CompositeQueue::_ecn_on_deque_headers = false;
+int CompositeQueue::_ratio_high_default = 100000;
+
 CompositeQueue::CompositeQueue(linkspeed_bps bitrate, mem_b maxsize, EventList& eventlist, 
                                QueueLogger* logger, uint16_t trim_size, bool disable_trim)
     : Queue(bitrate, maxsize, eventlist, logger)
 {
     _disable_trim = disable_trim;
     _trim_size = trim_size;
-    _ratio_high = 100000;
+    _ratio_high = _ratio_high_default;
     _ratio_low = 1;
     _crt = 0;
     _num_headers = 0;
@@ -128,9 +136,9 @@ void CompositeQueue::completeService(){
             //cout << "Hdr: type=" << pkt->type() << endl;
             _num_headers++;
             //ECN mark on deque of a header, if low priority queue is still over threshold
-//            if (decide_ECN()) {
-//                pkt->set_flags(pkt->flags() | ECN_CE);
-//            }
+            if (_ecn_on_deque_headers && decide_ECN()) {
+                pkt->set_flags(pkt->flags() | ECN_CE);
+            }
         }
     } else {
         assert(0);
@@ -213,7 +221,7 @@ void CompositeQueue::receivePacket(Packet& pkt)
                     if (_logger)
                         _logger->logQueue(*this, QueueLogger::PKT_TRIM, pkt);
 
-                    if (_queuesize_high + booted_pkt->size() > 2 * _maxsize) {
+                    if (_queuesize_high + booted_pkt->size() > _header_bound_factor_trim * _maxsize) {
                         if (_return_to_sender && booted_pkt->reverse_route() && booted_pkt->bounced() == false) {
                             // return the packet to the sender
                             if (_logger)
@@ -285,7 +293,7 @@ void CompositeQueue::receivePacket(Packet& pkt)
     }
     assert(pkt.header_only());
     
-    if (_queuesize_high+pkt.size() > 2*_maxsize) {
+    if (_queuesize_high+pkt.size() > _header_bound_factor_arrival*_maxsize) {
         //drop header
         //cout << "drop!\n";
         if (_return_to_sender && pkt.reverse_route()  && pkt.bounced() == false) {

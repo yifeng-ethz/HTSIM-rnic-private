@@ -60,6 +60,22 @@ class CompositeQueue : public Queue {
         _fail_rate = fail_rate;
     }
 
+    // Paper-algorithm compatibility knobs.  Defaults reproduce the fork's
+    // current behavior exactly; only the paper main (htsim_uec_paper) changes
+    // them, to the constants hardcoded in the ATLAHS artifact's queue:
+    //   header bound at the trim site:      2  -> 20000  (x _maxsize)
+    //   header bound at the arrival site:   2  -> 200000 (x _maxsize)
+    //   ECN mark on header dequeue:      false -> true
+    //   high/low service ratio:        100000  -> 10000
+    static void set_header_bound_factors(mem_b trim_site, mem_b arrival_site) {
+        _header_bound_factor_trim = trim_site;
+        _header_bound_factor_arrival = arrival_site;
+    }
+    static void set_ecn_on_deque_headers(bool value) {
+        _ecn_on_deque_headers = value;
+    }
+    static void set_high_prio_ratio(int value) { _ratio_high_default = value; }
+
     int _num_packets;
     int _num_headers; // only includes data packets stripped to headers, not acks or nacks
     int _num_acks;
@@ -96,6 +112,11 @@ class CompositeQueue : public Queue {
     bool _is_failing;
     int _fail_rate;
     int _packet_count;
+
+    static mem_b _header_bound_factor_trim;
+    static mem_b _header_bound_factor_arrival;
+    static bool _ecn_on_deque_headers;
+    static int _ratio_high_default;
 };
 
 #endif

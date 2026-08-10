@@ -50,7 +50,9 @@ typedef enum {IP, TCP, TCPACK, TCPNACK, SWIFT, SWIFTACK, STRACK, STRACKACK,
               HPCC, HPCCACK, HPCCNACK,
               CNP,
               EQDSDATA, EQDSPULL, EQDSACK, EQDSNACK, EQDSRTS,
-              UECDATA, UECPULL, UECACK, UECNACK, UECRTS} packet_type;
+              UECDATA, UECPULL, UECACK, UECNACK, UECRTS,
+              // Paper-algorithm port (appended so existing values are unchanged)
+              UEC_PAPER, UECACK_PAPER, UECNACK_PAPER} packet_type;
 
 typedef enum {NONE, UP, DOWN} packet_direction;
 
@@ -174,6 +176,14 @@ class Packet {
     //    void set_detour(PacketSink* n, int rewind) {_detour = n;_nexthop -= rewind;}
     
     string str() const;
+
+    // Restored for the paper-algorithm port (the ATLAHS artifact keeps these
+    // on the Packet base class).  Nothing in the fork's own code paths reads
+    // or writes them, so existing behavior is unchanged.
+    simtime_picosec timestamp_sent;
+    int from, to, tag;
+    bool is_ack = false;
+
  protected:
     void set_attrs(PacketFlow& flow, int pkt_size, packetid_t id);
 
@@ -232,6 +242,12 @@ class PacketSink {
     virtual const string& nodename()=0;
 
     PacketSink* _remoteEndpoint;
+
+    // Restored for the paper-algorithm port (see Packet above); unused by the
+    // fork's own code paths.
+    uint32_t from = -1;
+    uint32_t to = -1;
+    uint32_t tag;
 };
 
 // NIC mostly exists to enable logging of an EqdsNIC, particularly

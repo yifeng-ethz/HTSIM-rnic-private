@@ -64,6 +64,7 @@ add_executable(htsim_rnic main_rnic.cpp)
 add_executable(htsim_uec main_uec.cpp)
 add_executable(htsim_uec_sf main_uec_sf.cpp)
 add_executable(htsim_uec_df main_uec_df.cpp)
+add_executable(htsim_uec_paper main_uec_paper.cpp)
 
 # -------------------------------
 # Linking Executables with Libraries
@@ -80,6 +81,7 @@ set (ALL_EXECUTABLES
     htsim_uec
     htsim_uec_sf
     htsim_uec_df
+    htsim_uec_paper
 )
 foreach(EXECUTABLE ${ALL_EXECUTABLES})
     # Link each executable with the 'htsim' library defined in the parent directory.

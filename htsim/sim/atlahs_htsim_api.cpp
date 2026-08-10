@@ -1,6 +1,7 @@
 #include "atlahs_htsim_api.h"
 #include "atlahs_event.h"
 #include "datacenter/fat_tree_topology.h"
+#include "paper_uec.h"
 
 #include "logsim-interface.h"
 #include "lgs/LogGOPSim.hpp"
@@ -271,6 +272,52 @@ void AtlahsHtsimApi::Send(const SendEvent &event, graph_node_properties elem) {
         _topo->switches_lp[_topo->cfg().HOST_POD_SWITCH(to)]->addHostPort(
                         to, uecSrc->flowId(), uecSink->getPort(0));
 
+    } else if (_logsim_interface->get_protocol() == SENDER_PROTOCOL) {
+        // Paper-algorithm port: verbatim from the ATLAHS artifact's
+        // atlahs_htsim_api.cpp SENDER_PROTOCOL branch, with the topology
+        // accessors adapted to the fork's FatTreeTopologyCfg split.
+        PaperUecSrc *uecSrc = new PaperUecSrc(NULL, NULL, *_eventlist, getSenderRtt(), getSenderBdp(), 100, 6);
+
+        uecSrc->setFlowSize(size);
+
+        uecSrc->setName("uec_" + std::to_string(from) + "_" + std::to_string(to));
+        uecSrc->from = from;
+        uecSrc->to = to;
+        uecSrc->tag = tag;
+        uecSrc->send_size = size;
+        uecSrc->_atlahs_api = this;
+
+        PaperUecSink *uecSink = new PaperUecSink();
+        uecSink->setName("uec_sink_Rand");
+        uecSink->from_sink = from;
+        uecSink->to_sink = to;
+        uecSink->tag_sink = tag;
+
+        uecSrc->set_dst(to);
+        uecSink->set_src(from);
+
+        Route* srctotor = new Route();
+        srctotor->push_back(_topo->queues_ns_nlp[from][_topo->cfg().HOST_POD_SWITCH(from)][0]);
+        srctotor->push_back(_topo->pipes_ns_nlp[from][_topo->cfg().HOST_POD_SWITCH(from)][0]);
+        srctotor->push_back(_topo->queues_ns_nlp[from][_topo->cfg().HOST_POD_SWITCH(from)][0]->getRemoteEndpoint());
+
+        Route* dsttotor = new Route();
+        dsttotor->push_back(_topo->queues_ns_nlp[to][_topo->cfg().HOST_POD_SWITCH(to)][0]);
+        dsttotor->push_back(_topo->pipes_ns_nlp[to][_topo->cfg().HOST_POD_SWITCH(to)][0]);
+        dsttotor->push_back(_topo->queues_ns_nlp[to][_topo->cfg().HOST_POD_SWITCH(to)][0]->getRemoteEndpoint());
+
+        graph_node_properties* node_copy = new graph_node_properties(elem);
+        uecSrc->lgs_node = node_copy;
+        uecSrc->connect(srctotor, dsttotor, *uecSink, _eventlist->now());
+
+        uecSrc->set_paths(128);
+        uecSink->set_paths(128);
+
+        //register src and snk to receive packets from their respective TORs.
+        assert(_topo->switches_lp[_topo->cfg().HOST_POD_SWITCH(from)]);
+        assert(_topo->switches_lp[_topo->cfg().HOST_POD_SWITCH(from)]);
+        _topo->switches_lp[_topo->cfg().HOST_POD_SWITCH(from)]->addHostPort(from, uecSrc->flow_id(), uecSrc);
+        _topo->switches_lp[_topo->cfg().HOST_POD_SWITCH(to)]->addHostPort(to, uecSrc->flow_id(), uecSink);
     }
     // TODO: Move this stuff to a CreateConnection function inside UEC. 
     // TODO: Support different tranports, not just UEC
@@ -320,6 +367,13 @@ void AtlahsHtsimApi::Setup() {
     }
 
 
+    // SENDER_PROTOCOL (paper-algorithm port) manages per-flow sources with no
+    // NIC/pacer objects, exactly like the ATLAHS artifact.  The protocol was
+    // previously unused, so skipping here changes nothing for existing paths.
+    if (_logsim_interface->get_protocol() == SENDER_PROTOCOL) {
+        return;
+    }
+
     for (size_t ix = 0; ix < total_nodes; ix++) {
         uec_pacers.push_back(new UecPullPacer(linkspeed,
                                           0.99,
@@ -330,7 +384,7 @@ void AtlahsHtsimApi::Setup() {
         UecNIC* nic = new UecNIC(ix, *_eventlist, linkspeed, 1);
         uec_nics.push_back(nic);
     }
-    
+
 }
 
 void AtlahsHtsimApi::EventFinished(const EventOver &event) {
