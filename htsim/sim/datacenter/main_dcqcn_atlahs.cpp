@@ -56,11 +56,20 @@ void writeCompletionCsv(const std::string& path,
         throw std::runtime_error("cannot open completion CSV '" + path + "'");
     }
     output << "profile,flow_id,source,destination,tag,payload_bytes,"
-              "start_time_ps,completion_time_ps,fct_ps\n";
+              "start_time_ps,completion_time_ps,fct_ps,"
+              "wqe_id,sq_id,rq_id,cq_id,sq_post_sequence,"
+              "sq_dispatch_sequence,cq_post_sequence,cq_consume_sequence,"
+              "transport_kind,transport_object_id\n";
     for (const AtlahsCompletedFlowRecord& flow : ordered) {
         output << "dcqcn," << flow.flow_id << ',' << flow.source << ',' << flow.destination << ','
                << flow.tag << ',' << flow.payload_bytes << ',' << flow.start_time_ps << ','
-               << flow.completion_time_ps << ',' << flow.fct_ps() << '\n';
+               << flow.completion_time_ps << ',' << flow.fct_ps() << ','
+               << flow.wqe_id << ',' << flow.sq_id << ',' << flow.rq_id << ','
+               << flow.cq_id << ',' << flow.sq_post_sequence << ','
+               << flow.sq_dispatch_sequence << ',' << flow.cq_post_sequence << ','
+               << flow.cq_consume_sequence << ','
+               << atlahsTransportKindName(flow.transport_kind) << ','
+               << flow.transport_object_id << '\n';
     }
     output.flush();
     if (!output) {
@@ -119,6 +128,7 @@ int main(int argc, char* argv[]) {
         if (api.runtimeHasPendingPhysicalWork()) {
             throw std::logic_error("ATLAHS returned before DCQCN physical quiescence");
         }
+        api.validateWqeQuiescent();
         if (options.completion_csv.has_value()) {
             writeCompletionCsv(*options.completion_csv, api.completedFlows());
         }

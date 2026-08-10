@@ -115,6 +115,9 @@ public:
 
     void setup(std::uint32_t node_count, CompletionHandler complete_flow) override;
     void send(const AtlahsFlowRequest& request) override;
+    AtlahsTransportKind transportKind() const noexcept override {
+        return AtlahsTransportKind::RnicCnLinkPair;
+    }
 
     bool isSetup() const noexcept;
     std::uint32_t nodeCount() const noexcept;

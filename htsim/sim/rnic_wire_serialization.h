@@ -6,6 +6,8 @@
 #include <limits>
 #include <stdexcept>
 
+#include "rnic_wide_integer.h"
+
 struct RnicWireSerializationInterval {
     uint64_t start_ps;
     uint64_t end_ps;
@@ -40,7 +42,7 @@ public:
             start = {earliest_start_ps, 0};
         }
 
-        using Wide = unsigned __int128;
+        using Wide = RnicWideInteger;
         const Wide numerator = static_cast<Wide>(wire_bytes)
                                * kSerializationNumeratorPerByte;
         const Wide floor_increment = numerator / _wire_capacity_bps;

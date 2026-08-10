@@ -6,6 +6,7 @@
 #include <sstream>
 #include <stdexcept>
 #include "roce.h"
+#include "rnic_wide_integer.h"
 #include "queue.h"
 #include <stdio.h>
 #include "switch.h"
@@ -126,14 +127,14 @@ void RoceSrc::update_spacing() {
     if (_pacing_rate == 0) {
         throw std::logic_error("RoCE pacing rate must be positive");
     }
-    constexpr unsigned __int128 kPicosecondsPerSecond =
-        static_cast<unsigned __int128>(UINT64_C(1000000000000));
-    const unsigned __int128 wire_bytes =
-        static_cast<unsigned __int128>(Packet::data_packet_size())
-        + static_cast<unsigned __int128>(RocePacket::ACKSIZE);
-    const unsigned __int128 numerator =
+    constexpr RnicWideInteger kPicosecondsPerSecond =
+        static_cast<RnicWideInteger>(UINT64_C(1000000000000));
+    const RnicWideInteger wire_bytes =
+        static_cast<RnicWideInteger>(Packet::data_packet_size())
+        + static_cast<RnicWideInteger>(RocePacket::ACKSIZE);
+    const RnicWideInteger numerator =
         wire_bytes * 8 * kPicosecondsPerSecond;
-    const unsigned __int128 interval =
+    const RnicWideInteger interval =
         (numerator + _pacing_rate - 1) / _pacing_rate;
     if (interval == 0
         || interval > std::numeric_limits<simtime_picosec>::max()) {

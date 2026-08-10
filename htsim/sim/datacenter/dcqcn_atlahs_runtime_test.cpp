@@ -46,6 +46,8 @@ TEST(DcqcnAtlahsRuntimeTest, CompletesPacketizedFlowOnTheSharedNsTm3Clos) {
     config.goodput_trace_csv = goodput_trace.string();
     config.goodput_trace_bin_ps = 10000000;
     DcqcnAtlahsRuntime runtime(event_list, config, 64);
+    EXPECT_EQ(runtime.transportKind(),
+              AtlahsTransportKind::DcqcnQueuePair);
     EXPECT_EQ(DCQCNSrc::minRate(), config.dcqcn_min_rate_bps);
     std::vector<AtlahsFlowId> completed;
     runtime.setup(64, [&](AtlahsFlowId flow_id) { completed.push_back(flow_id); });
@@ -87,6 +89,8 @@ TEST(DcqcnAtlahsRuntimeTest, CompletesPacketizedFlowOnTheSharedNsTm3Clos) {
     EXPECT_NE(goodput_text.find("bin_start_ps,bin_end_ps,flow_id,source,destination,"),
               std::string::npos);
     EXPECT_FALSE(std::filesystem::exists(goodput_trace.string() + ".tmp"));
+    trace_input.close();
+    goodput_input.close();
     std::filesystem::remove(state_trace);
     std::filesystem::remove(goodput_trace);
     const std::string manifest =

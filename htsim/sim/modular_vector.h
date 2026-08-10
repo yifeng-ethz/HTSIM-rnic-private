@@ -9,7 +9,7 @@ class ModularVector {
 
    public:
     ModularVector(T default_value) {
-        for (uint i = 0; i < Size; i++) {
+        for (unsigned i = 0; i < Size; i++) {
             buf[i] = default_value;
         }
     }

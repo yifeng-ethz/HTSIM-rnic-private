@@ -64,6 +64,16 @@ struct AtlahsCompletedFlowRecord {
     simtime_picosec start_time_ps;
     simtime_picosec completion_time_ps;
     std::uint64_t tag;
+    AtlahsWqeId wqe_id;
+    AtlahsWqeObjectId sq_id;
+    AtlahsWqeObjectId rq_id;
+    AtlahsWqeObjectId cq_id;
+    std::uint64_t sq_post_sequence;
+    std::uint64_t sq_dispatch_sequence;
+    std::uint64_t cq_post_sequence;
+    std::uint64_t cq_consume_sequence;
+    AtlahsTransportKind transport_kind;
+    AtlahsWqeObjectId transport_object_id;
 
     simtime_picosec fct_ps() const {
         return completion_time_ps - start_time_ps;
@@ -130,6 +140,16 @@ public:
     const std::vector<AtlahsCompletedFlowRecord>& completedFlows() const {
         return _completed_flows;
     }
+    const AtlahsWqeLedger* wqeLedger() const noexcept {
+        return _wqe_ledger.get();
+    }
+    std::optional<AtlahsWqeAuthorityMode> activeWqeAuthority() const noexcept {
+        return _active_wqe_authority;
+    }
+    const AtlahsWqeAuthorityCounters& authorityCounters() const noexcept {
+        return _authority_counters;
+    }
+    void validateWqeQuiescent() const;
 
     // Getter and setter for ComputeEvent
     void setComputeEvent(ComputeEvent* compute_event) { 
@@ -304,16 +324,23 @@ public:
     void setMultipathFactory(std::function<std::unique_ptr<UecMultipath>()> f) { mp_factory = std::move(f); }
 
 private:
+    void refreshNativeAuthorityCounters();
+
     EventList* _eventlist = nullptr;
     UecRtxTimerScanner* _uecRtxScanner = nullptr;
     FatTreeTopology* _topo = nullptr;
     FatTreeTopologyCfg* _topo_cfg = nullptr;
     LogSimInterface* _logsim_interface = nullptr;
     std::unique_ptr<AtlahsFlowRuntime> _flow_runtime;
+    std::unique_ptr<AtlahsWqeLedger> _wqe_ledger;
+    std::optional<AtlahsWqeAuthorityMode> _active_wqe_authority;
+    bool _flow_runtime_setup = false;
+    AtlahsWqeAuthorityCounters _authority_counters;
 
     struct PendingFlow {
         graph_node_properties node;
         AtlahsFlowRequest request;
+        std::optional<AtlahsWqeId> legacy_wqe_id;
     };
     std::unordered_map<AtlahsFlowId, PendingFlow> _pending_flows;
     std::vector<AtlahsCompletedFlowRecord> _completed_flows;

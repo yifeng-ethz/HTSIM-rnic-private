@@ -65,6 +65,31 @@ add_executable(htsim_uec main_uec.cpp)
 add_executable(htsim_uec_sf main_uec_sf.cpp)
 add_executable(htsim_uec_df main_uec_df.cpp)
 
+if(HTSIM_ENABLE_SIMLLM_RNIC)
+    execute_process(
+        COMMAND git rev-parse HEAD
+        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/../.."
+        OUTPUT_VARIABLE HTSIM_COMPOSED_SOURCE_REVISION
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    execute_process(
+        COMMAND git rev-parse HEAD
+        WORKING_DIRECTORY "${SIMLLM_REPOSITORY_ROOT}"
+        OUTPUT_VARIABLE SIMLLM_COMPOSED_SOURCE_REVISION
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    if(HTSIM_COMPOSED_SOURCE_REVISION STREQUAL "")
+        set(HTSIM_COMPOSED_SOURCE_REVISION "unknown")
+    endif()
+    if(SIMLLM_COMPOSED_SOURCE_REVISION STREQUAL "")
+        set(SIMLLM_COMPOSED_SOURCE_REVISION "unknown")
+    endif()
+    target_compile_definitions(htsim_rnic PRIVATE
+        HTSIM_ENABLE_SIMLLM_RNIC=1
+        HTSIM_COMPOSED_SOURCE_REVISION="${HTSIM_COMPOSED_SOURCE_REVISION}"
+        SIMLLM_COMPOSED_SOURCE_REVISION="${SIMLLM_COMPOSED_SOURCE_REVISION}")
+endif()
+
 # -------------------------------
 # Linking Executables with Libraries
 # -------------------------------

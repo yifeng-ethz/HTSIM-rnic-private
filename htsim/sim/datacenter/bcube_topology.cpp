@@ -125,7 +125,8 @@ void BCubeTopology::address_from_srv(uint32_t srv){
 }
 
 vector<uint32_t>* BCubeTopology::get_neighbours(uint32_t src){
-    uint32_t addr[_K+1],i;
+    vector<uint32_t> addr(_K + 1);
+    uint32_t i;
 
     vector<uint32_t>* ns = new vector<uint32_t>();
 
@@ -138,14 +139,15 @@ vector<uint32_t>* BCubeTopology::get_neighbours(uint32_t src){
             if (addr[level]==addresses(src,level))
                 continue;
       
-            ns->push_back(srv_from_address(addr));
+            ns->push_back(srv_from_address(addr.data()));
         }
     }
     return ns;
 }
 
 uint32_t BCubeTopology::get_neighbour(uint32_t src, uint32_t level){
-    uint32_t addr[_K+1],i;
+    vector<uint32_t> addr(_K + 1);
+    uint32_t i;
 
     for (i=0;i<=_K;i++)
         addr[i] = addresses(src,i);
@@ -155,7 +157,7 @@ uint32_t BCubeTopology::get_neighbour(uint32_t src, uint32_t level){
   
     while ((addr[level] = rand()%_NUM_PORTS)==addresses(src,level));
 
-    return srv_from_address(addr);
+    return srv_from_address(addr.data());
 }
 
 void BCubeTopology::init_network(){
@@ -243,7 +245,8 @@ void BCubeTopology::init_network(){
 Route* BCubeTopology::bcube_routing(uint32_t src,uint32_t dest, uint32_t* permutation, uint32_t* nic = NULL){
     Route* routeout = new Route();
 
-    uint32_t crt_addr[_K+1],crt, level;
+    vector<uint32_t> crt_addr(_K + 1);
+    uint32_t crt, level;
     //uint32_t nsrv;
     crt = src;
 
@@ -252,7 +255,7 @@ Route* BCubeTopology::bcube_routing(uint32_t src,uint32_t dest, uint32_t* permut
     for (uint32_t i=0; i<=_K; i++)
         crt_addr[i] = addresses(src,i);
 
-    uint32_t aaa = srv_from_address(crt_addr);
+    uint32_t aaa = srv_from_address(crt_addr.data());
     //printf("CRT is %d, SRV FROM ADDRESS %d\n",crt,aaa);
     assert(crt==aaa);
 
@@ -277,9 +280,9 @@ Route* BCubeTopology::bcube_routing(uint32_t src,uint32_t dest, uint32_t* permut
 
             //now correct digit
             crt_addr[level] = addresses(dest,level);
-            crt = srv_from_address(crt_addr);
+            crt = srv_from_address(crt_addr.data());
 
-            assert(srv_from_address(crt_addr)==crt);
+            assert(srv_from_address(crt_addr.data())==crt);
 
             routeout->push_back(queues_switch_srv(SWITCH_ID(crt,level), crt, level));
             routeout->push_back(pipes_switch_srv(SWITCH_ID(crt,level), crt, level));
@@ -291,7 +294,7 @@ Route* BCubeTopology::bcube_routing(uint32_t src,uint32_t dest, uint32_t* permut
 
 //i is the level
 Route* BCubeTopology::dc_routing(uint32_t src,uint32_t dest, uint32_t i){
-    uint32_t permutation[_K+1];
+    vector<uint32_t> permutation(_K + 1);
     uint32_t m = _K;
     assert(i >= _K);
     for (uint32_t j = i; j >= i-_K; j--){
@@ -302,7 +305,7 @@ Route* BCubeTopology::dc_routing(uint32_t src,uint32_t dest, uint32_t i){
 
     uint32_t nic = UINT_MAX;
 
-    Route* routeout = bcube_routing(src,dest,permutation,&nic);
+    Route* routeout = bcube_routing(src,dest,permutation.data(),&nic);
     assert(nic<=_K);
 
     routeout->push_front(prio_queues_srv(src,nic));
@@ -311,7 +314,7 @@ Route* BCubeTopology::dc_routing(uint32_t src,uint32_t dest, uint32_t i){
 }
 
 Route* BCubeTopology::alt_dc_routing(uint32_t src,uint32_t dest, uint32_t i,uint32_t c){
-    uint32_t permutation[_K+1];
+    vector<uint32_t> permutation(_K + 1);
     uint32_t m = _K;
 
     for (uint32_t ti=0; ti<=_K; ti++)
@@ -319,7 +322,7 @@ Route* BCubeTopology::alt_dc_routing(uint32_t src,uint32_t dest, uint32_t i,uint
 
     uint32_t nic = UINT_MAX;
 
-    Route* path = bcube_routing(src,c,permutation,&nic);
+    Route* path = bcube_routing(src,c,permutation.data(),&nic);
 
     assert(nic<=_K);
     path->push_front(prio_queues_srv(src,nic));
@@ -331,7 +334,7 @@ Route* BCubeTopology::alt_dc_routing(uint32_t src,uint32_t dest, uint32_t i,uint
         m--;
     }
 
-    Route* path2 = bcube_routing(c,dest,permutation);
+    Route* path2 = bcube_routing(c,dest,permutation.data());
 
     //stitch the two paths
     for (uint32_t i=0;i<path2->size();i++)

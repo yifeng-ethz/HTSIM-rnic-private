@@ -1,5 +1,6 @@
 // -*- c-basic-offset: 4; indent-tabs-mode: nil -*-
 #include "rnic_prbs_pacer.h"
+#include "rnic_wide_integer.h"
 
 #include <algorithm>
 #include <limits>
@@ -7,7 +8,7 @@
 
 namespace {
 
-using Wide = unsigned __int128;
+using Wide = RnicWideInteger;
 
 constexpr unsigned kPreferredHazardFractionBits = 32;
 

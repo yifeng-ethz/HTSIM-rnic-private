@@ -59,6 +59,9 @@ public:
     void setup(std::uint32_t node_count, CompletionHandler complete_flow) override;
     void send(const AtlahsFlowRequest& request) override;
     bool hasPendingPhysicalWork() const noexcept override;
+    AtlahsTransportKind transportKind() const noexcept override {
+        return AtlahsTransportKind::DcqcnQueuePair;
+    }
 
     FatTreeTopology& topology() noexcept;
     const FatTreeTopology& topology() const noexcept;

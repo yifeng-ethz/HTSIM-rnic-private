@@ -3,23 +3,54 @@ include(FetchContent)
 
 project(htsim_project LANGUAGES CXX)
 option(ENABLE_TESTS "enable the test suite" OFF)
+option(HTSIM_ENABLE_SIMLLM_RNIC
+       "build the composed SimLLM RNIC runtime and Tier A producer"
+       OFF)
+set(SIMLLM_REPOSITORY_ROOT "" CACHE PATH
+    "path to a SimLLM checkout that owns the versioned RNIC ABI")
+if(WIN32)
+    option(HTSIM_CREATE_SOURCE_SYMLINKS
+        "create source-tree symlinks for built executables" OFF)
+else()
+    option(HTSIM_CREATE_SOURCE_SYMLINKS
+        "create source-tree symlinks for built executables" ON)
+endif()
 
 # Set C++ standard and compiler flags
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF) # Ensures GNU extensions are disabled
-set(CMAKE_CXX_FLAGS_RELEASE -O3) # Prevent -DNDEBUG, htsim requires 
-                                 # asserts to be enabled.
-# Set compiler flags
-add_compile_options(
-    -Wall
-    -g
-    -Wsign-compare
-    -Wuninitialized
-    -fPIE
-    -Wno-deprecated
-    -O3
-)
+# Prevent -DNDEBUG: htsim requires assertions to remain enabled. Compiler
+# options must be selected per toolchain because MSVC does not understand
+# GCC-style flags.
+if(MSVC)
+    set(CMAKE_CXX_FLAGS_RELEASE "/O2")
+    add_compile_options(/W4 /EHsc /permissive-)
+    add_compile_definitions(
+        _CRT_SECURE_NO_WARNINGS
+        _SILENCE_STDEXT_HASH_DEPRECATION_WARNINGS
+        NOMINMAX
+        WIN32_LEAN_AND_MEAN
+    )
+else()
+    set(CMAKE_CXX_FLAGS_RELEASE "-O3")
+    add_compile_options(
+        -Wall
+        -g
+        -Wsign-compare
+        -Wuninitialized
+        -fPIE
+        -Wno-deprecated
+        -O3
+    )
+endif()
+
+# MinGW executables otherwise depend on whichever libstdc++/libgcc DLLs
+# happen to appear first on PATH, which is especially fragile on developer
+# workstations with several GCC distributions installed.
+if(MINGW)
+    add_link_options(-static -static-libgcc -static-libstdc++)
+endif()
 # Optionally enable sanitizers
 # -fsanitize=address -fno-omit-frame-pointer -fsanitize=undefined"
 
@@ -39,6 +70,9 @@ endif()
 # Used to create a symlink in the source directory to the executable 
 # in the build directory for easier access and backward compatibility.
 function(add_symlink_target EXECUTABLE TARGET_DIR)
+    if(NOT HTSIM_CREATE_SOURCE_SYMLINKS)
+        return()
+    endif()
     add_custom_command(
         TARGET ${EXECUTABLE}
         POST_BUILD
@@ -53,6 +87,7 @@ endfunction()
 # Define source files
 set(SOURCE_FILES
     aeolusqueue.cpp
+    atlahs_wqe.cpp
     callback_pipe.cpp
     cbr.cpp
     cbrpacket.cpp
@@ -144,6 +179,50 @@ set(SOURCE_FILES
 add_library(htsim STATIC ${SOURCE_FILES})
 target_include_directories(htsim PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}) # Needed for header-only libraries (e.g., loggertypes.h).
 
+if(HTSIM_ENABLE_SIMLLM_RNIC)
+    if(SIMLLM_REPOSITORY_ROOT STREQUAL "")
+        message(FATAL_ERROR
+            "HTSIM_ENABLE_SIMLLM_RNIC requires SIMLLM_REPOSITORY_ROOT")
+    endif()
+    get_filename_component(
+        SIMLLM_REPOSITORY_ROOT
+        "${SIMLLM_REPOSITORY_ROOT}"
+        ABSOLUTE)
+    set(SIMLLM_RNIC_SOURCE_DIR
+        "${SIMLLM_REPOSITORY_ROOT}/simllm/backends/rnic")
+    set(SIMLLM_TIER_A_NATIVE_DIR
+        "${SIMLLM_REPOSITORY_ROOT}/examples/rnic_live_v1/native")
+    foreach(REQUIRED_SIMLLM_SOURCE IN ITEMS
+            "${SIMLLM_RNIC_SOURCE_DIR}/CMakeLists.txt"
+            "${SIMLLM_TIER_A_NATIVE_DIR}/tier_a_port_factory.h"
+            "${SIMLLM_TIER_A_NATIVE_DIR}/tier_a_producer.cpp")
+        if(NOT EXISTS "${REQUIRED_SIMLLM_SOURCE}")
+            message(FATAL_ERROR
+                "required SimLLM source is missing: ${REQUIRED_SIMLLM_SOURCE}")
+        endif()
+    endforeach()
+
+    set(SIMLLM_RNIC_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(SIMLLM_RNIC_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+    set(SIMLLM_RNIC_WARNINGS_AS_ERRORS ON CACHE BOOL "" FORCE)
+    add_subdirectory(
+        "${SIMLLM_RNIC_SOURCE_DIR}"
+        "${CMAKE_BINARY_DIR}/simllm-rnic")
+
+    target_sources(htsim PRIVATE
+        simllm_atlahs_flow_runtime.cpp
+        simllm_htsim_network_port.cpp)
+    target_link_libraries(htsim PUBLIC simllm::rnic)
+
+    add_executable(htsim_rnic_tier_a
+        simllm_htsim_tier_a_port_factory.cpp
+        "${SIMLLM_TIER_A_NATIVE_DIR}/tier_a_producer.cpp")
+    target_include_directories(htsim_rnic_tier_a PRIVATE
+        "${SIMLLM_TIER_A_NATIVE_DIR}")
+    target_link_libraries(htsim_rnic_tier_a PRIVATE htsim simllm::rnic)
+    target_compile_features(htsim_rnic_tier_a PRIVATE cxx_std_17)
+endif()
+
 # Add subdirectories
 add_subdirectory(datacenter)
 
@@ -151,9 +230,45 @@ add_subdirectory(datacenter)
 add_executable(parse_output parse_output.cpp)
 target_link_libraries(parse_output PRIVATE htsim)
 
+# Build the GOAL text-to-binary converter from the checked-in generated
+# source. This avoids requiring re2c/gengetopt for ordinary builds and gives
+# Windows callers a native txt2bin.exe from the same source as Linux.
+add_executable(txt2bin lgs/txt2bin.cpp)
+target_include_directories(txt2bin PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/lgs)
+
 if ( ENABLE_TESTS )
+    # Cross-platform behavioral and structural regression checks for the
+    # CMake-built GOAL converter and binary parser.
+    file(SHA256
+        ${CMAKE_CURRENT_SOURCE_DIR}/lgs/txt2bin
+        HTSIM_SOURCE_TXT2BIN_SHA256)
+
+    add_test(
+        NAME PortabilityRegression.Txt2BinSourceArtifactUnchanged
+        COMMAND ${CMAKE_COMMAND}
+            "-DCASE=source_txt2bin"
+            "-DSOURCE_TXT2BIN=${CMAKE_CURRENT_SOURCE_DIR}/lgs/txt2bin"
+            "-DEXPECTED_SHA256=${HTSIM_SOURCE_TXT2BIN_SHA256}"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/portability_regression.cmake)
+    set_tests_properties(
+        PortabilityRegression.Txt2BinSourceArtifactUnchanged
+        PROPERTIES LABELS "portability;structural" TIMEOUT 10)
+
+    add_test(
+        NAME PortabilityRegression.BinaryGoalRoundTrip26Ranks
+        COMMAND ${CMAKE_COMMAND}
+            "-DCASE=rank_26_round_trip"
+            "-DTXT2BIN=$<TARGET_FILE:txt2bin>"
+            "-DHTSIM_RNIC=$<TARGET_FILE:htsim_rnic>"
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/portability/$<CONFIG>"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/portability_regression.cmake)
+    set_tests_properties(
+        PortabilityRegression.BinaryGoalRoundTrip26Ranks
+        PROPERTIES LABELS "portability;behavioral" TIMEOUT 60)
+
     # Unit tests.
     set(UNIT_TEST_FILES
+        atlahs_wqe_test
         dcqcn_test
         eventlist_microphase_test
         pipe_test
@@ -170,6 +285,12 @@ if ( ENABLE_TESTS )
         rnic_ring_cam_test
     )
 
+    if(HTSIM_ENABLE_SIMLLM_RNIC)
+        list(APPEND UNIT_TEST_FILES
+            simllm_atlahs_flow_runtime_test
+            simllm_htsim_network_port_test)
+    endif()
+
     foreach(UNIT_TEST_FILE ${UNIT_TEST_FILES}) 
         add_executable(${UNIT_TEST_FILE} ${UNIT_TEST_FILE}.cpp)
         target_link_libraries(${UNIT_TEST_FILE} PRIVATE htsim gtest_main gmock_main)
@@ -178,6 +299,11 @@ if ( ENABLE_TESTS )
             PROPERTIES TIMEOUT 60
         )
     endforeach()
+
+    if(HTSIM_ENABLE_SIMLLM_RNIC)
+        target_link_libraries(
+            simllm_atlahs_flow_runtime_test PRIVATE htsim_dc htsim)
+    endif()
 
     # AtlahsHtsimApi retains its legacy Clos/UEC path alongside the injected
     # runtime seam, so this focused test also needs the datacenter definitions.

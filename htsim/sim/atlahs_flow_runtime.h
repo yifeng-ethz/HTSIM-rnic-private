@@ -3,6 +3,9 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
+
+#include "atlahs_wqe.h"
 
 using AtlahsFlowId = std::uint64_t;
 
@@ -32,6 +35,38 @@ enum class AtlahsNetworkTiming {
     RuntimeOwned,
 };
 
+// Authority is selected once before setup. Existing HTSIM runtimes retain
+// the timing-neutral legacy ledger. A composed SimLLM runtime owns the WQE
+// lifecycle internally and exposes only an immutable completion projection.
+enum class AtlahsWqeAuthorityMode {
+    LegacyLedger,
+    NativeRuntime,
+};
+
+struct AtlahsWqeCompletionProjection {
+    AtlahsWqeId wqe_id{0};
+    AtlahsWqeObjectId sq_id{0};
+    AtlahsWqeObjectId rq_id{0};
+    AtlahsWqeObjectId cq_id{0};
+    std::uint64_t sq_post_sequence{0};
+    std::uint64_t sq_dispatch_sequence{0};
+    std::uint64_t cq_post_sequence{0};
+    std::uint64_t cq_consume_sequence{0};
+    AtlahsTransportKind transport_kind{AtlahsTransportKind::None};
+    AtlahsWqeObjectId transport_object_id{0};
+};
+
+// Read-only lifecycle observations. Implementations report only work that
+// actually committed; mode selection alone never advances these counters.
+struct AtlahsWqeAuthorityCounters {
+    std::uint64_t native_session_constructed{0};
+    std::uint64_t legacy_ledger_constructed{0};
+    std::uint64_t native_posts{0};
+    std::uint64_t legacy_posts{0};
+    std::uint64_t legacy_aborts{0};
+    std::uint64_t legacy_mutations{0};
+};
+
 class AtlahsFlowRuntime {
 public:
     using CompletionHandler = std::function<void(AtlahsFlowId)>;
@@ -41,6 +76,27 @@ public:
     virtual void setup(std::uint32_t node_count,
                        CompletionHandler complete_flow) = 0;
     virtual void send(const AtlahsFlowRequest& request) = 0;
+
+    // A runtime declares only its stable WQE-level transport object. Packet
+    // details remain private to the runtime. Topology-free manifold models
+    // intentionally retain the default None binding.
+    virtual AtlahsTransportKind transportKind() const noexcept {
+        return AtlahsTransportKind::None;
+    }
+
+    virtual AtlahsWqeAuthorityMode wqeAuthorityMode() const noexcept {
+        return AtlahsWqeAuthorityMode::LegacyLedger;
+    }
+
+    virtual std::optional<AtlahsWqeCompletionProjection>
+    completionProjection(AtlahsFlowId) const {
+        return std::nullopt;
+    }
+
+    virtual AtlahsWqeAuthorityCounters
+    observedWqeAuthorityCounters() const noexcept {
+        return {};
+    }
 
     // True until every physical effect owned by this runtime has drained.
     // This is deliberately stronger than "a completion callback is pending":

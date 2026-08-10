@@ -1792,7 +1792,7 @@ void UecSrc::startConnection() {
         cout << _flow.str() << " " << "startflow " << _flow._name << " CWND " << _cwnd << " at "
              << timeAsUs(eventlist().now()) << " flow " << _flow.str() << endl;
 
-    if (_last_event_time.has_value() and _last_event_time.value() == eventlist().now()) {
+    if (_last_event_time.has_value() && _last_event_time.value() == eventlist().now()) {
         cout << "Flow " << _name << " flowId " << flowId() << " " << _nodename << " duplicate call to starting at "
             << timeAsUs(eventlist().now()) << endl;
         abort();

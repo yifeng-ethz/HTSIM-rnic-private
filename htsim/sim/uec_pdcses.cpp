@@ -110,7 +110,7 @@ mem_b UecMsg::addRecvd(UecDataPacket::seq_t seq_no) {
             << endl;
     }
 
-    if (new_bytes > 0 and _recvd_bytes == _total_bytes) {
+    if (new_bytes > 0 && _recvd_bytes == _total_bytes) {
         assert(_state==MsgStatus::SentLast);
         assert(_sent_pkt_notrecvd.empty());
 
@@ -141,7 +141,7 @@ mem_b UecMsg::addAck(UecDataPacket::seq_t ackno) {
     }
 
     if (cur_acked_bytes > 0
-        and _acked_bytes == _total_bytes) {
+        && _acked_bytes == _total_bytes) {
         assert(_state==MsgStatus::RecvdLast);
         assert(getRemainingBytes() == 0);
         assert(_sent_pkt_notacked.empty());
@@ -264,7 +264,7 @@ UecMsg* UecPdcSes::enque(mem_b size,
                       optional<simtime_picosec> scheduled_time, 
                       bool schedule_event) {
     UecMsg::msgid_t msg_id = get_next_msg_id();
-    assert(!schedule_event or scheduled_time.has_value());
+    assert(!schedule_event || scheduled_time.has_value());
     UecMsg* msg = new UecMsg(*this, msg_id, size, _debug);
 
     if (scheduled_time.has_value()) {
@@ -540,7 +540,7 @@ bool UecPdcSes::checkDoneSending() {
     bool cur_done_sending; 
     if (_cur_msg.has_value()) {
         cur_done_sending = _cur_msg.value()->status(UecMsg::MsgStatus::SentLast)
-            and _msgs_queue_eligible.size() == 0; 
+            && _msgs_queue_eligible.size() == 0;
     } else {
         cur_done_sending = true;
     }
@@ -572,7 +572,7 @@ bool UecPdcSes::checkDoneSending() {
 
 bool UecPdcSes::checkFinished() {
     bool retval = _acked_pkt_bytes == _eligible_pkt_bytes;
-    assert(retval == (_msgs_in_flight.empty() and _msgs_queue_eligible.empty()));
+    assert(retval == (_msgs_in_flight.empty() && _msgs_queue_eligible.empty()));
 
     if (retval) {
         if (_cur_msg.has_value()) {
@@ -589,7 +589,7 @@ bool UecPdcSes::checkFinished() {
         assert(_acked_pkt_bytes == _sent_pkt_bytes);
         assert(_acked_pkt_bytes == _recvd_pkt_bytes);
         assert(_msgs.size() == _msgs_complete.size());
-        assert(_msgs_in_flight.empty() and _msgs_queue_eligible.empty());
+        assert(_msgs_in_flight.empty() && _msgs_queue_eligible.empty());
     }
 
     if (_debug) {
