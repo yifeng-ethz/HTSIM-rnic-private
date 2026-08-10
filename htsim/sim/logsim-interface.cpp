@@ -18,27 +18,13 @@
 #include <regex>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <unordered_set>
 /*#define BOOST_NO_CXX11_SCOPED_ENUMS
 #include <boost/filesystem.hpp>
 #undef BOOST_NO_CXX11_SCOPED_ENUMS*/
-#ifndef LIST_MATCH
-#ifdef __GNUC__
-#include <ext/hash_map>
-#else
-#include <hash_map>
-#endif
-#endif
-
 #define DEBUG_PRINT 0
-
-#ifndef LIST_MATCH
-namespace std
-{
-   using namespace __gnu_cxx;
-}
-#endif
 
 static bool myprint = false;
 int LogSimInterface::percentage_lgs = 0;
@@ -91,7 +77,7 @@ LogSimInterface::LogSimInterface(UecLogger *logger, TrafficLoggerSimple pktLogge
 
 void LogSimInterface::set_cwd(int cwd) { _cwd = cwd; }
 
-void LogSimInterface::htsim_schedule(u_int32_t host, int to, int size, int tag, u_int64_t start_time_event,
+void LogSimInterface::htsim_schedule(uint32_t host, int to, int size, int tag, uint64_t start_time_event,
                                      int my_offset) {
     // Send event to htsim for actual send
     //send_event(host, to, size, tag, start_time_event);
@@ -358,7 +344,7 @@ class myhash { // I WANT LAMBDAS! :)
     return (x.first>>16)+x.second;
   }
 };
-typedef std::hash_map< std::pair</*tag*/int,int/*src*/>, std::queue<ruqelem_t>, myhash > ruq_t;
+typedef std::unordered_map< std::pair</*tag*/int,int/*src*/>, std::queue<ruqelem_t>, myhash > ruq_t;
 static inline int match(const graph_node_properties &elem, ruq_t *q, ruqelem_t *retelem=NULL) {
   
   if(0) printf("++ [%i] searching matching queue for src %i tag %i\n", elem.host, elem.target, elem.tag);
@@ -505,8 +491,7 @@ int start_lgs(std::string filename_goal,
       std::fill(nextgs[i].begin(), nextgs[i].end(), 0);
     }
   
-    struct timeval tstart, tend;
-    gettimeofday(&tstart, NULL);
+    const auto wall_start = std::chrono::steady_clock::now();
   
     int host=0; 
     uint64_t num_events=0;    
@@ -1098,8 +1083,9 @@ int start_lgs(std::string filename_goal,
     }
 
     // end second while loop
-    gettimeofday(&tend, NULL);
-      unsigned long int diff = tend.tv_sec - tstart.tv_sec;
+      const auto wall_end = std::chrono::steady_clock::now();
+      const auto diff = static_cast<unsigned long int>(
+          std::chrono::duration_cast<std::chrono::seconds>(wall_end - wall_start).count());
 
     printf("It terminates! Htsim time %lu\n", lgs_interface->htsim_api->getGlobalTimeNs());
     fflush(stdout);

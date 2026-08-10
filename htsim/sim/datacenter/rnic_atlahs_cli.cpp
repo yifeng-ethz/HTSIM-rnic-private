@@ -1,5 +1,6 @@
 // -*- c-basic-offset: 4; indent-tabs-mode: nil -*-
 #include "rnic_atlahs_cli.h"
+#include "../rnic_wide_integer.h"
 
 #include <charconv>
 #include <limits>
@@ -11,7 +12,7 @@
 
 namespace {
 
-using Wide = unsigned __int128;
+using Wide = RnicWideInteger;
 
 struct RequiredOptions {
     bool goal = false;

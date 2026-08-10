@@ -3,7 +3,6 @@
 #define EVENTLIST_H
 
 #include <map>
-#include <sys/time.h>
 #include "config.h"
 #include "loggertypes.h"
 

@@ -32,6 +32,7 @@ TEST(AtlahsGoodputTraceTest, AggregatesExactPayloadIntoEpochAlignedSparseBins) {
               "delivered_payload_bytes,goodput_bps\n"
               "100,200,7,1,9,5,400000000000\n"
               "200,300,8,2,9,5,400000000000\n");
+    input.close();
     std::filesystem::remove(path);
 }
 

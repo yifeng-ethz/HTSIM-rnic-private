@@ -8,6 +8,7 @@
 #include <optional>
 
 #include "rnic_max_min_allocator.h"
+#include "rnic_wide_integer.h"
 
 struct RnicFluidFlowSpec {
     using FlowId = RnicMaxMinFlow::FlowId;
@@ -67,7 +68,7 @@ private:
     // (payload_bits * 10^12 ps/s); service subtracts
     // (rate_bits_per_second * elapsed_ps).  A uint64 payload needs fewer than
     // 107 bits, while any uint64 rate-times-duration product fits in 128 bits.
-    using ServiceDebt = unsigned __int128;
+    using ServiceDebt = RnicWideInteger;
 
     struct FlowState {
         RnicFluidFlowSpec spec;

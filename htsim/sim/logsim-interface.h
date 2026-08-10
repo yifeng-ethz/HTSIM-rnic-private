@@ -43,7 +43,7 @@ class MsgInfo {
     int total_bytes_msg;
     int bytes_left_to_recv;
     int identifier;
-    u_int64_t start_time;
+    uint64_t start_time;
     int offset;
     int to_parse;
 };
@@ -63,7 +63,7 @@ class LogSimInterface {
     int sends_active = 0;
     int debug_stop = 5;
     int compute_started = 0;
-    void htsim_schedule(u_int32_t, int, int, int, u_int64_t, int);
+    void htsim_schedule(uint32_t, int, int, int, uint64_t, int);
     void send_event(graph_node_properties);
     void execute_compute(graph_node_properties elem, int p);
     void execute_null_compute(graph_node_properties elem, int p);

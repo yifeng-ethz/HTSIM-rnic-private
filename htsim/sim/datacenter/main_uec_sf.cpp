@@ -2,7 +2,6 @@
 // #include "config.h"
 #include <math.h>
 #include <string.h>
-#include <unistd.h>
 #include <list>
 #include <sstream>
 #include <memory>

@@ -25,7 +25,7 @@ void ConnectionMatrix::addConnection(uint32_t src, uint32_t dest){
 void ConnectionMatrix::setPermutation(uint32_t conn, uint32_t rack_size){
     //int is_dest[N];
     uint32_t dest,pos;
-    int64_t to[N]; // enough to hold 32-bit ID and -1
+    vector<int64_t> to(N); // enough to hold 32-bit ID and -1
     uint32_t *rack_load;
     uint32_t rack_count;
     vector<uint32_t> perm_tmp;
@@ -87,7 +87,7 @@ void ConnectionMatrix::setPermutation(uint32_t conn, uint32_t rack_size){
 }
 
 void ConnectionMatrix::setPermutation(){
-    int is_dest[N];
+    vector<int> is_dest(N);
     uint32_t dest;
   
     for (uint32_t i=0; i<N; i++)
@@ -352,10 +352,10 @@ void ConnectionMatrix::setStaggeredRandom(Topology* top,uint32_t conns,double lo
 }
 
 void ConnectionMatrix::setStaggeredPermutation(Topology* top,double local){
-    int is_dest[N];
+    vector<int> is_dest(N);
     uint32_t dest = -1,i,found = 0;
 
-    memset(is_dest,0,N*sizeof(int));
+    memset(is_dest.data(),0,N*sizeof(int));
 
     for (uint32_t src = 0;src<N; src++) {
         connections[src] = new vector<uint32_t>();
@@ -422,7 +422,7 @@ void ConnectionMatrix::setManytoMany(uint32_t c){
 }
 
 void ConnectionMatrix::setHotspot(uint32_t hosts_per_hotspot, uint32_t count){
-    int is_dest[N],is_done[N];
+    vector<int> is_dest(N), is_done(N);
     for (uint32_t i=0;i<N;i++){
         is_dest[i] = 0;
         is_done[i] = 0;
@@ -458,7 +458,7 @@ void ConnectionMatrix::setHotspot(uint32_t hosts_per_hotspot, uint32_t count){
 
 void ConnectionMatrix::setIncastLocalPerm(uint32_t hosts_per_hotspot){
     //int is_dest[N];
-    int is_done[N];
+    vector<int> is_done(N);
 
     for (uint32_t i=0;i<N;i++){
         //is_dest[i] = 0;
@@ -520,7 +520,7 @@ void ConnectionMatrix::setIncastLocalPerm(uint32_t hosts_per_hotspot){
 }
 
 void ConnectionMatrix::setHotspotOutcast(uint32_t hosts_per_hotspot, uint32_t count){
-    int is_dest[N],is_done[N];
+    vector<int> is_dest(N), is_done(N);
     for (uint32_t i=0;i<N;i++){
         is_dest[i] = 0;
         is_done[i] = 0;
@@ -665,7 +665,14 @@ bool ConnectionMatrix::load(const char * filename){
 
 void tokenize(string const &str, const char delim, vector<string> &out)
 {
-    stringstream ss(str);
+    // std::getline removes '\n' but deliberately keeps the '\r' from a
+    // Windows CRLF line ending.  Normalize it here so all topology and
+    // connection-file parsers accept files produced on either platform.
+    string normalized = str;
+    if (!normalized.empty() && normalized.back() == '\r') {
+        normalized.pop_back();
+    }
+    stringstream ss(normalized);
     string s;
     while (getline(ss, s, delim)) {
         out.push_back(s);

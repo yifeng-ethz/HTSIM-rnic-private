@@ -1,5 +1,6 @@
 // -*- c-basic-offset: 4; indent-tabs-mode: nil -*-
 #include "rnic_collective_network_runtime.h"
+#include "../rnic_wide_integer.h"
 
 #include <algorithm>
 #include <deque>
@@ -22,7 +23,7 @@
 
 namespace {
 
-using Wide = unsigned __int128;
+using Wide = RnicWideInteger;
 
 std::uint64_t checkedAdd(std::uint64_t lhs, std::uint64_t rhs, const char* message) {
     if (rhs > std::numeric_limits<std::uint64_t>::max() - lhs) {
@@ -151,7 +152,7 @@ public:
                 "rnic-cn ledger allocation requested for an unregistered flow");
         }
         return static_cast<std::uint64_t>(
-            static_cast<unsigned __int128>(sharedWireRateBps()) * entry->second /
+            static_cast<RnicWideInteger>(sharedWireRateBps()) * entry->second /
             RnicCollectiveController::kPartsPerMillion);
     }
 
