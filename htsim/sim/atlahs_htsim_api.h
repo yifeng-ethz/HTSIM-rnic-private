@@ -25,6 +25,7 @@ class EventOver;
 class EqdsPullPacer;
 class EqdsNIC;
 class NdpPullPacer;
+class PaperNdpPullPacer; // paper-algorithm port
 class UecNIC;
 class UecPullPacer;
 class UecMultipath;
@@ -348,6 +349,7 @@ private:
 
     // NDP Specific
     vector<NdpPullPacer*> pacersNDP;
+    vector<PaperNdpPullPacer*> pacersPaperNDP; // paper-algorithm port
 
     // Sender Specific
     int sender_cwnd = 0;

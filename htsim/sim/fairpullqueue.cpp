@@ -191,3 +191,9 @@ CircularBuffer<PullPkt*>* FairPullQueue<PullPkt>::create_queue(const PullPkt& pk
 template class BasePullQueue<Packet>;
 template class FifoPullQueue<Packet>;
 template class FairPullQueue<Packet>;
+
+// Paper-algorithm port instantiations.
+#include "paper_ndppacket.h"
+template class BasePullQueue<PaperNdpPull>;
+template class BasePullQueue<PaperNdpRTS>;
+template class FairPullQueue<PaperNdpRTS>;

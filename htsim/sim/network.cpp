@@ -4,6 +4,7 @@
 #define DEFAULTDATASIZE 1500
 int Packet::_data_packet_size = DEFAULTDATASIZE;
 bool Packet::_packet_size_fixed = false;
+bool Packet::_paper_compat_unset_pathid = false;
 PacketFlow Packet::_defaultFlow(nullptr);
 
 // use set_attrs only when we want to do a late binding of the route -

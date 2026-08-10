@@ -9,6 +9,7 @@
 #endif
 
 #include "config.h"
+#include "eventlist.h"
 
 using namespace std;
 
@@ -146,7 +147,13 @@ int rand()
         rng_trace("rand", v);
         return v;
     }
-    return random_engine() & INT_MAX;
+    int v = random_engine() & INT_MAX;
+    static const bool tr = (getenv("HTSIM_TRACE_RAND") != nullptr);
+    if (tr) {
+        static unsigned long n = 0;
+        printf("R#%lu t=%lu v=%d\n", n++, (unsigned long)EventList::now(), v);
+    }
+    return v;
 }
 
 void srandom(unsigned seed)

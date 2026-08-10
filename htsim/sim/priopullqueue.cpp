@@ -177,3 +177,7 @@ PrioPullQueue<PullPkt>::create_queue(const PullPkt& pkt, int priority) {
 template class PrioPullQueue<NdpPull>;
 template class PrioPullQueue<Packet>;
 
+// Paper-algorithm port instantiations.
+#include "paper_ndppacket.h"
+template class PrioPullQueue<PaperNdpPull>;
+

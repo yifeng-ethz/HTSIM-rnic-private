@@ -2,6 +2,7 @@
 #include "atlahs_event.h"
 #include "datacenter/fat_tree_topology.h"
 #include "paper_uec.h"
+#include "paper_ndp.h"
 
 #include "logsim-interface.h"
 #include "lgs/LogGOPSim.hpp"
@@ -272,6 +273,51 @@ void AtlahsHtsimApi::Send(const SendEvent &event, graph_node_properties elem) {
         _topo->switches_lp[_topo->cfg().HOST_POD_SWITCH(to)]->addHostPort(
                         to, uecSrc->flowId(), uecSink->getPort(0));
 
+    } else if (_logsim_interface->get_protocol() == NDP_PROTOCOL) {
+        // Paper-algorithm port: verbatim from the ATLAHS artifact's NDP
+        // branch, adapted to the fork's FatTreeTopologyCfg accessors.
+        PaperNdpSrc* ndpSrc;
+        PaperNdpSink* ndpSnk;
+        ndpSrc = new PaperNdpSrc(NULL, NULL, *_eventlist, false);
+        ndpSrc->setCwnd(50*Packet::data_packet_size());
+        ndpSrc->set_dst(to);
+        ndpSrc->set_flowsize(size);
+
+        ndpSnk = new PaperNdpSink(pacersPaperNDP[to]);
+        ndpSnk->set_src(from);
+
+        ndpSnk->setName("ndp_sink_" + ntoa(from) + "_" + ntoa(to));
+        ndpSrc->setName("ndp_" + ntoa(from) + "_" + ntoa(to));
+
+        Route* srctotor = new Route();
+        srctotor->push_back(_topo->queues_ns_nlp[from][_topo->cfg().HOST_POD_SWITCH(from)][0]);
+        srctotor->push_back(_topo->pipes_ns_nlp[from][_topo->cfg().HOST_POD_SWITCH(from)][0]);
+        srctotor->push_back(_topo->queues_ns_nlp[from][_topo->cfg().HOST_POD_SWITCH(from)][0]->getRemoteEndpoint());
+
+        Route* dsttotor = new Route();
+        dsttotor->push_back(_topo->queues_ns_nlp[to][_topo->cfg().HOST_POD_SWITCH(to)][0]);
+        dsttotor->push_back(_topo->pipes_ns_nlp[to][_topo->cfg().HOST_POD_SWITCH(to)][0]);
+        dsttotor->push_back(_topo->queues_ns_nlp[to][_topo->cfg().HOST_POD_SWITCH(to)][0]->getRemoteEndpoint());
+
+        ndpSrc->from = from;
+        ndpSrc->to = to;
+        ndpSrc->tag = tag;
+        ndpSnk->from_sink = from;
+        ndpSnk->to_sink = to;
+        ndpSnk->tag_sink = tag;
+        ndpSrc->_atlahs_api = this;
+
+        graph_node_properties* node_copy = new graph_node_properties(elem);
+        ndpSrc->lgs_node = node_copy;
+        ndpSrc->connect(srctotor, dsttotor, *ndpSnk, _eventlist->now());
+        ndpSrc->set_paths(128);
+        ndpSnk->set_paths(128);
+
+        //register src and snk to receive packets from their respective TORs.
+        assert(_topo->switches_lp[_topo->cfg().HOST_POD_SWITCH(from)]);
+        assert(_topo->switches_lp[_topo->cfg().HOST_POD_SWITCH(from)]);
+        _topo->switches_lp[_topo->cfg().HOST_POD_SWITCH(from)]->addHostPort(from,ndpSrc->flow_id(),ndpSrc);
+        _topo->switches_lp[_topo->cfg().HOST_POD_SWITCH(to)]->addHostPort(to,ndpSrc->flow_id(),ndpSnk);
     } else if (_logsim_interface->get_protocol() == SENDER_PROTOCOL) {
         // Paper-algorithm port: verbatim from the ATLAHS artifact's
         // atlahs_htsim_api.cpp SENDER_PROTOCOL branch, with the topology
@@ -371,6 +417,13 @@ void AtlahsHtsimApi::Setup() {
     // NIC/pacer objects, exactly like the ATLAHS artifact.  The protocol was
     // previously unused, so skipping here changes nothing for existing paths.
     if (_logsim_interface->get_protocol() == SENDER_PROTOCOL) {
+        return;
+    }
+    // Paper NDP port: per-node pull pacers, exactly like the artifact's
+    // Setup().  NDP_PROTOCOL was previously unused by any fork main.
+    if (_logsim_interface->get_protocol() == NDP_PROTOCOL) {
+        for (int ix = 0; ix < total_nodes; ix++)
+            pacersPaperNDP.push_back(new PaperNdpPullPacer(*_eventlist, linkspeed, 0.99));
         return;
     }
 

@@ -646,6 +646,7 @@ int main(int argc, char **argv) {
     // Artifact send admission (NIC-only gating) and truncated bandwidth cost;
     // the fork's stricter semantics serialize the replay schedule.
     LogSimInterface::artifact_send_semantics = true;
+    Packet::_paper_compat_unset_pathid = true;
 
     // Calculate Network Info
     int hops = 4; // hardcoded for now

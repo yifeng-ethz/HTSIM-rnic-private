@@ -166,6 +166,8 @@ set(SOURCE_FILES
     uec_pdcses.cpp
     paper_uec.cpp
     paper_uecpacket.cpp
+    paper_ndp.cpp
+    paper_ndppacket.cpp
     logsim-interface.cpp
     compute_event.cpp
     null_event.cpp

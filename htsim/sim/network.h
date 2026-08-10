@@ -118,9 +118,13 @@ class Packet {
     inline uint32_t dst() const {return _dst;}
     inline void set_dst(uint32_t dst) { _dst = dst;}
     inline uint32_t pathid() {
-        assert(_pathid != UINT32_MAX);
+        // The ATLAHS artifact's NDP hashes packets that never had a pathid
+        // set (the hash just consumes UINT32_MAX); the paper port opts out of
+        // this fork-added assertion.  Default keeps the assert.
+        assert(_pathid != UINT32_MAX || _paper_compat_unset_pathid);
         return _pathid;
     }
+    static bool _paper_compat_unset_pathid;
 
     inline void set_pathid(uint32_t p) { _pathid = p;}
     inline uint32_t hop_count() const { return _hop_count; }
