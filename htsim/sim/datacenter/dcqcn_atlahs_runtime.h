@@ -10,10 +10,18 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 class EventList;
 class FatTreeTopology;
 class FatTreeTopologyCfg;
+
+struct DcqcnDynamicLinkTransition {
+    std::uint64_t link_id{0};
+    std::uint32_t source{0};
+    simtime_picosec transition_at_ps{0};
+    bool link_up{true};
+};
 
 struct DcqcnAtlahsRuntimeConfig {
     std::string topology_file;
@@ -44,6 +52,11 @@ struct DcqcnAtlahsRuntimeConfig {
     std::optional<std::string> state_trace_csv;
     std::optional<std::string> goodput_trace_csv;
     simtime_picosec goodput_trace_bin_ps{0};
+    bool packet_event_observations{false};
+    bool congestion_event_observations{false};
+    bool pfc_event_observations{false};
+    bool dynamic_link_event_observations{false};
+    std::vector<DcqcnDynamicLinkTransition> dynamic_link_transitions;
 };
 
 class DcqcnAtlahsRuntime final : public AtlahsFlowRuntime {
@@ -59,6 +72,8 @@ public:
     void setup(std::uint32_t node_count, CompletionHandler complete_flow) override;
     void send(const AtlahsFlowRequest& request) override;
     bool hasPendingPhysicalWork() const noexcept override;
+    AtlahsRuntimeEventCapabilities eventCapabilities() const noexcept override;
+    void setEventHandler(EventHandler handler) override;
     AtlahsTransportKind transportKind() const noexcept override {
         return AtlahsTransportKind::DcqcnQueuePair;
     }

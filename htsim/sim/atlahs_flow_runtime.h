@@ -26,6 +26,7 @@ struct AtlahsFlowRequest {
     std::uint64_t payload_bytes = 0;
     std::uint64_t start_time_ps = 0;
     std::uint32_t tag = 0;
+    std::uint64_t policy_context_token = 0;
 };
 
 // The legacy mode reserves LogGOPS's per-NIC gap before handing a flow to

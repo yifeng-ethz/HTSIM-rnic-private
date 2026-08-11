@@ -4,11 +4,13 @@
 #include "dcqcn_atlahs_runtime.h"
 #include "eventlist.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -172,6 +174,159 @@ TEST(DcqcnAtlahsRuntimeTest, EcnOnlyModeDropsOnOverflowAndRecoversWithARateCut) 
     EXPECT_NE(manifest.find("recovery=go-back-n"), std::string::npos);
     EXPECT_NE(manifest.find("sr_window_packets=64"), std::string::npos);
     EXPECT_NE(manifest.find("loss_rate_cut=on"), std::string::npos);
+}
+
+TEST(DcqcnAtlahsRuntimeTest,
+     RealPolicyAndFabricEmitPacketKeyedControlObservations) {
+    EventList event_list;
+    EventList::setEndtime(std::numeric_limits<simtime_picosec>::max());
+    const std::filesystem::path topology =
+        std::filesystem::path(__FILE__).parent_path() /
+        "../../../experiments/rnic_multibaseline/topologies/clos_64_400g.topo";
+    DcqcnAtlahsRuntimeConfig config;
+    config.topology_file = topology.lexically_normal().string();
+    config.ns_tm3_shared_buffer_bytes = 1024 * 1024;
+    config.ns_tm3_egress_buffer_bytes = 1024 * 1024;
+    config.ecn_kmin_bytes = 0;
+    config.ecn_kmax_bytes = 4096;
+    config.ecn_pmax_ppm = 1000000;
+    config.ecn_seed = 9;
+    config.pfc_low_threshold_bytes = 4096;
+    config.pfc_high_threshold_bytes = 8192;
+    config.packet_event_observations = true;
+    config.congestion_event_observations = true;
+    config.pfc_event_observations = true;
+    DcqcnAtlahsRuntime runtime(event_list, config, 64);
+
+    const AtlahsRuntimeEventCapabilities capabilities =
+        runtime.eventCapabilities();
+    EXPECT_TRUE(capabilities.packet_attempt_events);
+    EXPECT_TRUE(capabilities.ecn_cnp_events);
+    EXPECT_TRUE(capabilities.policy_update_events);
+    EXPECT_TRUE(capabilities.pfc_events);
+    EXPECT_FALSE(capabilities.dynamic_link_events);
+
+    std::vector<AtlahsRuntimeEvent> events;
+    runtime.setEventHandler(
+        [&](const AtlahsRuntimeEvent& event) { events.push_back(event); });
+    std::map<AtlahsFlowId, simtime_picosec> completion_times;
+    runtime.setup(64, [&](AtlahsFlowId flow_id) {
+        completion_times.emplace(flow_id, EventList::now());
+    });
+    for (std::uint32_t source = 0; source < 8; ++source) {
+        runtime.send(AtlahsFlowRequest{
+            277 + source,
+            source,
+            63,
+            64 * 1024,
+            EventList::now(),
+            9,
+            9001});
+    }
+    while (runtime.hasPendingPhysicalWork()) {
+        ASSERT_TRUE(EventList::doNextEvent());
+    }
+
+    const auto count_kind = [&](AtlahsRuntimeEventKind kind) {
+        return std::count_if(
+            events.begin(), events.end(),
+            [kind](const AtlahsRuntimeEvent& event) {
+                return event.kind == kind;
+            });
+    };
+    EXPECT_GT(count_kind(AtlahsRuntimeEventKind::PacketTxStarted), 0);
+    EXPECT_EQ(
+        count_kind(AtlahsRuntimeEventKind::PacketTxStarted),
+        count_kind(AtlahsRuntimeEventKind::PacketDelivered));
+    EXPECT_GT(count_kind(AtlahsRuntimeEventKind::EcnMarked), 0);
+    EXPECT_GT(count_kind(AtlahsRuntimeEventKind::CnpReceived), 0);
+    EXPECT_GT(count_kind(AtlahsRuntimeEventKind::RateUpdated), 8);
+    EXPECT_GT(count_kind(AtlahsRuntimeEventKind::PfcFrameSubmitted), 0);
+    EXPECT_GT(count_kind(AtlahsRuntimeEventKind::PfcPaused), 0);
+    EXPECT_GT(count_kind(AtlahsRuntimeEventKind::PfcResumed), 0);
+
+    std::uint64_t minimum_observed_rate =
+        std::numeric_limits<std::uint64_t>::max();
+    bool late_cnp_seen = false;
+    for (const AtlahsRuntimeEvent& event : events) {
+        if (event.kind == AtlahsRuntimeEventKind::RateUpdated
+            && event.has_effective_rate) {
+            minimum_observed_rate = std::min(
+                minimum_observed_rate, event.effective_rate_bps);
+        }
+        if (event.kind != AtlahsRuntimeEventKind::CnpReceived) {
+            continue;
+        }
+        const auto delivered = std::find_if(
+            events.begin(), events.end(),
+            [&](const AtlahsRuntimeEvent& candidate) {
+                return candidate.kind
+                           == AtlahsRuntimeEventKind::PacketDelivered
+                    && candidate.flow_id == event.flow_id
+                    && candidate.packet_index == event.packet_index
+                    && candidate.transmission_attempt
+                           == event.transmission_attempt
+                    && candidate.event_time_ps <= event.event_time_ps;
+            });
+        const auto completion = completion_times.find(event.flow_id);
+        if (delivered != events.end()
+            && completion != completion_times.end()
+            && event.event_time_ps < completion->second) {
+            late_cnp_seen = true;
+        }
+    }
+    EXPECT_LT(minimum_observed_rate, config.endpoint_link_bps);
+    EXPECT_TRUE(late_cnp_seen);
+}
+
+TEST(DcqcnAtlahsRuntimeTest,
+     DynamicEndpointLinkEmitsTransitionsAndHoldsNewSerializations) {
+    EventList event_list;
+    EventList::setEndtime(std::numeric_limits<simtime_picosec>::max());
+    const std::filesystem::path topology =
+        std::filesystem::path(__FILE__).parent_path() /
+        "../../../experiments/rnic_multibaseline/topologies/clos_64_400g.topo";
+    DcqcnAtlahsRuntimeConfig config;
+    config.topology_file = topology.lexically_normal().string();
+    config.packet_event_observations = true;
+    config.dynamic_link_event_observations = true;
+    config.dynamic_link_transitions = {
+        DcqcnDynamicLinkTransition{1, 0, 1000, false},
+        DcqcnDynamicLinkTransition{1, 0, 201000, true},
+    };
+    DcqcnAtlahsRuntime runtime(event_list, config, 64);
+    EXPECT_TRUE(runtime.eventCapabilities().packet_attempt_events);
+    EXPECT_TRUE(runtime.eventCapabilities().dynamic_link_events);
+
+    std::vector<AtlahsRuntimeEvent> events;
+    runtime.setEventHandler(
+        [&](const AtlahsRuntimeEvent& event) { events.push_back(event); });
+    std::vector<AtlahsFlowId> completed;
+    runtime.setup(64, [&](AtlahsFlowId flow_id) {
+        completed.push_back(flow_id);
+    });
+    runtime.send(AtlahsFlowRequest{
+        377, 0, 63, 64 * 1024, EventList::now(), 9, 9001});
+    while (runtime.hasPendingPhysicalWork()) {
+        ASSERT_TRUE(EventList::doNextEvent());
+    }
+
+    std::vector<simtime_picosec> transitions;
+    std::vector<simtime_picosec> tx_starts;
+    for (const AtlahsRuntimeEvent& event : events) {
+        if (event.kind == AtlahsRuntimeEventKind::LinkStateChanged) {
+            transitions.push_back(event.event_time_ps);
+        }
+        if (event.kind == AtlahsRuntimeEventKind::PacketTxStarted) {
+            tx_starts.push_back(event.event_time_ps);
+        }
+    }
+    EXPECT_EQ(transitions,
+              (std::vector<simtime_picosec>{1000, 201000}));
+    ASSERT_GT(tx_starts.size(), 1U);
+    EXPECT_EQ(tx_starts.front(), 0U);
+    EXPECT_GE(tx_starts[1], 201000U);
+    EXPECT_EQ(completed, (std::vector<AtlahsFlowId>{377}));
 }
 
 }  // namespace

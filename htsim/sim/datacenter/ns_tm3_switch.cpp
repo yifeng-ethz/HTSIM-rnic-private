@@ -480,7 +480,7 @@ uint32_t NsTm3Switch::max_active_egress_pause_depth() const {
 }
 
 void NsTm3Switch::emit_queue_observation(NsTm3QueueTransition transition,
-                                         const PacketSummary& packet) noexcept {
+                                         const PacketSummary& packet) {
     std::shared_ptr<NsTm3QueueObserver> observer = _queue_observer;
     if (!observer) {
         return;

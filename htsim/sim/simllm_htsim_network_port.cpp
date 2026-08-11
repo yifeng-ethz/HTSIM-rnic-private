@@ -590,6 +590,7 @@ NetworkSubmitResult HtsimNetworkPort::trySubmit(
             request.payload_bytes = descriptor.payload_bytes;
             request.start_time_ps = now_ps;
             request.tag = descriptor.flow_tag;
+            request.policy_context_token = descriptor.policy_context_token;
             runtime_->send(request);
         }
     } catch (...) {

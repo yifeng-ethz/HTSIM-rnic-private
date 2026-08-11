@@ -153,10 +153,11 @@ private:
     uint32_t _packets_since_last_cnp;
 
     // Mechanism
-    void send_cnp();
+    void send_cnp(RocePacket::seq_t cause_seqno);
     void armCnpTimer(simtime_picosec when);
     void cancelCnpTimer();
     std::optional<EventList::Handle> _cnp_timer;
+    std::optional<RocePacket::seq_t> _pending_cnp_cause_seqno;
 };
 
 #endif

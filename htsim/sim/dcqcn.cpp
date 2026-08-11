@@ -368,16 +368,21 @@ void DCQCNSink::cancelCnpTimer() {
 // seqno is the first byte of the new packet.
 void DCQCNSink::receivePacket(Packet& pkt) {
     bool ecn_marked = ((pkt.flags() & ECN_CE) != 0);
+    const RocePacket::seq_t cause_seqno =
+        pkt.type() == ROCE
+            ? static_cast<const RocePacket&>(pkt).seqno()
+            : 0;
     RoceSink::receivePacket(pkt);
 
     if (ecn_marked){
         //generate CNPs here.
         if (_last_cnp_sent_time == UINT64_MAX || eventlist().now() - _last_cnp_sent_time >= _cnp_interval){
-            send_cnp();
+            send_cnp(cause_seqno);
             armCnpTimer(eventlist().now() + _cnp_interval);
         }               
         else {
             _marked_packets_since_last_cnp++;
+            _pending_cnp_cause_seqno = cause_seqno;
         }
     }
     _packets_since_last_cnp++;
@@ -386,14 +391,23 @@ void DCQCNSink::receivePacket(Packet& pkt) {
 void DCQCNSink::doNextEvent(){
     _cnp_timer.reset();
     if (eventlist().now() - _last_cnp_sent_time >= _cnp_interval && _marked_packets_since_last_cnp >0){
-        send_cnp();
+        if (!_pending_cnp_cause_seqno.has_value()) {
+            throw std::logic_error(
+                "DCQCN delayed CNP lost its marked-packet cause");
+        }
+        send_cnp(*_pending_cnp_cause_seqno);
         armCnpTimer(eventlist().now() + _cnp_interval);
     }
 }
 
-void DCQCNSink::send_cnp() {
+void DCQCNSink::send_cnp(RocePacket::seq_t cause_seqno) {
+    if (cause_seqno == 0) {
+        throw std::invalid_argument(
+            "DCQCN CNP requires a marked-packet cause");
+    }
     CNPPacket *cnp = 0;
-    cnp = CNPPacket::newpkt(_src->_flow, *_route, _cumulative_ack,_srcaddr);
+    cnp = CNPPacket::newpkt(
+        _src->_flow, *_route, _cumulative_ack, _srcaddr, cause_seqno);
     cnp->set_pathid(0);
 
     cnp->sendOn();
@@ -401,4 +415,5 @@ void DCQCNSink::send_cnp() {
     _last_cnp_sent_time = eventlist().now();
     _packets_since_last_cnp = 0;
     _marked_packets_since_last_cnp = 0;
+    _pending_cnp_cause_seqno.reset();
 }

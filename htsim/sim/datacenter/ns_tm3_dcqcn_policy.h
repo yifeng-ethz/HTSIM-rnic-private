@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <utility>
 #include <vector>
 
 class BaseQueue;
@@ -55,8 +56,27 @@ struct NsTm3DcqcnPfcPortMetrics {
     std::uint32_t max_pause_cascade_depth;
 };
 
+enum class NsTm3DcqcnPolicyObservationKind {
+    EcnMarked,
+    PfcFrameSubmitted,
+    PfcPaused,
+    PfcResumed,
+};
+
+struct NsTm3DcqcnPolicyObservation {
+    NsTm3DcqcnPolicyObservationKind kind;
+    simtime_picosec time_ps;
+    std::uint64_t policy_domain_id;
+    std::uint32_t ingress_id;
+    std::uint32_t flow_id;
+    packetid_t packet_id;
+    bool pause;
+};
+
 class NsTm3DcqcnPolicy {
 public:
+    using Observer =
+        std::function<void(const NsTm3DcqcnPolicyObservation&)>;
     NsTm3DcqcnPolicy(EventList& event_list,
                      NsTm3DcqcnPolicyConfig config,
                      std::uint64_t ecn_domain_id = 0);
@@ -83,6 +103,7 @@ public:
         return _counters;
     }
     mem_b ingress_buffered_bytes(std::uint32_t ingress_id) const;
+    void set_observer(Observer observer) { _observer = std::move(observer); }
 
     // The owning switch supplies the depth of its deepest currently paused
     // egress so an emitted pause can be attributed to the chain that caused
@@ -108,6 +129,8 @@ private:
         simtime_picosec paused_since_ps{0};
         simtime_picosec paused_wall_ps{0};
         std::uint32_t max_pause_cascade_depth{0};
+        std::uint32_t cause_flow_id{0};
+        packetid_t cause_packet_id{0};
     };
 
     IngressState& ingress_state(std::uint32_t ingress_id);
@@ -116,13 +139,21 @@ private:
                          std::uint32_t ingress_id,
                          std::uint32_t egress_id,
                          mem_b egress_buffered_bytes) const;
-    void send_pfc(IngressState& ingress, bool pause);
+    void send_pfc(IngressState& ingress,
+                  std::uint32_t ingress_id,
+                  bool pause);
+    void emit_observation(NsTm3DcqcnPolicyObservationKind kind,
+                          std::uint32_t ingress_id,
+                          std::uint32_t flow_id,
+                          packetid_t packet_id,
+                          bool pause);
 
     EventList& _event_list;
     NsTm3DcqcnPolicyConfig _config;
     std::uint64_t _ecn_domain_id;
     NsTm3DcqcnPolicyCounters _counters;
     ActiveEgressPauseDepthProvider _active_egress_pause_depth_provider;
+    Observer _observer;
     std::vector<IngressState> _ingresses;
 };
 
