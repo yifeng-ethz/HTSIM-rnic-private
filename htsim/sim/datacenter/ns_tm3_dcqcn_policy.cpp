@@ -47,14 +47,19 @@ simtime_picosec pfcSerializationTime(linkspeed_bps link_rate_bps) {
 // approximation.
 class NsTm3PfcReverseLink final : public EventSource, public PacketSink {
 public:
+    using ArrivalObserver =
+        std::function<void(bool, std::uint32_t, packetid_t)>;
+
     NsTm3PfcReverseLink(EventList& event_list,
                         simtime_picosec propagation_delay_ps,
                         linkspeed_bps link_rate_bps,
-                        PacketSink& upstream)
+                        PacketSink& upstream,
+                        ArrivalObserver arrival_observer)
         : EventSource(event_list, "ns-tm3 PFC reverse serializer"),
           _propagation_delay_ps(propagation_delay_ps),
           _serialization_ps(pfcSerializationTime(link_rate_bps)),
-          _upstream(upstream) {}
+          _upstream(upstream),
+          _arrival_observer(std::move(arrival_observer)) {}
 
     ~NsTm3PfcReverseLink() override {
         if (_event_handle.has_value()) {
@@ -67,6 +72,12 @@ public:
     }
 
     void receivePacket(Packet& packet) override {
+        receive_pfc(packet, 0, 0);
+    }
+
+    void receive_pfc(Packet& packet,
+                     std::uint32_t cause_flow_id,
+                     packetid_t cause_packet_id) {
         if (packet.type() != ETH_PAUSE || packet.size() != PAUSESIZE) {
             throw std::invalid_argument(
                 "ns-tm3 reverse PFC serializer accepts only 64-byte PFC frames");
@@ -86,7 +97,8 @@ public:
         const simtime_picosec arrival =
             serializer_end + _propagation_delay_ps;
         _serializer_available_ps = serializer_end;
-        _in_flight.push_back(InFlightFrame{arrival, &packet});
+        _in_flight.push_back(InFlightFrame{
+            arrival, &packet, cause_flow_id, cause_packet_id});
         if (_in_flight.size() == 1) {
             arm(arrival);
         }
@@ -99,8 +111,16 @@ public:
             throw std::logic_error(
                 "ns-tm3 reverse PFC serializer fired off boundary");
         }
-        Packet* packet = _in_flight.front().packet;
+        const InFlightFrame frame = _in_flight.front();
+        Packet* packet = frame.packet;
         _in_flight.pop_front();
+        if (_arrival_observer) {
+            const auto& pause = static_cast<const EthPausePacket&>(*packet);
+            _arrival_observer(
+                pause.sleepTime() > 0,
+                frame.cause_flow_id,
+                frame.cause_packet_id);
+        }
         _upstream.receivePacket(*packet);
         if (!_in_flight.empty()) {
             arm(_in_flight.front().arrival_ps);
@@ -113,6 +133,8 @@ private:
     struct InFlightFrame {
         simtime_picosec arrival_ps;
         Packet* packet;
+        std::uint32_t cause_flow_id;
+        packetid_t cause_packet_id;
     };
 
     void arm(simtime_picosec when) {
@@ -130,6 +152,7 @@ private:
     simtime_picosec _propagation_delay_ps;
     simtime_picosec _serialization_ps;
     PacketSink& _upstream;
+    ArrivalObserver _arrival_observer;
     simtime_picosec _serializer_available_ps{0};
     std::deque<InFlightFrame> _in_flight;
     std::optional<EventList::Handle> _event_handle;
@@ -193,7 +216,18 @@ void NsTm3DcqcnPolicy::observe_physical_ingress(
             _event_list,
             propagation_pipe->delay(),
             _config.pfc_link_rate_bps,
-            *upstream_egress);
+            *upstream_egress,
+            [this, ingress_id](bool pause,
+                               std::uint32_t flow_id,
+                               packetid_t packet_id) {
+                emit_observation(
+                    pause ? NsTm3DcqcnPolicyObservationKind::PfcPaused
+                          : NsTm3DcqcnPolicyObservationKind::PfcResumed,
+                    ingress_id,
+                    flow_id,
+                    packet_id,
+                    pause);
+            });
         return;
     }
     if (ingress.upstream_egress != upstream_egress) {
@@ -217,6 +251,8 @@ void NsTm3DcqcnPolicy::packet_enqueued(
             std::numeric_limits<mem_b>::max() - ingress.data_buffered_bytes)) {
         throw std::overflow_error("ns-tm3 DCQCN ingress meter overflow");
     }
+    ingress.cause_flow_id = packet.flow_id();
+    ingress.cause_packet_id = packet.id();
     ingress.data_buffered_bytes += packet.size();
     _counters.max_ingress_buffered_bytes = std::max(
         _counters.max_ingress_buffered_bytes,
@@ -225,7 +261,7 @@ void NsTm3DcqcnPolicy::packet_enqueued(
         && ingress.data_buffered_bytes
                >= _config.pfc_high_threshold_bytes) {
         ingress.data_paused = true;
-        send_pfc(ingress, true);
+        send_pfc(ingress, ingress_id, true);
     }
 }
 
@@ -240,12 +276,20 @@ void NsTm3DcqcnPolicy::packet_selected(
             packet, ingress_id, egress_id, egress_buffered_bytes)) {
         packet.set_flags(packet.flags() | ECN_CE);
         ++_counters.ecn_marked_packets;
+        emit_observation(
+            NsTm3DcqcnPolicyObservationKind::EcnMarked,
+            ingress_id,
+            packet.flow_id(),
+            packet.id(),
+            false);
     }
 
     if (!_config.pfc_enabled || packet.priority() != Packet::PRIO_LO) {
         return;
     }
     IngressState& ingress = ingress_state(ingress_id);
+    ingress.cause_flow_id = packet.flow_id();
+    ingress.cause_packet_id = packet.id();
     if (ingress.data_buffered_bytes < packet.size()) {
         throw std::logic_error("ns-tm3 DCQCN ingress meter underflow");
     }
@@ -254,7 +298,7 @@ void NsTm3DcqcnPolicy::packet_selected(
         && ingress.data_buffered_bytes
                <= _config.pfc_low_threshold_bytes) {
         ingress.data_paused = false;
-        send_pfc(ingress, false);
+        send_pfc(ingress, ingress_id, false);
     }
 }
 
@@ -317,7 +361,9 @@ const NsTm3DcqcnPolicy::IngressState& NsTm3DcqcnPolicy::ingress_state(
 }
 
 void NsTm3DcqcnPolicy::send_pfc(
-        IngressState& ingress, bool pause) {
+        IngressState& ingress,
+        std::uint32_t ingress_id,
+        bool pause) {
     if (ingress.reverse_wire == nullptr) {
         throw std::logic_error(
             "ns-tm3 DCQCN cannot send PFC before link discovery");
@@ -359,7 +405,33 @@ void NsTm3DcqcnPolicy::send_pfc(
         ++ingress.resume_frames;
         ++_counters.resume_frames;
     }
-    ingress.reverse_wire->receivePacket(*packet);
+    emit_observation(
+        NsTm3DcqcnPolicyObservationKind::PfcFrameSubmitted,
+        ingress_id,
+        ingress.cause_flow_id,
+        ingress.cause_packet_id,
+        pause);
+    ingress.reverse_wire->receive_pfc(
+        *packet, ingress.cause_flow_id, ingress.cause_packet_id);
+}
+
+void NsTm3DcqcnPolicy::emit_observation(
+        NsTm3DcqcnPolicyObservationKind kind,
+        std::uint32_t ingress_id,
+        std::uint32_t flow_id,
+        packetid_t packet_id,
+        bool pause) {
+    if (!_observer) {
+        return;
+    }
+    _observer(NsTm3DcqcnPolicyObservation{
+        kind,
+        _event_list.now(),
+        _ecn_domain_id,
+        ingress_id,
+        flow_id,
+        packet_id,
+        pause});
 }
 
 std::vector<NsTm3DcqcnPfcPortMetrics>

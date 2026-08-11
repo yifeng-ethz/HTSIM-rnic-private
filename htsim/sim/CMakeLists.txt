@@ -226,6 +226,14 @@ endif()
 # Add subdirectories
 add_subdirectory(datacenter)
 
+if(HTSIM_ENABLE_SIMLLM_RNIC)
+    add_executable(simllm_rnic_control_probe
+        simllm_rnic_control_probe.cpp)
+    target_link_libraries(simllm_rnic_control_probe PRIVATE
+        htsim htsim_dc htsim simllm::rnic)
+    target_compile_features(simllm_rnic_control_probe PRIVATE cxx_std_17)
+endif()
+
 # Define executables and link with htsim library
 add_executable(parse_output parse_output.cpp)
 target_link_libraries(parse_output PRIVATE htsim)

@@ -85,7 +85,7 @@ struct NsTm3QueueObservation {
 class NsTm3QueueObserver {
 public:
     virtual ~NsTm3QueueObserver() = default;
-    virtual void observe(const NsTm3QueueObservation& observation) noexcept = 0;
+    virtual void observe(const NsTm3QueueObservation& observation) = 0;
 };
 
 class NsTm3IngressPort : public PacketSink {
@@ -169,6 +169,7 @@ public:
     // pause of its own, so PFC pause trees are measurable.
     uint32_t max_active_egress_pause_depth() const;
     void configure_dcqcn_policy(const NsTm3DcqcnPolicyConfig& config);
+    NsTm3DcqcnPolicy* dcqcn_policy() { return _dcqcn_policy.get(); }
     const NsTm3DcqcnPolicy* dcqcn_policy() const { return _dcqcn_policy.get(); }
     void set_queue_observer(std::shared_ptr<NsTm3QueueObserver> observer) {
         _queue_observer = std::move(observer);
@@ -229,7 +230,7 @@ private:
     std::optional<SelectedPacket> select_next_packet(EgressState& egress);
     void schedule_egress(uint32_t egress_id);
     void emit_queue_observation(NsTm3QueueTransition transition,
-                                const PacketSummary& packet) noexcept;
+                                const PacketSummary& packet);
     EgressState& egress_state(uint32_t egress_id);
     const EgressState& egress_state(uint32_t egress_id) const;
 

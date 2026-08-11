@@ -1,7 +1,9 @@
 // -*- c-basic-offset: 4; indent-tabs-mode: nil -*-
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
+#include <filesystem>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -10,6 +12,7 @@
 #include <vector>
 
 #include "atlahs_htsim_api.h"
+#include "datacenter/dcqcn_atlahs_runtime.h"
 #include "datacenter/fat_tree_topology.h"
 #include "datacenter/rnic_atlahs_runtime_factory.h"
 #include "simllm_atlahs_flow_runtime.h"
@@ -269,11 +272,13 @@ TEST(SimllmAtlahsFlowRuntimeTest,
         RnicProfile::PacketizedManifold,
         RnicPacketizedManifoldRuntimeConfig{
             UINT64_C(400000000000),
-            RnicDataPacketizationConfig(4096, 0),
+            RnicDataPacketizationConfig(4096, 64),
             0});
     SimllmAtlahsRuntimeConfig config = runtimeConfig(1000);
     config.port.network_abi_version =
         simllm::rnic::kNetworkPortAbiVersionV2;
+    config.port.data_header_bytes = 64;
+    config.port.max_wire_packet_bytes = 4096;
     auto runtime = makeComposedSimllmAtlahsFlowRuntime(
         event_list, std::move(config), std::move(network));
     SimllmAtlahsFlowRuntime* native = runtime.get();
@@ -281,7 +286,7 @@ TEST(SimllmAtlahsFlowRuntimeTest,
     api.Setup();
 
     graph_node_properties node = flow();
-    node.size = 8192;
+    node.size = 5000;
     api.Send(SendEvent(3, 1, node.size, node.tag, 0), node);
     std::size_t iterations = 0;
     while (api.runtimeHasPendingPhysicalWork()) {
@@ -292,11 +297,262 @@ TEST(SimllmAtlahsFlowRuntimeTest,
     ASSERT_EQ(native->device(3).records().size(), 1U);
     const auto& record = native->device(3).records().front();
     EXPECT_EQ(record.timeline.first_packet_at_ps, 1000U);
-    EXPECT_EQ(record.timeline.last_packet_at_ps, 82920U);
-    EXPECT_EQ(record.timeline.network_outcome_at_ps, 246760U);
+    EXPECT_EQ(record.timeline.last_packet_at_ps, 144200U);
+    EXPECT_EQ(record.timeline.network_outcome_at_ps, 185480U);
     EXPECT_EQ(native->networkPort().packetEvents().size(), 8U);
     EXPECT_EQ(native->networkPort().packetEvents().front().kind,
               simllm::rnic::NetworkEventKind::PacketTxStarted);
+    std::uint32_t tx_starts[2]{};
+    std::uint32_t tx_finishes[2]{};
+    std::uint32_t rx_arrivals[2]{};
+    std::uint32_t deliveries[2]{};
+    for (const simllm::rnic::NetworkEvent& event :
+         native->networkPort().packetEvents()) {
+        ASSERT_LT(event.packet_index, 2U);
+        switch (event.kind) {
+        case simllm::rnic::NetworkEventKind::PacketTxStarted:
+            ++tx_starts[event.packet_index];
+            break;
+        case simllm::rnic::NetworkEventKind::PacketTxFinished:
+            ++tx_finishes[event.packet_index];
+            break;
+        case simllm::rnic::NetworkEventKind::PacketRxArrived:
+            ++rx_arrivals[event.packet_index];
+            break;
+        case simllm::rnic::NetworkEventKind::Delivered:
+            ++deliveries[event.packet_index];
+            break;
+        default:
+            ADD_FAILURE() << "partial-packet cell emitted an unexpected event";
+            break;
+        }
+        if (event.packet_index == 0) {
+            EXPECT_EQ(event.payload_offset_bytes, 0U);
+            EXPECT_EQ(event.payload_bytes, 4032U);
+            EXPECT_EQ(event.wire_bytes, 4096U);
+            if (event.kind
+                == simllm::rnic::NetworkEventKind::PacketTxStarted) {
+                EXPECT_EQ(event.event_time_ps, 1000U);
+            }
+            if (event.kind
+                == simllm::rnic::NetworkEventKind::PacketTxFinished) {
+                EXPECT_EQ(event.event_time_ps, 82920U);
+            }
+            if (event.kind
+                == simllm::rnic::NetworkEventKind::PacketRxArrived) {
+                EXPECT_EQ(event.event_time_ps, 82920U);
+            }
+            if (event.kind == simllm::rnic::NetworkEventKind::Delivered) {
+                EXPECT_EQ(event.event_time_ps, 164840U);
+            }
+        } else {
+            EXPECT_EQ(event.packet_index, 1U);
+            EXPECT_EQ(event.payload_offset_bytes, 4032U);
+            EXPECT_EQ(event.payload_bytes, 968U);
+            EXPECT_EQ(event.wire_bytes, 1032U);
+            if (event.kind
+                == simllm::rnic::NetworkEventKind::PacketTxStarted) {
+                EXPECT_EQ(event.event_time_ps, 144200U);
+            }
+            if (event.kind
+                == simllm::rnic::NetworkEventKind::PacketTxFinished) {
+                EXPECT_EQ(event.event_time_ps, 164840U);
+            }
+            if (event.kind
+                == simllm::rnic::NetworkEventKind::PacketRxArrived) {
+                EXPECT_EQ(event.event_time_ps, 164840U);
+            }
+            if (event.kind
+                == simllm::rnic::NetworkEventKind::Delivered) {
+                EXPECT_EQ(event.event_time_ps, 185480U);
+            }
+        }
+    }
+    for (std::uint32_t packet_index = 0; packet_index < 2; ++packet_index) {
+        EXPECT_EQ(tx_starts[packet_index], 1U);
+        EXPECT_EQ(tx_finishes[packet_index], 1U);
+        EXPECT_EQ(rx_arrivals[packet_index], 1U);
+        EXPECT_EQ(deliveries[packet_index], 1U);
+    }
+    EXPECT_EQ(api.completion_count, 1U);
+    EXPECT_NO_THROW(native->validateQuiescent());
+}
+
+TEST(SimllmAtlahsFlowRuntimeTest,
+     AbiV2RelaysRealDcqcnPolicyAndFabricControlEvents) {
+    EventList event_list;
+    EventList::setEndtime(std::numeric_limits<simtime_picosec>::max());
+    CapturingApi api;
+    api.setEventList(&event_list);
+    api.total_nodes = 64;
+
+    DcqcnAtlahsRuntimeConfig network_config;
+    const std::filesystem::path topology =
+        std::filesystem::path(__FILE__).parent_path() /
+        "../../experiments/rnic_multibaseline/topologies/clos_64_400g.topo";
+    network_config.topology_file = topology.lexically_normal().string();
+    network_config.ns_tm3_shared_buffer_bytes = 1024 * 1024;
+    network_config.ns_tm3_egress_buffer_bytes = 1024 * 1024;
+    network_config.ecn_kmin_bytes = 0;
+    network_config.ecn_kmax_bytes = 4096;
+    network_config.ecn_pmax_ppm = 1000000;
+    network_config.ecn_seed = 9;
+    network_config.pfc_low_threshold_bytes = 4096;
+    network_config.pfc_high_threshold_bytes = 8192;
+    network_config.packet_event_observations = true;
+    network_config.congestion_event_observations = true;
+    network_config.pfc_event_observations = true;
+    auto network = std::make_unique<DcqcnAtlahsRuntime>(
+        event_list, network_config, 64);
+
+    SimllmAtlahsRuntimeConfig config = runtimeConfig(0, "dcqcn");
+    config.port.endpoint_count = 64;
+    config.port.network_abi_version =
+        simllm::rnic::kNetworkPortAbiVersionV2;
+    config.port.data_header_bytes = 64;
+    config.port.max_wire_packet_bytes = 4096;
+    config.port.congestion = true;
+    config.port.control_frames = true;
+    auto runtime = makeComposedSimllmAtlahsFlowRuntime(
+        event_list, std::move(config), std::move(network));
+    SimllmAtlahsFlowRuntime* native = runtime.get();
+    api.setFlowRuntime(std::move(runtime));
+    api.Setup();
+
+    for (std::uint32_t source = 0; source < 8; ++source) {
+        graph_node_properties node = flow();
+        node.host = source;
+        node.offset = 100 + source;
+        node.target = 63;
+        node.size = 64 * 1024;
+        node.tag = 9;
+        api.Send(
+            SendEvent(source, 63, node.size, node.tag, 0), node);
+    }
+    std::size_t iterations = 0;
+    while (api.runtimeHasPendingPhysicalWork()) {
+        ASSERT_LT(++iterations, 100000U);
+        ASSERT_TRUE(EventList::doNextEvent());
+    }
+
+    EXPECT_EQ(api.completion_count, 8U);
+    EXPECT_TRUE(native->networkPort().capabilities().packet_attempt_events);
+    EXPECT_TRUE(native->networkPort().capabilities().ecn_cnp_events);
+    EXPECT_TRUE(native->networkPort().capabilities().policy_update_events);
+    EXPECT_TRUE(native->networkPort().capabilities().pfc_events);
+    EXPECT_FALSE(native->networkPort().capabilities().dynamic_link_events);
+    const auto& packet_events = native->networkPort().packetEvents();
+    const auto& control_events = native->networkPort().controlEvents();
+    const auto count_control = [&](simllm::rnic::NetworkEventKind kind) {
+        return std::count_if(
+            control_events.begin(), control_events.end(),
+            [kind](const simllm::rnic::NetworkEvent& event) {
+                return event.kind == kind;
+            });
+    };
+    EXPECT_GT(count_control(simllm::rnic::NetworkEventKind::EcnMarked), 0);
+    EXPECT_GT(count_control(simllm::rnic::NetworkEventKind::CnpReceived), 0);
+    EXPECT_GT(count_control(simllm::rnic::NetworkEventKind::RateUpdated), 8);
+    EXPECT_GT(
+        count_control(simllm::rnic::NetworkEventKind::PfcFrameSubmitted),
+        0);
+    EXPECT_GT(count_control(simllm::rnic::NetworkEventKind::PfcPaused), 0);
+    EXPECT_GT(count_control(simllm::rnic::NetworkEventKind::PfcResumed), 0);
+
+    bool reduced_rate_seen = false;
+    bool retained_cnp_seen = false;
+    for (const simllm::rnic::NetworkEvent& event : control_events) {
+        if (event.kind == simllm::rnic::NetworkEventKind::RateUpdated
+            && event.has_effective_rate
+            && event.effective_rate_bps
+                   < network_config.endpoint_link_bps) {
+            reduced_rate_seen = true;
+        }
+        if (event.kind != simllm::rnic::NetworkEventKind::CnpReceived) {
+            continue;
+        }
+        const auto delivered = std::find_if(
+            packet_events.begin(), packet_events.end(),
+            [&](const simllm::rnic::NetworkEvent& candidate) {
+                return candidate.kind
+                           == simllm::rnic::NetworkEventKind::Delivered
+                    && candidate.token == event.token
+                    && candidate.event_time_ps <= event.event_time_ps;
+            });
+        const auto terminal = std::find_if(
+            native->networkPort().terminals().begin(),
+            native->networkPort().terminals().end(),
+            [&](const htsim::simllm_rnic::HtsimTerminalToken& candidate) {
+                return candidate.wqe_id == event.wqe_id;
+            });
+        if (delivered != packet_events.end()
+            && terminal != native->networkPort().terminals().end()
+            && event.event_time_ps < terminal->at_ps) {
+            retained_cnp_seen = true;
+        }
+    }
+    EXPECT_TRUE(reduced_rate_seen);
+    EXPECT_TRUE(retained_cnp_seen);
+    EXPECT_NO_THROW(native->validateQuiescent());
+}
+
+TEST(SimllmAtlahsFlowRuntimeTest,
+     AbiV2RelaysTimestampedDynamicEndpointLinkTransitions) {
+    EventList event_list;
+    EventList::setEndtime(std::numeric_limits<simtime_picosec>::max());
+    CapturingApi api;
+    api.setEventList(&event_list);
+    api.total_nodes = 64;
+
+    DcqcnAtlahsRuntimeConfig network_config;
+    const std::filesystem::path topology =
+        std::filesystem::path(__FILE__).parent_path() /
+        "../../experiments/rnic_multibaseline/topologies/clos_64_400g.topo";
+    network_config.topology_file = topology.lexically_normal().string();
+    network_config.packet_event_observations = true;
+    network_config.dynamic_link_event_observations = true;
+    network_config.dynamic_link_transitions = {
+        DcqcnDynamicLinkTransition{1, 0, 1000, false},
+        DcqcnDynamicLinkTransition{1, 0, 201000, true},
+    };
+    auto network = std::make_unique<DcqcnAtlahsRuntime>(
+        event_list, network_config, 64);
+
+    SimllmAtlahsRuntimeConfig config = runtimeConfig(0, "dcqcn");
+    config.port.endpoint_count = 64;
+    config.port.network_abi_version =
+        simllm::rnic::kNetworkPortAbiVersionV2;
+    config.port.data_header_bytes = 64;
+    config.port.max_wire_packet_bytes = 4096;
+    config.port.dynamic_link_events = true;
+    auto runtime = makeComposedSimllmAtlahsFlowRuntime(
+        event_list, std::move(config), std::move(network));
+    SimllmAtlahsFlowRuntime* native = runtime.get();
+    api.setFlowRuntime(std::move(runtime));
+    api.Setup();
+
+    graph_node_properties node = flow();
+    node.host = 0;
+    node.target = 63;
+    node.size = 64 * 1024;
+    api.Send(SendEvent(0, 63, node.size, node.tag, 0), node);
+    std::size_t iterations = 0;
+    while (api.runtimeHasPendingPhysicalWork()) {
+        ASSERT_LT(++iterations, 100000U);
+        ASSERT_TRUE(EventList::doNextEvent());
+    }
+
+    std::vector<simllm::rnic::Picoseconds> transitions;
+    for (const simllm::rnic::NetworkEvent& event :
+         native->networkPort().controlEvents()) {
+        if (event.kind
+            == simllm::rnic::NetworkEventKind::LinkStateChanged) {
+            transitions.push_back(event.event_time_ps);
+        }
+    }
+    EXPECT_EQ(transitions,
+              (std::vector<simllm::rnic::Picoseconds>{1000, 201000}));
+    EXPECT_TRUE(native->networkPort().capabilities().dynamic_link_events);
     EXPECT_EQ(api.completion_count, 1U);
     EXPECT_NO_THROW(native->validateQuiescent());
 }

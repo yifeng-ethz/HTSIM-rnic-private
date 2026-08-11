@@ -24,6 +24,7 @@
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -44,15 +45,32 @@ std::uint64_t transportLivePacketCount() {
 
 class DcqcnHostQueue final : public BaseQueue {
 public:
+    using DataBoundaryObserver =
+        std::function<void(Packet&, AtlahsRuntimeEventKind)>;
+
     DcqcnHostQueue(linkspeed_bps bitrate,
                    mem_b configured_capacity,
                    EventList& event_list,
-                   std::string name)
-        : BaseQueue(bitrate, event_list, nullptr), _configured_capacity(configured_capacity) {
+                   std::string name,
+                   DataBoundaryObserver data_boundary_observer)
+        : BaseQueue(bitrate, event_list, nullptr),
+          _configured_capacity(configured_capacity),
+          _data_boundary_observer(std::move(data_boundary_observer)) {
         _nodename = std::move(name);
     }
 
     void register_sender(PacketSink& sender) { _data_senders.push_back(&sender); }
+
+    void set_link_up(bool link_up) {
+        if (_link_up == link_up) {
+            throw std::logic_error(
+                "DCQCN host link repeated a dynamic state");
+        }
+        _link_up = link_up;
+        if (_link_up && _in_service == nullptr) {
+            begin_service();
+        }
+    }
 
     void receivePacket(Packet& packet) override {
         if (packet.type() == ETH_PAUSE) {
@@ -90,6 +108,10 @@ public:
         }
         Packet* packet = _in_service;
         _in_service = nullptr;
+        if (packet->type() == ROCE && _data_boundary_observer) {
+            _data_boundary_observer(
+                *packet, AtlahsRuntimeEventKind::PacketTxFinished);
+        }
         if (_buffered_bytes < packet->size()) {
             throw std::logic_error("DCQCN host queue accounting underflow");
         }
@@ -106,7 +128,7 @@ public:
 
 private:
     Packet* select_low() {
-        if (_data_paused || _low.empty()) {
+        if (_data_paused || !_link_up || _low.empty()) {
             return nullptr;
         }
         auto selected = _has_last_low_flow ? _low.upper_bound(_last_low_flow) : _low.begin();
@@ -134,6 +156,10 @@ private:
             _in_service = select_low();
         }
         if (_in_service != nullptr) {
+            if (_in_service->type() == ROCE && _data_boundary_observer) {
+                _data_boundary_observer(
+                    *_in_service, AtlahsRuntimeEventKind::PacketTxStarted);
+            }
             eventlist().sourceIsPendingRel(*this, drainTime(_in_service));
         }
     }
@@ -142,33 +168,40 @@ private:
     mem_b _buffered_bytes{0};
     mem_b _high_watermark{0};
     bool _data_paused{false};
+    bool _link_up{true};
     Packet* _in_service{nullptr};
     std::deque<Packet*> _high;
     std::map<flowid_t, std::deque<Packet*>> _low;
     bool _has_last_low_flow{false};
     flowid_t _last_low_flow{0};
     std::vector<PacketSink*> _data_senders;
+    DataBoundaryObserver _data_boundary_observer;
 };
 
 class DcqcnAtlahsSrc final : public DCQCNSrc {
 public:
     using Completion = std::function<void()>;
+    using RuntimeObserver = std::function<void(AtlahsRuntimeEvent)>;
 
     DcqcnAtlahsSrc(EventList& event_list,
                    linkspeed_bps rate,
                    AtlahsFlowId atlahs_flow_id,
                    std::uint32_t source,
                    std::uint32_t destination,
+                   std::uint64_t policy_context_token,
                    AtlahsStateTrace* state_trace,
+                   RuntimeObserver runtime_observer,
                    Completion completion)
         : DCQCNSrc(nullptr, nullptr, event_list, rate),
           _atlahs_flow_id(atlahs_flow_id),
           _source(source),
           _destination(destination),
+          _policy_context_token(policy_context_token),
           _state_trace(state_trace),
+          _runtime_observer(std::move(runtime_observer)),
           _completion(std::move(completion)),
           _last_progress_ps(event_list.now()) {
-        setStateObserver([this](const char* event) { trace(event); });
+        setStateObserver([this](const char* event) { observeState(event); });
     }
 
     void processAck(const RoceAck& ack) override {
@@ -193,7 +226,26 @@ public:
 
     void processPause(const EthPausePacket& pause) override {
         RoceSrc::processPause(pause);
+        emitEligibility();
         trace(pause.sleepTime() > 0 ? "pause" : "resume");
+    }
+
+    void processCNP(const CNPPacket& cnp) override {
+        if (_runtime_observer) {
+            AtlahsRuntimeEvent event;
+            event.kind = AtlahsRuntimeEventKind::CnpReceived;
+            event.flow_id = _atlahs_flow_id;
+            event.event_time_ps = eventlist().now();
+            if (cnp.cause_seqno() == 0) {
+                throw std::logic_error(
+                    "DCQCN physical CNP lost its packet correlation");
+            }
+            event.packet_index = cnp.cause_seqno() - 1;
+            event.source = _source;
+            event.destination = _destination;
+            _runtime_observer(event);
+        }
+        DCQCNSrc::processCNP(cnp);
     }
 
     bool check_silent_rto(simtime_picosec now, simtime_picosec rto) {
@@ -212,9 +264,60 @@ public:
         return true;
     }
 
-    void traceFlowStart() { trace("flow-start"); }
+    void traceFlowStart() {
+        observeState("flow-start");
+        emitEligibility();
+    }
 
 private:
+    void observeState(const char* event) {
+        trace(event);
+        if (!_runtime_observer) {
+            return;
+        }
+        const linkspeed_bps rate = current_rate();
+        if (_last_reported_rate.has_value()
+            && *_last_reported_rate == rate) {
+            return;
+        }
+        _last_reported_rate = rate;
+        AtlahsRuntimeEvent observation;
+        observation.kind = AtlahsRuntimeEventKind::RateUpdated;
+        observation.flow_id = _atlahs_flow_id;
+        observation.event_time_ps = eventlist().now();
+        observation.policy_context_token = _policy_context_token;
+        observation.source = _source;
+        observation.destination = _destination;
+        observation.effective_at_ps = eventlist().now();
+        observation.has_effective_rate = true;
+        observation.effective_rate_bps = rate;
+        _runtime_observer(observation);
+    }
+
+    void emitEligibility() {
+        if (!_runtime_observer) {
+            return;
+        }
+        const bool eligible = _state_send != PAUSED && !done();
+        if (_last_reported_eligibility.has_value()
+            && *_last_reported_eligibility == eligible) {
+            return;
+        }
+        _last_reported_eligibility = eligible;
+        AtlahsRuntimeEvent observation;
+        observation.kind = AtlahsRuntimeEventKind::EligibilityUpdated;
+        observation.flow_id = _atlahs_flow_id;
+        observation.event_time_ps = eventlist().now();
+        observation.policy_context_token = _policy_context_token;
+        observation.source = _source;
+        observation.destination = _destination;
+        observation.effective_at_ps = eventlist().now();
+        observation.has_effective_rate = true;
+        observation.effective_rate_bps =
+            eligible ? current_rate() : UINT64_C(0);
+        _runtime_observer(observation);
+    }
+
     void trace(const char* event) {
         if (_state_trace == nullptr || !_state_trace->enabled()) {
             return;
@@ -229,24 +332,32 @@ private:
     AtlahsFlowId _atlahs_flow_id;
     std::uint32_t _source;
     std::uint32_t _destination;
+    std::uint64_t _policy_context_token;
     AtlahsStateTrace* _state_trace;
+    RuntimeObserver _runtime_observer;
     Completion _completion;
     simtime_picosec _last_progress_ps;
     bool _completion_notified{false};
+    std::optional<linkspeed_bps> _last_reported_rate;
+    std::optional<bool> _last_reported_eligibility;
 };
 
 class DcqcnAtlahsSink final : public DCQCNSink {
 public:
+    using DataObserver = std::function<void(Packet&)>;
+
     DcqcnAtlahsSink(EventList& event_list,
                     AtlahsFlowId atlahs_flow_id,
                     std::uint32_t source,
                     std::uint32_t destination,
-                    AtlahsGoodputTrace* goodput_trace)
+                    AtlahsGoodputTrace* goodput_trace,
+                    DataObserver data_observer)
         : DCQCNSink(event_list),
           _atlahs_flow_id(atlahs_flow_id),
           _source(source),
           _destination(destination),
-          _goodput_trace(goodput_trace) {}
+          _goodput_trace(goodput_trace),
+          _data_observer(std::move(data_observer)) {}
 
     void receivePacket(Packet& packet) override {
         if (packet.type() != ROCE) {
@@ -260,6 +371,9 @@ public:
         }
         const std::uint64_t payload_bytes =
             static_cast<std::uint64_t>(packet.size() - RocePacket::ACKSIZE);
+        if (_data_observer) {
+            _data_observer(packet);
+        }
         DCQCNSink::receivePacket(packet);
         if (newly_delivered) {
             _goodput_trace->record(EventList::now(), _atlahs_flow_id, _source, _destination,
@@ -272,6 +386,87 @@ private:
     std::uint32_t _source;
     std::uint32_t _destination;
     AtlahsGoodputTrace* _goodput_trace;
+    DataObserver _data_observer;
+};
+
+class CallbackQueueObserver final : public NsTm3QueueObserver {
+public:
+    using Callback =
+        std::function<void(const NsTm3QueueObservation&)>;
+
+    explicit CallbackQueueObserver(Callback callback)
+        : _callback(std::move(callback)) {}
+
+    void observe(const NsTm3QueueObservation& observation) override {
+        _callback(observation);
+    }
+
+private:
+    Callback _callback;
+};
+
+class DcqcnDynamicLinkSource final : public EventSource {
+public:
+    using TransitionHandler =
+        std::function<void(const DcqcnDynamicLinkTransition&)>;
+
+    DcqcnDynamicLinkSource(
+            EventList& event_list,
+            std::vector<DcqcnDynamicLinkTransition> transitions,
+            TransitionHandler handler)
+        : EventSource(event_list, "DCQCN dynamic endpoint link"),
+          _transitions(std::move(transitions)),
+          _handler(std::move(handler)) {}
+
+    ~DcqcnDynamicLinkSource() override {
+        if (_handle.has_value()) {
+            eventlist().cancelPendingSourceByHandle(*this, *_handle);
+        }
+    }
+
+    void start() {
+        if (_started || _transitions.empty()) {
+            throw std::logic_error(
+                "DCQCN dynamic link source has an invalid start");
+        }
+        _started = true;
+        arm(_transitions.front().transition_at_ps);
+    }
+
+    void doNextEvent() override {
+        _handle.reset();
+        if (_next >= _transitions.size()
+            || _transitions[_next].transition_at_ps != eventlist().now()) {
+            throw std::logic_error(
+                "DCQCN dynamic link source fired off boundary");
+        }
+        const simtime_picosec now = eventlist().now();
+        do {
+            _handler(_transitions[_next]);
+            ++_next;
+        } while (_next < _transitions.size()
+                 && _transitions[_next].transition_at_ps == now);
+        if (_next < _transitions.size()) {
+            arm(_transitions[_next].transition_at_ps);
+        }
+    }
+
+    bool pending() const noexcept { return _handle.has_value(); }
+
+private:
+    void arm(simtime_picosec when) {
+        const EventList::Handle handle =
+            eventlist().sourceIsPendingGetHandle(*this, when);
+        if (handle != EventList::nullHandle()) {
+            _handle = handle;
+        }
+    }
+
+    std::vector<DcqcnDynamicLinkTransition> _transitions;
+    TransitionHandler _handler;
+    std::size_t _next{0};
+    bool _started{false};
+    std::optional<EventList::Handle> _handle;
 };
 
 std::uint32_t checkedWireFlowId(std::uint64_t value) {
@@ -285,6 +480,44 @@ std::uint32_t checkedWireFlowId(std::uint64_t value) {
 
 class DcqcnAtlahsRuntime::Impl final : public EventSource {
 public:
+    struct FlowObservation {
+        AtlahsFlowRequest request;
+        std::uint32_t wire_flow_id;
+        std::uint64_t payload_quantum_bytes;
+    };
+
+    struct PacketLookupKey {
+        std::uint32_t wire_flow_id;
+        packetid_t packet_id;
+
+        bool operator<(const PacketLookupKey& other) const noexcept {
+            return std::tie(wire_flow_id, packet_id)
+                   < std::tie(other.wire_flow_id, other.packet_id);
+        }
+    };
+
+    struct SequenceKey {
+        AtlahsFlowId flow_id;
+        std::uint64_t sequence;
+
+        bool operator<(const SequenceKey& other) const noexcept {
+            return std::tie(flow_id, sequence)
+                   < std::tie(other.flow_id, other.sequence);
+        }
+    };
+
+    struct PacketObservation {
+        AtlahsFlowId flow_id;
+        std::uint64_t packet_index;
+        std::uint32_t transmission_attempt;
+        std::uint64_t payload_offset_bytes;
+        std::uint64_t payload_bytes;
+        std::uint64_t wire_bytes;
+        AtlahsRuntimePacketKind packet_kind;
+        std::uint32_t source;
+        std::uint32_t destination;
+    };
+
     Impl(EventList& event_list, DcqcnAtlahsRuntimeConfig config, std::uint32_t physical_node_count)
         : EventSource(event_list, "DCQCN ATLAHS RTO scanner"),
           event_list(event_list),
@@ -330,6 +563,13 @@ public:
         topology =
             std::make_unique<FatTreeTopology>(topology_config.get(), nullptr, &event_list, nullptr);
 
+        if (this->config.packet_event_observations) {
+            queue_observer = std::make_shared<CallbackQueueObserver>(
+                [this](const NsTm3QueueObservation& observation) {
+                    observe_queue(observation);
+                });
+        }
+
         const NsTm3DcqcnPolicyConfig policy_config{true,
                                                    this->config.ecn_kmin_bytes,
                                                    this->config.ecn_kmax_bytes,
@@ -365,11 +605,57 @@ public:
         completion_handler = std::move(handler);
         host_queues.reserve(node_count);
         for (std::uint32_t node = 0; node < node_count; ++node) {
+            DcqcnHostQueue::DataBoundaryObserver boundary_observer;
+            if (config.packet_event_observations) {
+                boundary_observer =
+                    [this](Packet& packet, AtlahsRuntimeEventKind kind) {
+                        observe_host_boundary(packet, kind);
+                    };
+            }
             host_queues.push_back(std::make_unique<DcqcnHostQueue>(
                 config.endpoint_link_bps, config.ns_tm3_shared_buffer_bytes, event_list,
-                "dcqcn-host-serializer-" + std::to_string(node)));
+                "dcqcn-host-serializer-" + std::to_string(node),
+                std::move(boundary_observer)));
+        }
+        if (!config.dynamic_link_transitions.empty()) {
+            dynamic_link_source = std::make_unique<DcqcnDynamicLinkSource>(
+                event_list,
+                config.dynamic_link_transitions,
+                [this](const DcqcnDynamicLinkTransition& transition) {
+                    apply_dynamic_link_transition(transition);
+                });
+            dynamic_link_source->start();
         }
         setup_complete = true;
+    }
+
+    AtlahsRuntimeEventCapabilities event_capabilities() const noexcept {
+        return AtlahsRuntimeEventCapabilities{
+            config.packet_event_observations,
+            config.congestion_event_observations,
+            config.congestion_event_observations,
+            config.pfc_enabled && config.pfc_event_observations,
+            config.dynamic_link_event_observations
+                && !config.dynamic_link_transitions.empty()};
+    }
+
+    void set_event_handler(EventHandler handler) {
+        if (setup_complete) {
+            throw std::logic_error(
+                "DCQCN ATLAHS event handler must be installed before setup");
+        }
+        const AtlahsRuntimeEventCapabilities capabilities =
+            event_capabilities();
+        const bool any_capability = capabilities.packet_attempt_events
+            || capabilities.ecn_cnp_events
+            || capabilities.policy_update_events
+            || capabilities.pfc_events
+            || capabilities.dynamic_link_events;
+        if (handler && !any_capability) {
+            throw std::invalid_argument(
+                "DCQCN ATLAHS runtime has no enabled event producer");
+        }
+        event_handler = std::move(handler);
     }
 
     void send(const AtlahsFlowRequest& request) {
@@ -383,6 +669,11 @@ public:
             request.source == request.destination) {
             throw std::out_of_range("invalid DCQCN ATLAHS endpoint pair");
         }
+        if (config.congestion_event_observations
+            && request.policy_context_token == 0) {
+            throw std::invalid_argument(
+                "DCQCN control observations require a policy-context token");
+        }
         if (!known_flow_ids.insert(request.flow_id).second) {
             throw std::logic_error("duplicate DCQCN ATLAHS flow ID");
         }
@@ -395,12 +686,29 @@ public:
         const bool scanner_was_idle = active_flow_ids.empty();
         active_flow_ids.insert(request.flow_id);
 
+        const std::uint32_t wire_flow_id =
+            checkedWireFlowId(next_wire_flow_id++);
+        DcqcnAtlahsSrc::RuntimeObserver source_observer;
+        if (config.congestion_event_observations) {
+            source_observer = [this](AtlahsRuntimeEvent event) {
+                observe_source_event(std::move(event));
+            };
+        }
+        DcqcnAtlahsSink::DataObserver sink_observer;
+        if (config.packet_event_observations) {
+            sink_observer = [this](Packet& packet) {
+                observe_sink_arrival(packet);
+            };
+        }
+
         auto source = std::make_unique<DcqcnAtlahsSrc>(
             event_list, config.endpoint_link_bps, request.flow_id, request.source,
-            request.destination, &state_trace,
+            request.destination, request.policy_context_token, &state_trace,
+            std::move(source_observer),
             [this, flow_id = request.flow_id]() { complete(flow_id); });
         auto sink = std::make_unique<DcqcnAtlahsSink>(
-            event_list, request.flow_id, request.source, request.destination, &goodput_trace);
+            event_list, request.flow_id, request.source, request.destination,
+            &goodput_trace, std::move(sink_observer));
         source->setName("dcqcn-" + std::to_string(request.source) + "-" +
                         std::to_string(request.destination) + "-" +
                         std::to_string(request.flow_id));
@@ -417,9 +725,24 @@ public:
             make_route(request.destination, request.source,
                        splitmix64(request.flow_id ^ UINT64_C(0xd1b54a32d192ed03)), *source);
         source->connect(forward, reverse, *sink, TRIGGER_START);
-        source->set_flowid(checkedWireFlowId(next_wire_flow_id++));
+        source->set_flowid(wire_flow_id);
         source->setPath(static_cast<std::uint32_t>(forward->path_id()));
         host_queues[request.source]->register_sender(*source);
+
+        const auto flow_inserted = flows_by_wire_id.emplace(
+            wire_flow_id,
+            FlowObservation{
+                request,
+                wire_flow_id,
+                static_cast<std::uint64_t>(
+                    config.max_wire_packet_bytes
+                    - config.data_header_bytes)});
+        const auto reverse_inserted = wire_id_by_flow.emplace(
+            request.flow_id, wire_flow_id);
+        if (!flow_inserted.second || !reverse_inserted.second) {
+            throw std::logic_error(
+                "DCQCN event flow correlation is not unique");
+        }
 
         sources.push_back(std::move(source));
         sinks.push_back(std::move(sink));
@@ -438,8 +761,14 @@ public:
             });
         const bool cnp_timer_pending = std::any_of(
             sinks.begin(), sinks.end(), [](const auto& sink) { return sink->cnp_timer_pending(); });
-        const bool pending = !active_flow_ids.empty() || transportLivePacketCount() != 0 ||
-                             transport_timer_pending || cnp_timer_pending || scanner_armed;
+        const bool dynamic_link_pending = dynamic_link_source != nullptr
+            && dynamic_link_source->pending();
+        const bool pending = !active_flow_ids.empty()
+            || transportLivePacketCount() != 0
+            || transport_timer_pending
+            || cnp_timer_pending
+            || scanner_armed
+            || dynamic_link_pending;
         if (pending && EventList::getPendingSources().empty()) {
             std::cerr << "[DCQCN pending] active=" << active_flow_ids.size()
                       << " data=" << RocePacket::live_packet_count()
@@ -513,9 +842,17 @@ public:
     std::vector<std::unique_ptr<Route>> routes;
     std::vector<std::unique_ptr<DCQCNSink>> sinks;
     std::vector<std::unique_ptr<DcqcnAtlahsSrc>> sources;
+    std::unique_ptr<DcqcnDynamicLinkSource> dynamic_link_source;
+    std::shared_ptr<CallbackQueueObserver> queue_observer;
+    std::map<std::uint32_t, FlowObservation> flows_by_wire_id;
+    std::map<AtlahsFlowId, std::uint32_t> wire_id_by_flow;
+    std::map<PacketLookupKey, PacketObservation> live_packets;
+    std::map<SequenceKey, std::uint32_t> next_attempt_by_sequence;
+    std::map<SequenceKey, std::uint32_t> marked_attempt_by_sequence;
     std::set<AtlahsFlowId> known_flow_ids;
     std::set<AtlahsFlowId> active_flow_ids;
     CompletionHandler completion_handler;
+    EventHandler event_handler;
     bool setup_complete{false};
     bool scanner_armed{false};
     std::uint64_t next_wire_flow_id{1};
@@ -525,12 +862,269 @@ public:
     AtlahsGoodputTrace goodput_trace;
 
 private:
+    void emit_event(const AtlahsRuntimeEvent& event) {
+        if (!event_handler) {
+            throw std::logic_error(
+                "DCQCN event producer has no installed relay");
+        }
+        if (event.event_time_ps != event_list.now()) {
+            throw std::logic_error(
+                "DCQCN event producer left its physical boundary");
+        }
+        event_handler(event);
+    }
+
+    AtlahsRuntimeEvent packet_event(
+            const PacketObservation& packet,
+            AtlahsRuntimeEventKind kind) const {
+        AtlahsRuntimeEvent event;
+        event.kind = kind;
+        event.flow_id = packet.flow_id;
+        event.event_time_ps = event_list.now();
+        event.packet_index = packet.packet_index;
+        event.transmission_attempt = packet.transmission_attempt;
+        event.payload_offset_bytes = packet.payload_offset_bytes;
+        event.payload_bytes = packet.payload_bytes;
+        event.wire_bytes = packet.wire_bytes;
+        event.packet_kind = packet.packet_kind;
+        event.source = packet.source;
+        event.destination = packet.destination;
+        return event;
+    }
+
+    void observe_host_boundary(
+            Packet& packet, AtlahsRuntimeEventKind kind) {
+        if (!config.packet_event_observations || packet.type() != ROCE) {
+            return;
+        }
+        const auto& data = static_cast<const RocePacket&>(packet);
+        const auto flow = flows_by_wire_id.find(packet.flow_id());
+        if (flow == flows_by_wire_id.end()) {
+            throw std::logic_error(
+                "DCQCN host observation has no flow correlation");
+        }
+        const PacketLookupKey lookup{packet.flow_id(), packet.id()};
+        if (kind == AtlahsRuntimeEventKind::PacketTxStarted) {
+            if (packet.size() < config.data_header_bytes
+                || data.seqno() == 0) {
+                throw std::logic_error(
+                    "DCQCN host observation has invalid packet geometry");
+            }
+            const SequenceKey sequence{
+                flow->second.request.flow_id, data.seqno()};
+            std::uint32_t& next_attempt =
+                next_attempt_by_sequence[sequence];
+            if (next_attempt == std::numeric_limits<std::uint32_t>::max()) {
+                throw std::overflow_error(
+                    "DCQCN packet-attempt index overflows");
+            }
+            const std::uint32_t attempt = next_attempt++;
+            const std::uint64_t packet_index = data.seqno() - 1;
+            if (packet_index
+                > std::numeric_limits<std::uint64_t>::max()
+                      / flow->second.payload_quantum_bytes) {
+                throw std::overflow_error(
+                    "DCQCN packet payload offset overflows");
+            }
+            const PacketObservation observation{
+                flow->second.request.flow_id,
+                packet_index,
+                attempt,
+                packet_index * flow->second.payload_quantum_bytes,
+                static_cast<std::uint64_t>(
+                    packet.size() - config.data_header_bytes),
+                packet.size(),
+                attempt == 0
+                    ? AtlahsRuntimePacketKind::Data
+                    : AtlahsRuntimePacketKind::Retransmission,
+                flow->second.request.source,
+                flow->second.request.destination};
+            if (!live_packets.emplace(lookup, observation).second) {
+                throw std::logic_error(
+                    "DCQCN host reused a live wire packet identity");
+            }
+            emit_event(packet_event(observation, kind));
+            return;
+        }
+        if (kind != AtlahsRuntimeEventKind::PacketTxFinished) {
+            throw std::logic_error(
+                "DCQCN host emitted an invalid packet boundary");
+        }
+        const auto observed = live_packets.find(lookup);
+        if (observed == live_packets.end()) {
+            throw std::logic_error(
+                "DCQCN TX finish predates its physical TX start");
+        }
+        emit_event(packet_event(observed->second, kind));
+    }
+
+    void observe_sink_arrival(Packet& packet) {
+        if (!config.packet_event_observations || packet.type() != ROCE) {
+            return;
+        }
+        const PacketLookupKey lookup{packet.flow_id(), packet.id()};
+        const auto observed = live_packets.find(lookup);
+        if (observed == live_packets.end()) {
+            throw std::logic_error(
+                "DCQCN sink arrival has no live packet attempt");
+        }
+        emit_event(packet_event(
+            observed->second, AtlahsRuntimeEventKind::PacketRxArrived));
+        emit_event(packet_event(
+            observed->second, AtlahsRuntimeEventKind::PacketDelivered));
+        live_packets.erase(observed);
+    }
+
+    std::uint64_t physical_link_id(
+            std::uint64_t domain_id,
+            std::uint32_t ingress_id) const noexcept {
+        std::uint64_t value = splitmix64(
+            domain_id ^ (static_cast<std::uint64_t>(ingress_id) << 32)
+            ^ UINT64_C(0x243f6a8885a308d3));
+        return value == 0 ? UINT64_C(1) : value;
+    }
+
+    std::uint64_t drop_resource_id(
+            const NsTm3QueueObservation& observation) const noexcept {
+        std::uint64_t value = splitmix64(
+            (static_cast<std::uint64_t>(observation.switch_type) << 56)
+            ^ (static_cast<std::uint64_t>(observation.switch_id) << 24)
+            ^ observation.egress_id
+            ^ UINT64_C(0x13198a2e03707344));
+        return value == 0 ? UINT64_C(1) : value;
+    }
+
+    void observe_queue(const NsTm3QueueObservation& observation) {
+        if (!config.packet_event_observations
+            || observation.transition != NsTm3QueueTransition::Dropped) {
+            return;
+        }
+        const PacketLookupKey lookup{
+            observation.flow_id, observation.packet_id};
+        const auto packet = live_packets.find(lookup);
+        if (packet == live_packets.end()) {
+            return;
+        }
+        AtlahsRuntimeEvent event = packet_event(
+            packet->second, AtlahsRuntimeEventKind::PacketDropped);
+        event.drop_location = AtlahsRuntimeDropLocation::Fabric;
+        event.drop_reason = AtlahsRuntimeDropReason::QueueOverflow;
+        event.drop_resource_id = drop_resource_id(observation);
+        event.drop_evidence = AtlahsRuntimeDropEvidence::Observed;
+        emit_event(event);
+        live_packets.erase(packet);
+    }
+
+    void observe_policy(
+            const NsTm3DcqcnPolicyObservation& observation) {
+        if (observation.kind
+                == NsTm3DcqcnPolicyObservationKind::EcnMarked) {
+            if (!config.congestion_event_observations) {
+                return;
+            }
+            const PacketLookupKey lookup{
+                observation.flow_id, observation.packet_id};
+            const auto packet = live_packets.find(lookup);
+            if (packet == live_packets.end()) {
+                throw std::logic_error(
+                    "DCQCN ECN mark has no live packet attempt");
+            }
+            AtlahsRuntimeEvent event = packet_event(
+                packet->second, AtlahsRuntimeEventKind::EcnMarked);
+            event.ecn_marked = true;
+            marked_attempt_by_sequence[SequenceKey{
+                packet->second.flow_id,
+                packet->second.packet_index + 1}] =
+                packet->second.transmission_attempt;
+            emit_event(event);
+            return;
+        }
+        if (!config.pfc_event_observations) {
+            return;
+        }
+        const auto flow = flows_by_wire_id.find(observation.flow_id);
+        if (flow == flows_by_wire_id.end()) {
+            throw std::logic_error(
+                "DCQCN PFC observation has no causal data flow");
+        }
+        AtlahsRuntimeEvent event;
+        switch (observation.kind) {
+        case NsTm3DcqcnPolicyObservationKind::PfcFrameSubmitted:
+            event.kind = AtlahsRuntimeEventKind::PfcFrameSubmitted;
+            break;
+        case NsTm3DcqcnPolicyObservationKind::PfcPaused:
+            event.kind = AtlahsRuntimeEventKind::PfcPaused;
+            break;
+        case NsTm3DcqcnPolicyObservationKind::PfcResumed:
+            event.kind = AtlahsRuntimeEventKind::PfcResumed;
+            break;
+        case NsTm3DcqcnPolicyObservationKind::EcnMarked:
+            throw std::logic_error(
+                "DCQCN ECN observation escaped its event path");
+        }
+        event.event_time_ps = observation.time_ps;
+        event.source = flow->second.request.source;
+        event.destination = flow->second.request.destination;
+        event.link_id = physical_link_id(
+            observation.policy_domain_id, observation.ingress_id);
+        event.priority = static_cast<std::uint8_t>(Packet::PRIO_LO);
+        event.pause_quanta = observation.pause ? 1 : 0;
+        emit_event(event);
+    }
+
+    void observe_source_event(AtlahsRuntimeEvent event) {
+        if (!config.congestion_event_observations) {
+            return;
+        }
+        if (event.kind == AtlahsRuntimeEventKind::CnpReceived) {
+            const SequenceKey sequence{
+                event.flow_id, event.packet_index + 1};
+            const auto marked = marked_attempt_by_sequence.find(sequence);
+            if (marked == marked_attempt_by_sequence.end()) {
+                throw std::logic_error(
+                    "DCQCN CNP has no marked packet attempt");
+            }
+            event.transmission_attempt = marked->second;
+        } else if (event.kind != AtlahsRuntimeEventKind::RateUpdated
+                   && event.kind
+                       != AtlahsRuntimeEventKind::EligibilityUpdated) {
+            throw std::logic_error(
+                "DCQCN source emitted an invalid control observation");
+        }
+        emit_event(event);
+    }
+
+    void apply_dynamic_link_transition(
+            const DcqcnDynamicLinkTransition& transition) {
+        host_queues.at(transition.source)->set_link_up(transition.link_up);
+        if (!config.dynamic_link_event_observations) {
+            return;
+        }
+        AtlahsRuntimeEvent event;
+        event.kind = AtlahsRuntimeEventKind::LinkStateChanged;
+        event.event_time_ps = transition.transition_at_ps;
+        event.source = transition.source;
+        event.destination = transition.source;
+        event.link_id = transition.link_id;
+        event.link_state = transition.link_up
+            ? AtlahsRuntimeLinkState::Up
+            : AtlahsRuntimeLinkState::Down;
+        event.effective_at_ps = transition.transition_at_ps;
+        if (transition.link_up) {
+            event.has_effective_rate = true;
+            event.effective_rate_bps = config.endpoint_link_bps;
+        }
+        emit_event(event);
+    }
+
     void validate_config() const {
         if (physical_node_count == 0 || config.topology_file.empty()) {
             throw std::invalid_argument("DCQCN ATLAHS requires nodes and a topology file");
         }
         if (config.endpoint_link_bps == 0 ||
             config.max_wire_packet_bytes <= config.data_header_bytes ||
+            (config.packet_event_observations &&
+             config.data_header_bytes != RocePacket::ACKSIZE) ||
             config.ns_tm3_shared_buffer_bytes <= 0 || config.ns_tm3_egress_buffer_bytes <= 0 ||
             config.ns_tm3_egress_buffer_bytes > config.ns_tm3_shared_buffer_bytes ||
             config.ecn_kmin_bytes < 0 || config.ecn_kmax_bytes <= config.ecn_kmin_bytes ||
@@ -561,11 +1155,57 @@ private:
         if (config.goodput_trace_csv.has_value() && config.goodput_trace_csv->empty()) {
             throw std::invalid_argument("DCQCN goodput trace CSV path must be nonempty");
         }
+        if ((config.congestion_event_observations
+             || config.pfc_event_observations)
+            && !config.packet_event_observations) {
+            throw std::invalid_argument(
+                "DCQCN correlated controls require packet observations");
+        }
+        if (config.pfc_event_observations && !config.pfc_enabled) {
+            throw std::invalid_argument(
+                "DCQCN PFC observations require the physical PFC policy");
+        }
+        if (config.dynamic_link_event_observations
+            && config.dynamic_link_transitions.empty()) {
+            throw std::invalid_argument(
+                "DCQCN dynamic-link observations require transitions");
+        }
+        std::map<std::uint32_t, bool> link_state;
+        std::map<std::uint32_t, std::uint64_t> link_identity;
+        simtime_picosec previous_time = 0;
+        bool first_transition = true;
+        for (const DcqcnDynamicLinkTransition& transition :
+             config.dynamic_link_transitions) {
+            if (transition.link_id == 0
+                || transition.source >= physical_node_count
+                || transition.transition_at_ps < event_list.now()
+                || (!first_transition
+                    && transition.transition_at_ps < previous_time)) {
+                throw std::invalid_argument(
+                    "invalid DCQCN dynamic-link transition");
+            }
+            const auto identity = link_identity.emplace(
+                transition.source, transition.link_id);
+            if (!identity.second
+                && identity.first->second != transition.link_id) {
+                throw std::invalid_argument(
+                    "DCQCN endpoint changed dynamic-link identity");
+            }
+            bool& current = link_state.emplace(
+                transition.source, true).first->second;
+            if (current == transition.link_up) {
+                throw std::invalid_argument(
+                    "DCQCN dynamic link repeated its current state");
+            }
+            current = transition.link_up;
+            previous_time = transition.transition_at_ps;
+            first_transition = false;
+        }
     }
 
-    static void configure_switches(const std::vector<Switch*>& switches,
-                                   mem_b egress_buffer_capacity,
-                                   const NsTm3DcqcnPolicyConfig& policy_config) {
+    void configure_switches(const std::vector<Switch*>& switches,
+                            mem_b egress_buffer_capacity,
+                            const NsTm3DcqcnPolicyConfig& policy_config) {
         for (Switch* base : switches) {
             auto* ns_tm3 = dynamic_cast<NsTm3Switch*>(base);
             if (ns_tm3 == nullptr) {
@@ -573,6 +1213,16 @@ private:
             }
             ns_tm3->set_egress_buffer_capacity(egress_buffer_capacity);
             ns_tm3->configure_dcqcn_policy(policy_config);
+            if (queue_observer) {
+                ns_tm3->set_queue_observer(queue_observer);
+            }
+            if (config.congestion_event_observations
+                || config.pfc_event_observations) {
+                ns_tm3->dcqcn_policy()->set_observer(
+                    [this](const NsTm3DcqcnPolicyObservation& observation) {
+                        observe_policy(observation);
+                    });
+            }
         }
     }
 
@@ -654,6 +1304,15 @@ void DcqcnAtlahsRuntime::send(const AtlahsFlowRequest& request) {
 
 bool DcqcnAtlahsRuntime::hasPendingPhysicalWork() const noexcept {
     return _impl->has_pending_physical_work();
+}
+
+AtlahsRuntimeEventCapabilities
+DcqcnAtlahsRuntime::eventCapabilities() const noexcept {
+    return _impl->event_capabilities();
+}
+
+void DcqcnAtlahsRuntime::setEventHandler(EventHandler handler) {
+    _impl->set_event_handler(std::move(handler));
 }
 
 FatTreeTopology& DcqcnAtlahsRuntime::topology() noexcept {

@@ -14,12 +14,14 @@ public:
     typedef uint64_t seq_t;
     
     inline static CNPPacket* newpkt(PacketFlow &flow, const Route &route, 
-                                  seq_t ackno, uint32_t destination = UINT32_MAX) {
+                                  seq_t ackno, uint32_t destination = UINT32_MAX,
+                                  seq_t cause_seqno = 0) {
         CNPPacket* p = _packetdb.allocPacket();
         p->set_route(flow,route,ACKSIZE,ackno);
         p->_type = CNP;
         p->_is_header = true;
         p->_ackno = ackno;
+        p->_cause_seqno = cause_seqno;
         p->_path_len = 0;
         p->_direction = NONE;
         p->set_dst(destination);
@@ -34,12 +36,14 @@ public:
     }
     static std::uint64_t live_packet_count() { return _live_packets; }
     inline seq_t ackno() const {return _ackno;}
+    inline seq_t cause_seqno() const {return _cause_seqno;}
     virtual PktPriority priority() const {return Packet::PRIO_HI;}
   
     virtual ~CNPPacket(){}
     const static int ACKSIZE=64; 
 protected:
     seq_t _ackno;
+    seq_t _cause_seqno{0};
     static PacketDB<CNPPacket> _packetdb;
     static std::uint64_t _live_packets;
 };
