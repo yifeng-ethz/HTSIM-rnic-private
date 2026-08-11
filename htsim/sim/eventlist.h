@@ -3,6 +3,7 @@
 #define EVENTLIST_H
 
 #include <map>
+#include <optional>
 #include "config.h"
 #include "loggertypes.h"
 
@@ -39,6 +40,9 @@ public:
     static void reschedulePendingSource(EventSource &src, simtime_picosec when);
     static void triggerIsPending(TriggerTarget &target);
     static inline simtime_picosec now() {return EventList::_lasteventtime;}
+    // A pending trigger is an immediate event at now(). Otherwise return the
+    // earliest scheduled source time, or no value when the list is empty.
+    static std::optional<simtime_picosec> nextEventTime();
     static inline int trafficEventCount() {return EventList::_trafficeventcount;}
     static Handle nullHandle() {return _pendingsources.end();}
     static multimap<simtime_picosec, EventSource*> getPendingSources() {return _pendingsources;}

@@ -36,6 +36,10 @@ set(LIB_SOURCES
 add_library(htsim_dc STATIC ${LIB_SOURCES})
 target_include_directories(htsim_dc PUBLIC ${PROJECT_SOURCE_DIR}) 
 target_include_directories(htsim_dc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}) 
+if(HTSIM_ENABLE_SIMLLM_RNIC)
+    target_sources(htsim_dc PRIVATE rnic_flow_session.cpp)
+    target_link_libraries(htsim_dc PRIVATE htsim simllm::rnic)
+endif()
 
 # -------------------------------
 # Executable Definitions
@@ -218,4 +222,15 @@ if ( ENABLE_TESTS )
         PROPERTIES LABELS "unit"
         PROPERTIES TIMEOUT 60
     )
+
+    if(HTSIM_ENABLE_SIMLLM_RNIC)
+        add_executable(rnic_flow_session_test rnic_flow_session_test.cpp)
+        target_link_libraries(
+            rnic_flow_session_test
+            PRIVATE htsim_dc htsim simllm::rnic gtest_main)
+        gtest_discover_tests(rnic_flow_session_test
+            PROPERTIES LABELS "unit;session"
+            PROPERTIES TIMEOUT 60
+        )
+    endif()
 endif()

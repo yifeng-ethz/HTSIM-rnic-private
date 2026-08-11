@@ -40,6 +40,18 @@ EventList::hasPendingSourceAt(simtime_picosec when)
     return range.first != range.second;
 }
 
+std::optional<simtime_picosec>
+EventList::nextEventTime()
+{
+    if (!_pending_triggers.empty()) {
+        return now();
+    }
+    if (_pendingsources.empty()) {
+        return std::nullopt;
+    }
+    return _pendingsources.begin()->first;
+}
+
 void
 EventList::setEndtime(simtime_picosec endtime)
 {
