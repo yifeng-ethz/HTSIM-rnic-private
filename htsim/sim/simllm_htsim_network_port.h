@@ -156,6 +156,9 @@ private:
         const LiveToken& live) const;
     void rollbackSubmission(
         simllm::rnic::NetworkToken token,
+        simllm::rnic::FlowId flow_id,
+        std::uint64_t first_event_sequence) noexcept;
+    void purgeCompletedPacketTokens(
         simllm::rnic::FlowId flow_id) noexcept;
 
     HtsimNetworkPortConfig config_;
@@ -173,6 +176,9 @@ private:
     std::map<simllm::rnic::NetworkToken, std::uint32_t> token_sources_;
     std::map<RuntimePacketKey, simllm::rnic::NetworkToken>
         runtime_packet_tokens_;
+    std::map<RuntimePacketKey, simllm::rnic::NetworkToken>
+        completed_runtime_packet_tokens_;
+    std::optional<std::uint64_t> submission_event_sequence_floor_;
     std::vector<HtsimIssuedToken> issued_;
     std::vector<HtsimTerminalToken> terminals_;
     std::vector<simllm::rnic::NetworkEvent> packet_events_;

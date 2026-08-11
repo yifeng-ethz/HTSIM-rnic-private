@@ -390,7 +390,7 @@ void HtsimNetworkPort::scheduleEvent(const NetworkEvent& event) {
     if (!scheduled_.emplace(key, event).second) {
         throw std::logic_error("HTSIM NetworkPort event key collided");
     }
-    if (terminal_ready_) {
+    if (terminal_ready_ && !submission_event_sequence_floor_.has_value()) {
         terminal_ready_(event.event_time_ps);
     }
 }
@@ -496,6 +496,10 @@ NetworkSubmitResult HtsimNetworkPort::trySubmit(
         const simllm::rnic::NetworkTxDescriptor& descriptor,
         Picoseconds now_ps) {
     validateDescriptor(descriptor, now_ps);
+    if (submission_event_sequence_floor_.has_value()) {
+        throw std::logic_error(
+            "HTSIM NetworkPort does not support nested submissions");
+    }
     if (runtime_ == nullptr
         && (config_.control_frames || config_.congestion
             || config_.dynamic_link_events)) {
@@ -549,6 +553,7 @@ NetworkSubmitResult HtsimNetworkPort::trySubmit(
     if (!live_inserted.second) {
         throw std::logic_error("HTSIM NetworkPort recycled a live token");
     }
+    submission_event_sequence_floor_ = first_candidate_sequence;
     try {
         if (!seen_flows_.insert(descriptor.flow_id).second
             || !token_by_flow_.emplace(descriptor.flow_id, token).second
@@ -574,12 +579,6 @@ NetworkSubmitResult HtsimNetworkPort::trySubmit(
             event.token = token;
             event.wqe_id = descriptor.wqe_id;
             event.event_time_ps = terminal_at_ps;
-            if (config_.drop_first && !drop_emitted_) {
-                event.kind = NetworkEventKind::Dropped;
-                event.drop_location = DropLocation::Fabric;
-                event.drop_reason = DropReason::Injected;
-                drop_emitted_ = true;
-            }
             scheduleEvent(event);
         } else if (runtime_ == nullptr) {
             scheduleUnboundV2Events(token, descriptor, now_ps);
@@ -594,11 +593,22 @@ NetworkSubmitResult HtsimNetworkPort::trySubmit(
             runtime_->send(request);
         }
     } catch (...) {
-        rollbackSubmission(token, descriptor.flow_id);
+        rollbackSubmission(
+            token, descriptor.flow_id, first_candidate_sequence);
         next_token_ = first_candidate_token;
         next_event_sequence_ = first_candidate_sequence;
         drop_emitted_ = drop_was_emitted;
+        submission_event_sequence_floor_.reset();
         throw;
+    }
+
+    submission_event_sequence_floor_.reset();
+    if (terminal_ready_) {
+        for (const auto& item : scheduled_) {
+            if (item.first.second >= first_candidate_sequence) {
+                terminal_ready_(item.second.event_time_ps);
+            }
+        }
     }
 
     return NetworkSubmitResult::accepted(token);
@@ -665,6 +675,10 @@ void HtsimNetworkPort::runtimeEvent(const AtlahsRuntimeEvent& native) {
         event.parent_token = extent->second;
         event.wqe_id = live_.at(extent->second).descriptor.wqe_id;
         if (native.kind == AtlahsRuntimeEventKind::PacketTxStarted) {
+            if (completed_runtime_packet_tokens_.count(packet_key) != 0) {
+                throw std::logic_error(
+                    "HTSIM runtime reused a completed packet identity");
+            }
             const NetworkToken attempt_token = allocateToken();
             if (!runtime_packet_tokens_.emplace(
                     packet_key, attempt_token).second) {
@@ -679,9 +693,6 @@ void HtsimNetworkPort::runtimeEvent(const AtlahsRuntimeEvent& native) {
                     "HTSIM runtime packet event predates TX issue");
             }
             event.token = attempt->second;
-            if (isPacketTerminal(native.kind)) {
-                runtime_packet_tokens_.erase(attempt);
-            }
         }
     } else {
         event.scope = NetworkEventScope::TransportControl;
@@ -697,11 +708,16 @@ void HtsimNetworkPort::runtimeEvent(const AtlahsRuntimeEvent& native) {
                     "HTSIM runtime emitted unadvertised ECN or CNP");
             }
             const auto attempt = runtime_packet_tokens_.find(packet_key);
-            if (attempt == runtime_packet_tokens_.end()) {
+            const auto completed =
+                completed_runtime_packet_tokens_.find(packet_key);
+            if (attempt == runtime_packet_tokens_.end()
+                && completed == completed_runtime_packet_tokens_.end()) {
                 throw std::logic_error(
                     "HTSIM ECN or CNP event lacks a packet attempt");
             }
-            event.token = attempt->second;
+            event.token = attempt != runtime_packet_tokens_.end()
+                ? attempt->second
+                : completed->second;
             break;
         }
         case AtlahsRuntimeEventKind::EligibilityUpdated:
@@ -731,6 +747,19 @@ void HtsimNetworkPort::runtimeEvent(const AtlahsRuntimeEvent& native) {
         }
     }
     scheduleEvent(event);
+    if (isPacketTerminal(native.kind)) {
+        auto completed = runtime_packet_tokens_.extract(packet_key);
+        if (completed.empty()) {
+            throw std::logic_error(
+                "HTSIM runtime packet terminal lost its live correlation");
+        }
+        const auto inserted = completed_runtime_packet_tokens_.insert(
+            std::move(completed));
+        if (!inserted.inserted) {
+            throw std::logic_error(
+                "HTSIM runtime repeated a completed packet identity");
+        }
+    }
 }
 
 void HtsimNetworkPort::runtimeCompleted(AtlahsFlowId flow_id) {
@@ -812,11 +841,12 @@ void HtsimNetworkPort::validateTerminal(
 }
 
 void HtsimNetworkPort::rollbackSubmission(
-        NetworkToken token, simllm::rnic::FlowId flow_id) noexcept {
+        NetworkToken token,
+        simllm::rnic::FlowId flow_id,
+        std::uint64_t first_event_sequence) noexcept {
     for (auto scheduled = scheduled_.begin();
          scheduled != scheduled_.end();) {
-        if (scheduled->second.token == token
-            || scheduled->second.parent_token == token) {
+        if (scheduled->first.second >= first_event_sequence) {
             scheduled = scheduled_.erase(scheduled);
         } else {
             ++scheduled;
@@ -830,6 +860,7 @@ void HtsimNetworkPort::rollbackSubmission(
             ++attempt;
         }
     }
+    purgeCompletedPacketTokens(flow_id);
     if (!issued_.empty() && issued_.back().token == token) {
         issued_.pop_back();
     }
@@ -837,6 +868,18 @@ void HtsimNetworkPort::rollbackSubmission(
     token_by_flow_.erase(flow_id);
     seen_flows_.erase(flow_id);
     live_.erase(token);
+}
+
+void HtsimNetworkPort::purgeCompletedPacketTokens(
+        simllm::rnic::FlowId flow_id) noexcept {
+    for (auto attempt = completed_runtime_packet_tokens_.begin();
+         attempt != completed_runtime_packet_tokens_.end();) {
+        if (std::get<0>(attempt->first) == flow_id) {
+            attempt = completed_runtime_packet_tokens_.erase(attempt);
+        } else {
+            ++attempt;
+        }
+    }
 }
 
 std::optional<Picoseconds> HtsimNetworkPort::nextEventTime() const {
@@ -851,12 +894,21 @@ std::vector<NetworkEvent> HtsimNetworkPort::takeDue(Picoseconds now_ps) {
     while (!scheduled_.empty()
            && scheduled_.begin()->first.first <= now_ps) {
         const auto scheduled = scheduled_.begin();
-        const NetworkEvent event = scheduled->second;
+        NetworkEvent event = scheduled->second;
         if (event.scope == NetworkEventScope::FlowExtent) {
             const auto live = live_.find(event.token);
             if (live == live_.end()) {
                 throw std::logic_error(
                     "HTSIM NetworkPort scheduled a token that is not live");
+            }
+            const bool consume_v1_drop = runtime_ == nullptr
+                && config_.network_abi_version
+                    == simllm::rnic::kNetworkPortAbiVersionV1
+                && config_.drop_first && !drop_emitted_;
+            if (consume_v1_drop) {
+                event.kind = NetworkEventKind::Dropped;
+                event.drop_location = DropLocation::Fabric;
+                event.drop_reason = DropReason::Injected;
             }
             validateTerminal(event, live->second);
             terminals_.push_back(HtsimTerminalToken{
@@ -868,6 +920,11 @@ std::vector<NetworkEvent> HtsimNetworkPort::takeDue(Picoseconds now_ps) {
                 event.ecn_marked,
                 event.drop_location,
                 event.drop_reason});
+            if (consume_v1_drop) {
+                drop_emitted_ = true;
+            }
+            purgeCompletedPacketTokens(
+                live->second.descriptor.flow_id);
             live_.erase(live);
         } else if (event.scope == NetworkEventScope::PacketAttempt) {
             packet_events_.push_back(event);

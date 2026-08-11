@@ -109,7 +109,9 @@ struct AtlahsRuntimeEventCapabilities {
 
 // Immutable observations from the runtime timing authority. Packet times are
 // materialized serializer or receive boundaries, never wrapper admission.
-// The event kind selects the applicable packet or control payload below.
+// The event kind selects the applicable packet or control payload below. A
+// packet terminal retains bounded correlation for late ECN or CNP until its
+// parent flow reaches the logical terminal.
 struct AtlahsRuntimeEvent {
     AtlahsRuntimeEventKind kind{AtlahsRuntimeEventKind::PacketTxStarted};
     AtlahsFlowId flow_id{0};
