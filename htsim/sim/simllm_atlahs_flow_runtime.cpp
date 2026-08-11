@@ -94,7 +94,7 @@ void SimllmAtlahsFlowRuntime::validateConfig(
     }
     if (config.device.dma.enabled) {
         throw std::invalid_argument(
-            "SimLLM ATLAHS ABI-v1 wrapper does not own PCIe or DMA state");
+            "SimLLM ATLAHS wrapper does not own PCIe or DMA state");
     }
     if (config.device.work_queue.qpn != config.device.identity.qpn
         || config.device.work_queue.policy_context_token
@@ -313,7 +313,17 @@ void SimllmAtlahsFlowRuntime::doNextEvent() {
 
 void SimllmAtlahsFlowRuntime::driveAt(Picoseconds now_ps) {
     for (const NetworkEvent& event : port_.takeDue(now_ps)) {
-        const std::uint32_t endpoint = port_.ownerSource(event.token);
+        const simllm::rnic::NetworkToken owner_token =
+            event.scope == simllm::rnic::NetworkEventScope::FlowExtent
+            ? event.token
+            : event.parent_token;
+        const std::uint32_t endpoint = owner_token == 0
+            ? event.source
+            : port_.ownerSource(owner_token);
+        if (endpoint >= devices_.size()) {
+            throw std::out_of_range(
+                "HTSIM event source is outside the native device session");
+        }
         devices_.at(endpoint)->onNetworkEvent(event);
     }
 

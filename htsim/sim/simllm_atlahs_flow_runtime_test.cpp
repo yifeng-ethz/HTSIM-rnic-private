@@ -257,6 +257,51 @@ TEST(SimllmAtlahsFlowRuntimeTest,
 }
 
 TEST(SimllmAtlahsFlowRuntimeTest,
+     AbiV2ProjectsRealPacketIssuesIntoTheNativeWqeTimeline) {
+    EventList event_list;
+    EventList::setEndtime(std::numeric_limits<simtime_picosec>::max());
+    CapturingApi api;
+    api.setEventList(&event_list);
+    api.total_nodes = 4;
+
+    auto network = makeRnicAtlahsRuntime(
+        event_list,
+        RnicProfile::PacketizedManifold,
+        RnicPacketizedManifoldRuntimeConfig{
+            UINT64_C(400000000000),
+            RnicDataPacketizationConfig(4096, 0),
+            0});
+    SimllmAtlahsRuntimeConfig config = runtimeConfig(1000);
+    config.port.network_abi_version =
+        simllm::rnic::kNetworkPortAbiVersionV2;
+    auto runtime = makeComposedSimllmAtlahsFlowRuntime(
+        event_list, std::move(config), std::move(network));
+    SimllmAtlahsFlowRuntime* native = runtime.get();
+    api.setFlowRuntime(std::move(runtime));
+    api.Setup();
+
+    graph_node_properties node = flow();
+    node.size = 8192;
+    api.Send(SendEvent(3, 1, node.size, node.tag, 0), node);
+    std::size_t iterations = 0;
+    while (api.runtimeHasPendingPhysicalWork()) {
+        ASSERT_LT(++iterations, 100U);
+        ASSERT_TRUE(EventList::doNextEvent());
+    }
+
+    ASSERT_EQ(native->device(3).records().size(), 1U);
+    const auto& record = native->device(3).records().front();
+    EXPECT_EQ(record.timeline.first_packet_at_ps, 1000U);
+    EXPECT_EQ(record.timeline.last_packet_at_ps, 82920U);
+    EXPECT_EQ(record.timeline.network_outcome_at_ps, 246760U);
+    EXPECT_EQ(native->networkPort().packetEvents().size(), 8U);
+    EXPECT_EQ(native->networkPort().packetEvents().front().kind,
+              simllm::rnic::NetworkEventKind::PacketTxStarted);
+    EXPECT_EQ(api.completion_count, 1U);
+    EXPECT_NO_THROW(native->validateQuiescent());
+}
+
+TEST(SimllmAtlahsFlowRuntimeTest,
      RuntimeBoundOverlappingFlowsRetainNativeFifoWithoutAdapterDrops) {
     EventList event_list;
     EventList::setEndtime(std::numeric_limits<simtime_picosec>::max());

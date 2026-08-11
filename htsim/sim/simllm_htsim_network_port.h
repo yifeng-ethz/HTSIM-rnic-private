@@ -8,9 +8,12 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 #include "atlahs_flow_runtime.h"
+#include "rnic_packet_extent.h"
 #include "rnic_wire_serialization.h"
 #include "simllm/rnic/network_port.h"
 
@@ -20,12 +23,15 @@ inline constexpr std::uint32_t kHtsimNetworkPortConfigVersion = 1;
 
 struct HtsimNetworkPortConfig {
     std::uint32_t version{kHtsimNetworkPortConfigVersion};
+    std::uint32_t network_abi_version{
+        simllm::rnic::kNetworkPortAbiVersionV1};
     // Capacity belongs to the unbound Tier A serializer. A runtime-bound
     // composition replaces it with the complete native-session capacity so
     // HTSIM remains the only admission and drop authority.
     std::size_t capacity{1};
     std::uint64_t link_rate_bps{400000000000ULL};
     std::uint64_t data_header_bytes{0};
+    std::uint64_t max_wire_packet_bytes{4096};
     simllm::rnic::Picoseconds propagation_delay_ps{0};
     std::uint32_t endpoint_count{0};
     std::uint8_t traffic_class{3};
@@ -62,7 +68,7 @@ struct HtsimTerminalToken {
         simllm::rnic::DropReason::None};
 };
 
-// ABI-v1 HTSIM service for one whole-flow extent. The port retains only
+// Versioned HTSIM service for one whole-flow extent. The port retains only
 // immutable descriptor correlation and network-owned token state. Hardware
 // queues, QPs, PCIe, DMA and scheduling remain in the SimLLM device.
 class HtsimNetworkPort final : public simllm::rnic::NetworkPort {
@@ -74,13 +80,16 @@ public:
 
     // Bind the compatibility port to the htsim transport and fabric runtime.
     // The runtime remains externally owned and must outlive this port. Its
-    // completion callback is reduced to one ABI-v1 terminal event without
+    // completion callback is reduced to one flow terminal event without
     // exposing any native queue or QP object.
     void bindRuntime(
         AtlahsFlowRuntime& runtime,
         std::uint32_t node_count,
         std::size_t runtime_capacity,
         TerminalReadyHandler terminal_ready);
+
+    simllm::rnic::NetworkPortCapabilities
+    capabilities() const noexcept override;
 
     simllm::rnic::NetworkSubmitResult trySubmit(
         const simllm::rnic::NetworkTxDescriptor& descriptor,
@@ -102,6 +111,14 @@ public:
     const std::vector<HtsimTerminalToken>& terminals() const noexcept {
         return terminals_;
     }
+    const std::vector<simllm::rnic::NetworkEvent>& packetEvents()
+            const noexcept {
+        return packet_events_;
+    }
+    const std::vector<simllm::rnic::NetworkEvent>& controlEvents()
+            const noexcept {
+        return control_events_;
+    }
     std::vector<simllm::rnic::NetworkToken> liveTokens() const;
     std::uint32_t ownerSource(simllm::rnic::NetworkToken token) const;
 
@@ -114,6 +131,11 @@ private:
         bool terminal_queued{false};
     };
 
+    using ScheduledKey =
+        std::pair<simllm::rnic::Picoseconds, std::uint64_t>;
+    using RuntimePacketKey =
+        std::tuple<simllm::rnic::FlowId, std::uint64_t, std::uint32_t>;
+
     static void validateConfig(const HtsimNetworkPortConfig& config);
     void validateDescriptor(
         const simllm::rnic::NetworkTxDescriptor& descriptor,
@@ -121,6 +143,13 @@ private:
     simllm::rnic::Picoseconds terminalTime(
         std::uint64_t payload_bytes,
         simllm::rnic::Picoseconds now_ps) const;
+    void scheduleEvent(const simllm::rnic::NetworkEvent& event);
+    simllm::rnic::NetworkToken allocateToken();
+    void scheduleUnboundV2Events(
+        simllm::rnic::NetworkToken extent_token,
+        const simllm::rnic::NetworkTxDescriptor& descriptor,
+        simllm::rnic::Picoseconds now_ps);
+    void runtimeEvent(const AtlahsRuntimeEvent& event);
     void runtimeCompleted(AtlahsFlowId flow_id);
     void validateTerminal(
         const simllm::rnic::NetworkEvent& event,
@@ -134,16 +163,20 @@ private:
     std::optional<std::size_t> runtime_capacity_;
     TerminalReadyHandler terminal_ready_;
     simllm::rnic::NetworkToken next_token_{1};
+    std::uint64_t next_event_sequence_{1};
     bool drop_emitted_{false};
     std::map<simllm::rnic::NetworkToken, LiveToken> live_;
-    std::multimap<simllm::rnic::Picoseconds,
-                  simllm::rnic::NetworkToken> scheduled_;
+    std::map<ScheduledKey, simllm::rnic::NetworkEvent> scheduled_;
     std::set<simllm::rnic::FlowId> seen_flows_;
     std::map<simllm::rnic::FlowId, simllm::rnic::NetworkToken>
         token_by_flow_;
     std::map<simllm::rnic::NetworkToken, std::uint32_t> token_sources_;
+    std::map<RuntimePacketKey, simllm::rnic::NetworkToken>
+        runtime_packet_tokens_;
     std::vector<HtsimIssuedToken> issued_;
     std::vector<HtsimTerminalToken> terminals_;
+    std::vector<simllm::rnic::NetworkEvent> packet_events_;
+    std::vector<simllm::rnic::NetworkEvent> control_events_;
 };
 
 }  // namespace htsim::simllm_rnic

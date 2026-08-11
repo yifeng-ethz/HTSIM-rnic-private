@@ -16,6 +16,7 @@ using htsim::simllm_rnic::HtsimNetworkPortConfig;
 using simllm::rnic::DropLocation;
 using simllm::rnic::DropReason;
 using simllm::rnic::NetworkEventKind;
+using simllm::rnic::NetworkEventScope;
 using simllm::rnic::NetworkSubmitStatus;
 using simllm::rnic::NetworkTxDescriptor;
 
@@ -63,6 +64,84 @@ public:
     CompletionHandler completion_;
     std::vector<AtlahsFlowRequest> requests;
     std::size_t completed{0};
+};
+
+class VocabularyFlowRuntime final : public AtlahsFlowRuntime {
+public:
+    AtlahsRuntimeEventCapabilities
+    eventCapabilities() const noexcept override {
+        return {true, true, true, true, true};
+    }
+
+    void setEventHandler(EventHandler handler) override {
+        events_ = std::move(handler);
+    }
+
+    void setup(
+            std::uint32_t,
+            CompletionHandler complete_flow) override {
+        completion_ = std::move(complete_flow);
+    }
+
+    void send(const AtlahsFlowRequest& request) override {
+        AtlahsRuntimeEvent event;
+        event.flow_id = request.flow_id;
+        event.packet_index = 0;
+        event.payload_offset_bytes = 0;
+        event.payload_bytes = request.payload_bytes;
+        event.wire_bytes = request.payload_bytes;
+        event.packet_kind = AtlahsRuntimePacketKind::Data;
+        event.kind = AtlahsRuntimeEventKind::PacketTxStarted;
+        events_(event);
+        event.kind = AtlahsRuntimeEventKind::EcnMarked;
+        event.ecn_marked = true;
+        events_(event);
+        event.kind = AtlahsRuntimeEventKind::CnpReceived;
+        events_(event);
+        event.kind = AtlahsRuntimeEventKind::PacketTxFinished;
+        events_(event);
+        event.kind = AtlahsRuntimeEventKind::PacketRxArrived;
+        events_(event);
+        event.kind = AtlahsRuntimeEventKind::PacketDelivered;
+        events_(event);
+
+        event = AtlahsRuntimeEvent{};
+        event.flow_id = request.flow_id;
+        event.policy_context_token = 9001;
+        event.kind = AtlahsRuntimeEventKind::EligibilityUpdated;
+        events_(event);
+        event.kind = AtlahsRuntimeEventKind::RateUpdated;
+        event.has_effective_rate = true;
+        event.effective_rate_bps = 400000000000ULL;
+        events_(event);
+
+        event = AtlahsRuntimeEvent{};
+        event.kind = AtlahsRuntimeEventKind::PfcFrameSubmitted;
+        event.source = 3;
+        event.destination = 1;
+        event.link_id = 17;
+        event.priority = 3;
+        events_(event);
+        event.kind = AtlahsRuntimeEventKind::PfcPaused;
+        event.pause_quanta = 64;
+        events_(event);
+        event.kind = AtlahsRuntimeEventKind::PfcResumed;
+        event.pause_quanta = 0;
+        events_(event);
+
+        event = AtlahsRuntimeEvent{};
+        event.kind = AtlahsRuntimeEventKind::LinkStateChanged;
+        event.link_id = 17;
+        event.link_state = AtlahsRuntimeLinkState::Down;
+        events_(event);
+        completion_(request.flow_id);
+    }
+
+    bool hasPendingPhysicalWork() const noexcept override { return false; }
+
+private:
+    CompletionHandler completion_;
+    EventHandler events_;
 };
 
 NetworkTxDescriptor descriptor(
@@ -153,7 +232,106 @@ TEST(HtsimNetworkPortTest, ControlledDropKeepsTypedFabricEvidence) {
     EXPECT_TRUE(port.liveTokens().empty());
 }
 
-TEST(HtsimNetworkPortTest, RejectsDeferredPacketAndControlVocabulary) {
+TEST(HtsimNetworkPortTest,
+     AbiV2PacketizesTheActualUnboundSerializerTimeline) {
+    HtsimNetworkPortConfig config;
+    config.network_abi_version = simllm::rnic::kNetworkPortAbiVersionV2;
+    config.link_rate_bps = 400000000000ULL;
+    config.max_wire_packet_bytes = 4096;
+    config.endpoint_count = 4;
+    HtsimNetworkPort port(config);
+    NetworkTxDescriptor value = descriptor(1, 351);
+    value.abi_version = simllm::rnic::kNetworkPortAbiVersionV2;
+    value.payload_bytes = 8192;
+
+    const auto accepted = port.trySubmit(value, 1000);
+    ASSERT_EQ(accepted.status, NetworkSubmitStatus::Accepted);
+    EXPECT_EQ(port.capabilities().abi_version,
+              simllm::rnic::kNetworkPortAbiVersionV2);
+    EXPECT_TRUE(port.capabilities().packet_attempt_events);
+
+    const auto first = port.takeDue(1000);
+    ASSERT_EQ(first.size(), 1U);
+    EXPECT_EQ(first.front().kind, NetworkEventKind::PacketTxStarted);
+    EXPECT_EQ(first.front().scope, NetworkEventScope::PacketAttempt);
+    EXPECT_EQ(first.front().parent_token, accepted.token);
+    EXPECT_NE(first.front().token, accepted.token);
+
+    const auto rest = port.takeDue(164840);
+    ASSERT_EQ(rest.size(), 8U);
+    EXPECT_EQ(rest.back().scope, NetworkEventScope::FlowExtent);
+    EXPECT_EQ(rest.back().kind, NetworkEventKind::Delivered);
+    EXPECT_EQ(rest.back().event_time_ps, 164840U);
+    ASSERT_EQ(port.packetEvents().size(), 8U);
+    EXPECT_EQ(port.packetEvents()[4].kind,
+              NetworkEventKind::PacketTxStarted);
+    EXPECT_EQ(port.packetEvents()[4].event_time_ps, 82920U);
+    EXPECT_EQ(port.terminals().size(), 1U);
+    EXPECT_FALSE(port.hasPendingPhysicalWork());
+}
+
+TEST(HtsimNetworkPortTest,
+     AbiV2RelaysEveryAdvertisedRuntimeObservationWithoutFabrication) {
+    EventList event_list;
+    (void)event_list;
+    VocabularyFlowRuntime runtime;
+    HtsimNetworkPortConfig config;
+    config.network_abi_version = simllm::rnic::kNetworkPortAbiVersionV2;
+    config.endpoint_count = 4;
+    config.congestion = true;
+    config.control_frames = true;
+    config.dynamic_link_events = true;
+    HtsimNetworkPort port(config);
+    std::vector<std::uint64_t> ready_times;
+    port.bindRuntime(
+        runtime,
+        4,
+        4,
+        [&](std::uint64_t at_ps) { ready_times.push_back(at_ps); });
+    const auto capabilities = port.capabilities();
+    EXPECT_TRUE(capabilities.packet_attempt_events);
+    EXPECT_TRUE(capabilities.ecn_cnp_events);
+    EXPECT_TRUE(capabilities.policy_update_events);
+    EXPECT_TRUE(capabilities.pfc_events);
+    EXPECT_TRUE(capabilities.dynamic_link_events);
+
+    NetworkTxDescriptor value = descriptor(1, 361);
+    value.abi_version = simllm::rnic::kNetworkPortAbiVersionV2;
+    const auto accepted = port.trySubmit(value, 0);
+    ASSERT_EQ(accepted.status, NetworkSubmitStatus::Accepted);
+    const auto events = port.takeDue(0);
+    ASSERT_EQ(events.size(), 13U);
+    const std::vector<NetworkEventKind> expected{
+        NetworkEventKind::PacketTxStarted,
+        NetworkEventKind::EcnMarked,
+        NetworkEventKind::CnpReceived,
+        NetworkEventKind::PacketTxFinished,
+        NetworkEventKind::PacketRxArrived,
+        NetworkEventKind::Delivered,
+        NetworkEventKind::EligibilityUpdated,
+        NetworkEventKind::RateUpdated,
+        NetworkEventKind::PfcFrameSubmitted,
+        NetworkEventKind::PfcPaused,
+        NetworkEventKind::PfcResumed,
+        NetworkEventKind::LinkStateChanged,
+        NetworkEventKind::Delivered,
+    };
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        EXPECT_EQ(events[index].kind, expected[index]);
+    }
+    EXPECT_EQ(events.front().scope, NetworkEventScope::PacketAttempt);
+    EXPECT_EQ(events[1].scope, NetworkEventScope::TransportControl);
+    EXPECT_EQ(events.back().scope, NetworkEventScope::FlowExtent);
+    EXPECT_EQ(events.front().parent_token, accepted.token);
+    EXPECT_EQ(events[1].token, events.front().token);
+    EXPECT_EQ(port.packetEvents().size(), 4U);
+    EXPECT_EQ(port.controlEvents().size(), 8U);
+    EXPECT_EQ(port.terminals().size(), 1U);
+    EXPECT_EQ(ready_times.size(), events.size());
+    EXPECT_FALSE(port.hasPendingPhysicalWork());
+}
+
+TEST(HtsimNetworkPortTest, AbiV1RejectsPacketAndControlVocabulary) {
     HtsimNetworkPortConfig control_config;
     control_config.control_frames = true;
     EXPECT_THROW(
@@ -180,6 +358,17 @@ TEST(HtsimNetworkPortTest, RejectsDeferredPacketAndControlVocabulary) {
     NetworkTxDescriptor wrong_class = descriptor(2, 402);
     wrong_class.traffic_class = 4;
     EXPECT_THROW(port.trySubmit(wrong_class, 0), std::invalid_argument);
+}
+
+TEST(HtsimNetworkPortTest,
+     AbiV2RejectsControlCapabilityWithoutARuntimeProducer) {
+    HtsimNetworkPortConfig config;
+    config.network_abi_version = simllm::rnic::kNetworkPortAbiVersionV2;
+    config.dynamic_link_events = true;
+    HtsimNetworkPort port(config);
+    NetworkTxDescriptor value = descriptor(1, 451);
+    value.abi_version = simllm::rnic::kNetworkPortAbiVersionV2;
+    EXPECT_THROW(port.trySubmit(value, 0), std::invalid_argument);
 }
 
 TEST(HtsimNetworkPortTest,

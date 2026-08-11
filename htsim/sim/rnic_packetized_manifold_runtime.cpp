@@ -151,6 +151,21 @@ void RnicPacketizedManifoldRuntime::send(
     reschedule(candidate_next_event);
 }
 
+AtlahsRuntimeEventCapabilities
+RnicPacketizedManifoldRuntime::eventCapabilities() const noexcept {
+    AtlahsRuntimeEventCapabilities capabilities;
+    capabilities.packet_attempt_events = true;
+    return capabilities;
+}
+
+void RnicPacketizedManifoldRuntime::setEventHandler(EventHandler handler) {
+    if (_is_setup) {
+        throw std::logic_error(
+            "packetized manifold event binding is immutable after setup");
+    }
+    _event_handler = std::move(handler);
+}
+
 bool RnicPacketizedManifoldRuntime::hasPendingPhysicalWork() const noexcept {
     for (const auto& item : _flows) {
         if (!item.second.completion_notified) {
@@ -347,10 +362,12 @@ void RnicPacketizedManifoldRuntime::reserveSlotAt(TimePs now_ps) {
     FlowMap selected_flows;
     PacketEventMap source_additions;
     PacketEventMap delivery_additions;
+    std::vector<AtlahsRuntimeEvent> observations;
     bool candidate_has_positive_grant = _has_positive_grant;
 
     const std::vector<RnicPacketizedReservation> reservations =
         candidate_calendar.reserveNextSlot();
+    observations.reserve(reservations.size() * 4);
     bool active_set_changed = false;
     for (const RnicPacketizedReservation& reservation : reservations) {
         const auto live = _flows.find(reservation.flowId());
@@ -386,6 +403,8 @@ void RnicPacketizedManifoldRuntime::reserveSlotAt(TimePs now_ps) {
         }
 
         const std::uint64_t packet_index = state.packets_reserved;
+        const std::uint64_t payload_offset =
+            state.payload_bytes_reserved;
         state.packets_reserved = checkedAdd(
             state.packets_reserved,
             1,
@@ -410,6 +429,31 @@ void RnicPacketizedManifoldRuntime::reserveSlotAt(TimePs now_ps) {
             transmission.sourceSerializationEndPs(), event);
         delivery_additions.emplace(
             transmission.destinationSerializationEndPs(), event);
+        AtlahsRuntimeEvent observation;
+        observation.flow_id = state.request.flow_id;
+        observation.extent_index = 0;
+        observation.packet_index = packet_index;
+        observation.transmission_attempt = 0;
+        observation.payload_offset_bytes = payload_offset;
+        observation.payload_bytes = extent.payloadBytes();
+        observation.wire_bytes = extent.wireBytes();
+        observation.packet_kind = AtlahsRuntimePacketKind::Data;
+        observation.kind = AtlahsRuntimeEventKind::PacketTxStarted;
+        observation.event_time_ps =
+            transmission.sourceSerializationStartPs();
+        observations.push_back(observation);
+        observation.kind = AtlahsRuntimeEventKind::PacketTxFinished;
+        observation.event_time_ps =
+            transmission.sourceSerializationEndPs();
+        observations.push_back(observation);
+        observation.kind = AtlahsRuntimeEventKind::PacketRxArrived;
+        observation.event_time_ps =
+            transmission.destinationSerializationStartPs();
+        observations.push_back(observation);
+        observation.kind = AtlahsRuntimeEventKind::PacketDelivered;
+        observation.event_time_ps =
+            transmission.destinationSerializationEndPs();
+        observations.push_back(observation);
         active_set_changed = active_set_changed || !state.sourceBacklogged();
     }
 
@@ -438,6 +482,11 @@ void RnicPacketizedManifoldRuntime::reserveSlotAt(TimePs now_ps) {
     _pending_source_completions.merge(source_additions);
     _pending_deliveries.merge(delivery_additions);
     _has_positive_grant = candidate_has_positive_grant;
+    if (_event_handler) {
+        for (const AtlahsRuntimeEvent& observation : observations) {
+            _event_handler(observation);
+        }
+    }
 }
 
 std::vector<AtlahsFlowId>
