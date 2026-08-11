@@ -108,6 +108,71 @@ TEST(RnicPacketizedManifoldRuntimeTest,
 }
 
 TEST(RnicPacketizedManifoldRuntimeTest,
+     EmitsPacketObservationsFromCommittedSerializerBoundaries) {
+    EventList& event_list = testEventList();
+    const std::uint64_t base = EventList::now();
+    constexpr std::uint64_t propagation_ps = 123;
+    std::vector<AtlahsRuntimeEvent> events;
+
+    RnicPacketizedManifoldRuntime runtime(
+        event_list,
+        80,
+        RnicDataPacketizationConfig(10, 2),
+        propagation_ps);
+    EXPECT_TRUE(runtime.eventCapabilities().packet_attempt_events);
+    runtime.setEventHandler(
+        [&](const AtlahsRuntimeEvent& event) { events.push_back(event); });
+    runtime.setup(2, [](AtlahsFlowId) {});
+    runtime.send(request(11, 0, 1, 18));
+    while (EventList::doNextEvent()) {
+    }
+
+    ASSERT_EQ(events.size(), 12U);
+    const std::vector<std::uint64_t> payload_offsets{0, 8, 16};
+    const std::vector<std::uint64_t> payload_bytes{8, 8, 2};
+    const std::vector<std::uint64_t> wire_bytes{10, 10, 4};
+    const std::vector<std::uint64_t> tx_starts{
+        base,
+        base + kSecondPs,
+        base + 26 * kSecondPs / 10};
+    const std::vector<std::uint64_t> tx_finishes{
+        base + kSecondPs,
+        base + 2 * kSecondPs,
+        base + 3 * kSecondPs};
+    for (std::size_t packet = 0; packet < 3; ++packet) {
+        const std::size_t first = packet * 4;
+        EXPECT_EQ(events[first].kind,
+                  AtlahsRuntimeEventKind::PacketTxStarted);
+        EXPECT_EQ(events[first + 1].kind,
+                  AtlahsRuntimeEventKind::PacketTxFinished);
+        EXPECT_EQ(events[first + 2].kind,
+                  AtlahsRuntimeEventKind::PacketRxArrived);
+        EXPECT_EQ(events[first + 3].kind,
+                  AtlahsRuntimeEventKind::PacketDelivered);
+        for (std::size_t offset = 0; offset < 4; ++offset) {
+            const AtlahsRuntimeEvent& event = events[first + offset];
+            EXPECT_EQ(event.flow_id, 11U);
+            EXPECT_EQ(event.packet_index, packet);
+            EXPECT_EQ(event.payload_offset_bytes, payload_offsets[packet]);
+            EXPECT_EQ(event.payload_bytes, payload_bytes[packet]);
+            EXPECT_EQ(event.wire_bytes, wire_bytes[packet]);
+            EXPECT_EQ(event.packet_kind, AtlahsRuntimePacketKind::Data);
+        }
+        EXPECT_EQ(events[first].event_time_ps, tx_starts[packet]);
+        EXPECT_EQ(events[first + 1].event_time_ps, tx_finishes[packet]);
+        EXPECT_EQ(events[first + 2].event_time_ps,
+                  tx_finishes[packet] + propagation_ps);
+    }
+    EXPECT_EQ(events[3].event_time_ps,
+              base + 2 * kSecondPs + propagation_ps);
+    EXPECT_EQ(events[7].event_time_ps,
+              base + 3 * kSecondPs + propagation_ps);
+    EXPECT_EQ(events[11].event_time_ps,
+              base + 34 * kSecondPs / 10 + propagation_ps);
+    EXPECT_THROW(runtime.setEventHandler({}), std::logic_error);
+}
+
+TEST(RnicPacketizedManifoldRuntimeTest,
      SameTimestampJoinImmediatelyChangesCentralMaxMinTable) {
     EventList& event_list = testEventList();
     const std::uint64_t base = EventList::now();

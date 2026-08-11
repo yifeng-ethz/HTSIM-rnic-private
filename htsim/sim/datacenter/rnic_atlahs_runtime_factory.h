@@ -56,6 +56,9 @@ public:
     void setup(std::uint32_t node_count,
                CompletionHandler complete_flow) override;
     void send(const AtlahsFlowRequest& request) override;
+    AtlahsRuntimeEventCapabilities
+    eventCapabilities() const noexcept override;
+    void setEventHandler(EventHandler handler) override;
     bool hasPendingPhysicalWork() const noexcept override;
     AtlahsTransportKind transportKind() const noexcept override;
     AtlahsWqeAuthorityMode wqeAuthorityMode() const noexcept override;

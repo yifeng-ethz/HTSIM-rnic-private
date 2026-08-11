@@ -72,6 +72,9 @@ public:
     void setup(std::uint32_t node_count,
                CompletionHandler complete_flow) override;
     void send(const AtlahsFlowRequest& request) override;
+    AtlahsRuntimeEventCapabilities
+    eventCapabilities() const noexcept override;
+    void setEventHandler(EventHandler handler) override;
     bool hasPendingPhysicalWork() const noexcept override;
 
     bool isSetup() const noexcept { return _is_setup; }
@@ -167,6 +170,7 @@ private:
     bool _is_setup = false;
     std::uint32_t _node_count = 0;
     CompletionHandler _complete_flow;
+    EventHandler _event_handler;
     FlowMap _flows;
     std::optional<RnicPacketizedSlotCalendar> _calendar;
     bool _has_positive_grant = false;

@@ -20,6 +20,7 @@ htsim::simllm_rnic::HtsimNetworkPortConfig portConfig(
         throw std::overflow_error("Tier A link rate overflows bit/s");
     }
     htsim::simllm_rnic::HtsimNetworkPortConfig result;
+    result.network_abi_version = config.network_abi_version;
     result.capacity = config.capacity;
     result.link_rate_bps = config.link_rate_gbps * 1000000000ULL;
     result.data_header_bytes = config.data_header_bytes;
@@ -36,6 +37,10 @@ class HtsimDrivenPort final : public DrivenPort {
 public:
     explicit HtsimDrivenPort(const PortConfig& config)
         : port_(portConfig(config)) {}
+
+    NetworkPortCapabilities capabilities() const noexcept override {
+        return port_.capabilities();
+    }
 
     NetworkSubmitResult trySubmit(
             const NetworkTxDescriptor& descriptor,
@@ -60,11 +65,15 @@ public:
     std::vector<NetworkEvent> takeDue(Picoseconds now_ps) override {
         std::vector<NetworkEvent> events = port_.takeDue(now_ps);
         for (const NetworkEvent& event : events) {
-            terminals_.push_back(TerminalToken{
-                event.token,
-                event.wqe_id,
-                event.kind,
-                event.event_time_ps});
+            if (event.scope == NetworkEventScope::FlowExtent) {
+                terminals_.push_back(TerminalToken{
+                    event.token,
+                    event.wqe_id,
+                    event.kind,
+                    event.event_time_ps});
+            } else if (event.scope == NetworkEventScope::PacketAttempt) {
+                packet_events_.push_back(event);
+            }
         }
         return events;
     }
@@ -77,6 +86,11 @@ public:
         return terminals_;
     }
 
+    const std::vector<NetworkEvent>& packetEvents()
+            const noexcept override {
+        return packet_events_;
+    }
+
     std::vector<NetworkToken> liveTokens() const override {
         return port_.liveTokens();
     }
@@ -85,6 +99,7 @@ private:
     htsim::simllm_rnic::HtsimNetworkPort port_;
     std::vector<IssuedToken> issued_;
     std::vector<TerminalToken> terminals_;
+    std::vector<NetworkEvent> packet_events_;
 };
 
 class HtsimPortFactory final : public PortFactory {

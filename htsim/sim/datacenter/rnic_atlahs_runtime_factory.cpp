@@ -63,6 +63,15 @@ void RnicAtlahsRuntimeAssembly::send(
     runtime->send(request);
 }
 
+AtlahsRuntimeEventCapabilities
+RnicAtlahsRuntimeAssembly::eventCapabilities() const noexcept {
+    return runtime->eventCapabilities();
+}
+
+void RnicAtlahsRuntimeAssembly::setEventHandler(EventHandler handler) {
+    runtime->setEventHandler(std::move(handler));
+}
+
 bool RnicAtlahsRuntimeAssembly::hasPendingPhysicalWork() const noexcept {
     return runtime->hasPendingPhysicalWork();
 }

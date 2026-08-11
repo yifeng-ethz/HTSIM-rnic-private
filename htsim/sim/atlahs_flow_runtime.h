@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <stdexcept>
 
 #include "atlahs_wqe.h"
 
@@ -43,6 +44,106 @@ enum class AtlahsWqeAuthorityMode {
     NativeRuntime,
 };
 
+enum class AtlahsRuntimeEventKind {
+    PacketTxStarted,
+    PacketTxFinished,
+    PacketRxArrived,
+    PacketDelivered,
+    PacketDropped,
+    EcnMarked,
+    CnpReceived,
+    EligibilityUpdated,
+    RateUpdated,
+    PfcFrameSubmitted,
+    PfcPaused,
+    PfcResumed,
+    LinkStateChanged,
+};
+
+enum class AtlahsRuntimePacketKind {
+    Data,
+    Retransmission,
+    Ack,
+    Nak,
+    Cnp,
+    Pfc,
+    OtherControl,
+};
+
+enum class AtlahsRuntimeDropLocation {
+    None,
+    TxPort,
+    Fabric,
+    RxPort,
+};
+
+enum class AtlahsRuntimeDropReason {
+    None,
+    Injected,
+    QueueOverflow,
+    LinkDown,
+    PolicyRejected,
+};
+
+enum class AtlahsRuntimeDropEvidence {
+    None,
+    Controlled,
+    Asserted,
+    Observed,
+    Inferred,
+};
+
+enum class AtlahsRuntimeLinkState {
+    Unknown,
+    Up,
+    Down,
+};
+
+struct AtlahsRuntimeEventCapabilities {
+    bool packet_attempt_events{false};
+    bool ecn_cnp_events{false};
+    bool policy_update_events{false};
+    bool pfc_events{false};
+    bool dynamic_link_events{false};
+};
+
+// Immutable observations from the runtime timing authority. Packet times are
+// materialized serializer or receive boundaries, never wrapper admission.
+// The event kind selects the applicable packet or control payload below. A
+// packet terminal retains bounded correlation for late ECN or CNP until its
+// parent flow reaches the logical terminal.
+struct AtlahsRuntimeEvent {
+    AtlahsRuntimeEventKind kind{AtlahsRuntimeEventKind::PacketTxStarted};
+    AtlahsFlowId flow_id{0};
+    std::uint64_t event_time_ps{0};
+    std::uint32_t extent_index{0};
+    std::uint64_t packet_index{0};
+    std::uint32_t transmission_attempt{0};
+    std::uint64_t payload_offset_bytes{0};
+    std::uint64_t payload_bytes{0};
+    std::uint64_t wire_bytes{0};
+    AtlahsRuntimePacketKind packet_kind{AtlahsRuntimePacketKind::Data};
+    bool ecn_marked{false};
+    AtlahsRuntimeDropLocation drop_location{
+        AtlahsRuntimeDropLocation::None};
+    AtlahsRuntimeDropReason drop_reason{AtlahsRuntimeDropReason::None};
+    std::uint64_t drop_resource_id{0};
+    AtlahsRuntimeDropEvidence drop_evidence{
+        AtlahsRuntimeDropEvidence::None};
+    std::uint64_t policy_context_token{0};
+    std::uint32_t source{0};
+    std::uint32_t destination{0};
+    std::uint64_t link_id{0};
+    std::uint8_t priority{0};
+    std::uint32_t pause_quanta{0};
+    bool has_pause_duration{false};
+    std::uint64_t pause_duration_ps{0};
+    std::uint64_t effective_at_ps{0};
+    bool has_effective_rate{false};
+    std::uint64_t effective_rate_bps{0};
+    AtlahsRuntimeLinkState link_state{AtlahsRuntimeLinkState::Unknown};
+};
+
 struct AtlahsWqeCompletionProjection {
     AtlahsWqeId wqe_id{0};
     AtlahsWqeObjectId sq_id{0};
@@ -70,12 +171,27 @@ struct AtlahsWqeAuthorityCounters {
 class AtlahsFlowRuntime {
 public:
     using CompletionHandler = std::function<void(AtlahsFlowId)>;
+    using EventHandler = std::function<void(const AtlahsRuntimeEvent&)>;
 
     virtual ~AtlahsFlowRuntime() = default;
 
     virtual void setup(std::uint32_t node_count,
                        CompletionHandler complete_flow) = 0;
     virtual void send(const AtlahsFlowRequest& request) = 0;
+
+    virtual AtlahsRuntimeEventCapabilities
+    eventCapabilities() const noexcept {
+        return {};
+    }
+
+    // Install before setup. A runtime that advertises no event vocabulary
+    // rejects a nonempty handler instead of fabricating observations.
+    virtual void setEventHandler(EventHandler handler) {
+        if (handler) {
+            throw std::invalid_argument(
+                "ATLAHS runtime does not expose event observations");
+        }
+    }
 
     // A runtime declares only its stable WQE-level transport object. Packet
     // details remain private to the runtime. Topology-free manifold models
