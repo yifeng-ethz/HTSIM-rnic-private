@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <streambuf>
 #include <string>
 #include <vector>
 
@@ -16,12 +17,39 @@
 #include "rnic_atlahs_driver.h"
 
 #ifdef HTSIM_ENABLE_SIMLLM_RNIC
+#include "rnic_flow_session.h"
 #include "simllm_atlahs_flow_runtime.h"
 #endif
 
 namespace {
 
 #ifdef HTSIM_ENABLE_SIMLLM_RNIC
+class DiscardStreamBuffer final : public std::streambuf {
+protected:
+    int_type overflow(int_type character) override {
+        return traits_type::not_eof(character);
+    }
+
+    std::streamsize xsputn(const char*, std::streamsize count) override {
+        return count;
+    }
+};
+
+class ScopedStreamRedirect final {
+public:
+    ScopedStreamRedirect(std::ostream& stream, std::streambuf& replacement)
+        : stream_(stream), original_(stream.rdbuf(&replacement)) {}
+
+    ~ScopedStreamRedirect() { stream_.rdbuf(original_); }
+
+    ScopedStreamRedirect(const ScopedStreamRedirect&) = delete;
+    ScopedStreamRedirect& operator=(const ScopedStreamRedirect&) = delete;
+
+private:
+    std::ostream& stream_;
+    std::streambuf* original_;
+};
+
 htsim::simllm_rnic::SimllmAtlahsRuntimeConfig structuralRuntimeConfig(
         const RnicAtlahsCliOptions& options,
         const AtlahsHtsimApi::GoalLayout& goal_layout) {
@@ -152,6 +180,22 @@ void validateRuntimeQuiescence(AtlahsHtsimApi& api) {
 int main(int argc, char* argv[]) {
     const std::string program_name =
         argc > 0 && argv != nullptr && argv[0] != nullptr ? argv[0] : "htsim_rnic";
+#ifdef HTSIM_ENABLE_SIMLLM_RNIC
+    if (argc == 2 && argv != nullptr && argv[1] != nullptr
+        && std::string(argv[1]) == kRnicFlowSessionOption) {
+        std::cout.flush();
+        std::ostream protocol_output(std::cout.rdbuf());
+        DiscardStreamBuffer discarded_output;
+        ScopedStreamRedirect suppress_legacy_output(
+            std::cout, discarded_output);
+        return runRnicFlowSession(
+            std::cin,
+            protocol_output,
+            std::cerr,
+            HTSIM_COMPOSED_SOURCE_REVISION,
+            SIMLLM_COMPOSED_SOURCE_REVISION);
+    }
+#endif
     if (requestedHelp(argc, argv)) {
         std::cout << rnicAtlahsCliUsage(program_name) << '\n';
         return 0;
