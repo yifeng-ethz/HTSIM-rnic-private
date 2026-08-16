@@ -319,6 +319,8 @@ RnicAtlahsCliOptions parseRnicAtlahsCli(int argc, const char* const argv[]) {
                 throw optionError(option, "value exceeds the ATLAHS API node domain");
             }
             options.explicitly_supplied.node_count = true;
+        } else if (option == "-lgs_o") {
+            options.lgs_o_ns = parseUnsigned32(option, value);
         } else if (option == "-linkspeed_bps") {
             options.link_capacity_bps = parseUnsigned(option, value);
             required.linkspeed = true;
@@ -481,7 +483,7 @@ std::string rnicAtlahsCliUsage(const std::string& program_name) {
           << " -goal FILE"
              " [-completion_csv FILE]"
              " [-goal_rank_mapping auto|gpu-rank|unique-nic]"
-             " [-nodes N] -linkspeed_bps BPS"
+             " [-nodes N] [-lgs_o NS] -linkspeed_bps BPS"
              " -rnic_profile rnic-cn|rnic-ss|rnic-nn|rnic-nn-fluid\n"
           << "Packet profiles:"
              " [-rnic_max_wire_bytes BYTES]"

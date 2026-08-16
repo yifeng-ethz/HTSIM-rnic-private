@@ -106,6 +106,7 @@ int main(int argc, char* argv[]) {
         api.linkspeed = options.runtime.endpoint_link_bps;
         logsim.htsim_api = &api;
         logsim.set_protocol(RNIC_PROTOCOL);
+        logsim.lgs_o = static_cast<int>(options.lgs_o_ns);
 
         DcqcnAtlahsRuntime* installed_runtime = nullptr;
         const int result =

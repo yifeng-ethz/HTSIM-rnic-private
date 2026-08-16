@@ -17,6 +17,9 @@ struct DcqcnAtlahsCliOptions {
     std::string goal_file;
     std::optional<std::string> completion_csv;
     DcqcnGoalRankMapping goal_rank_mapping{DcqcnGoalRankMapping::Auto};
+    // LogGOPS per-message host overhead "o" in nanoseconds, charged by the
+    // shared LGS driver on sends and UQ-matched receives (legacy -lgs_o).
+    std::uint32_t lgs_o_ns{0};
     DcqcnAtlahsRuntimeConfig runtime;
 };
 

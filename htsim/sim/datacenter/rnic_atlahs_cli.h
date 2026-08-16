@@ -114,6 +114,9 @@ struct RnicAtlahsCliOptions {
     RnicAtlahsGoalRankMapping goal_rank_mapping = RnicAtlahsGoalRankMapping::Auto;
     // Zero means the driver must derive the physical rank count from GOAL.
     std::uint32_t node_count;
+    // LogGOPS per-message host overhead "o" in nanoseconds, charged by the
+    // shared LGS driver on sends and UQ-matched receives (legacy -lgs_o).
+    std::uint32_t lgs_o_ns = 0;
     std::uint64_t link_capacity_bps;
     RnicProfile profile;
 

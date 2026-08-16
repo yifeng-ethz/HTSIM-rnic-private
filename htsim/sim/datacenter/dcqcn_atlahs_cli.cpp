@@ -84,6 +84,8 @@ DcqcnAtlahsCliOptions parseDcqcnAtlahsCli(int argc, const char* const argv[]) {
             options.goal_rank_mapping = parseRankMapping(value);
         } else if (option == "-seed") {
             options.runtime.ecmp_seed = parseUnsigned(option, value);
+        } else if (option == "-lgs_o") {
+            options.lgs_o_ns = checkedValue<std::uint32_t>(option, parseUnsigned(option, value));
         } else if (option == "-link_bps") {
             options.runtime.endpoint_link_bps = parseUnsigned(option, value);
         } else if (option == "-max_wire_packet_bytes") {
@@ -200,7 +202,7 @@ std::string dcqcnAtlahsCliUsage(const std::string& program_name) {
            " [-state_trace_csv FILE]"
            " [-goodput_trace_csv FILE -goodput_trace_bin_ps PS]"
            " [-goal_rank_mapping auto|gpu-rank|unique-nic]"
-           " [-seed N] [-link_bps N]"
+           " [-seed N] [-link_bps N] [-lgs_o NS]"
            " [-max_wire_packet_bytes N] [-data_header_bytes N]"
            " [-shared_buffer_bytes N] [-egress_buffer_bytes N]"
            " [-ecn_kmin_bytes N] [-ecn_kmax_bytes N]"

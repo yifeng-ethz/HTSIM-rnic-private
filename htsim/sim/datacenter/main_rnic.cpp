@@ -133,6 +133,7 @@ int main(int argc, char* argv[]) {
         }
         logsim.htsim_api = &api;
         logsim.set_protocol(RNIC_PROTOCOL);
+        logsim.lgs_o = static_cast<int>(options.lgs_o_ns);
 
         const int result = start_lgs(
             options.goal_file, logsim, [&](const AtlahsHtsimApi::GoalLayout& goal_layout) {
