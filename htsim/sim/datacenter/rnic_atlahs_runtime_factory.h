@@ -10,6 +10,7 @@
 #include "rnic_collective_network_runtime.h"
 #include "rnic_packet_extent.h"
 #include "rnic_profile.h"
+#include "rnic_ss_runtime.h"
 
 class FatTreeTopology;
 class FatTreeTopologyCfg;
@@ -28,6 +29,7 @@ struct RnicFluidManifoldRuntimeConfig {
 
 using RnicAtlahsRuntimeConfig =
     std::variant<RnicCollectiveNetworkConfig,
+                 RnicSsRuntimeConfig,
                  RnicPacketizedManifoldRuntimeConfig,
                  RnicFluidManifoldRuntimeConfig>;
 

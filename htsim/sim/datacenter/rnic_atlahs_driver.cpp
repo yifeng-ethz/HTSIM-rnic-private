@@ -10,8 +10,26 @@
 #include "fat_tree_topology.h"
 #include "rnic_packetized_manifold.h"
 #include "rnic_prbs_pacer.h"
+#include "ss_dragonfly_fabric.h"
 
 namespace {
+
+// The -topo path is shared between the Clos loader and the ss-dragonfly
+// dialect.  The dragonfly fabric is constructed and validated by its own
+// driver; hosting the rnic profiles on it waits for the capture-driven
+// calibration wave, so the profile assembly names that seam instead of
+// letting the Clos parser fail obscurely.
+void rejectSsDragonflyTopologyFile(const std::string& path, const char* profile) {
+    if (isSsDragonflyTopologyFile(path)) {
+        throw std::invalid_argument(
+            std::string(profile) +
+            " runs on the controlled two-tier Clos; the ss-dragonfly fabric "
+            "is hosted with calibration pending and its " +
+            profile +
+            " composition lands with the Merlin calibration wave "
+            "(htsim_ss_dragonfly drives the dragonfly fabric today)");
+    }
+}
 
 const char* resolvedGoalRankMappingName(AtlahsHtsimApi::GoalRankMapping mapping) {
     switch (mapping) {
@@ -34,6 +52,7 @@ std::unique_ptr<FatTreeTopologyCfg> makeCollectiveTopologyConfig(
             throw std::invalid_argument("cannot open rnic-cn topology file '" +
                                         *options.collective.topology_file + "'");
         }
+        rejectSsDragonflyTopologyFile(*options.collective.topology_file, "rnic-cn");
         topology_config = FatTreeTopologyCfg::load(*options.collective.topology_file, buffer_bytes,
                                                    COMPOSITE, FAIR_PRIO);
         if (topology_config == nullptr) {
@@ -57,6 +76,66 @@ std::unique_ptr<FatTreeTopologyCfg> makeCollectiveTopologyConfig(
     }
     topology_config->set_ns_tm3_shared_buffer_capacity(buffer_bytes);
     return topology_config;
+}
+
+std::unique_ptr<FatTreeTopologyCfg> makeSlingshotTopologyConfig(
+    const RnicAtlahsCliOptions& options,
+    std::uint32_t physical_node_count) {
+    const auto buffer_bytes = static_cast<mem_b>(options.slingshot.ns_rosetta_shared_buffer_bytes);
+    std::unique_ptr<FatTreeTopologyCfg> topology_config;
+    if (options.collective.topology_file.has_value()) {
+        std::ifstream topology_probe(*options.collective.topology_file);
+        if (!topology_probe.is_open()) {
+            throw std::invalid_argument("cannot open rnic-ss topology file '" +
+                                        *options.collective.topology_file + "'");
+        }
+        rejectSsDragonflyTopologyFile(*options.collective.topology_file, "rnic-ss");
+        topology_config = FatTreeTopologyCfg::load(*options.collective.topology_file, buffer_bytes,
+                                                   COMPOSITE, FAIR_PRIO);
+        if (topology_config == nullptr) {
+            throw std::runtime_error("rnic-ss topology loader returned no configuration");
+        }
+        if (topology_config->no_of_nodes() != physical_node_count) {
+            throw std::invalid_argument("rnic-ss topology node count does not match GOAL layout");
+        }
+    } else {
+        if (!isRnicGeneratedTwoTierClosNodeCount(physical_node_count)) {
+            throw std::invalid_argument(
+                "generated rnic-ss topology requires GOAL nodes = K^2/2 "
+                "for even K");
+        }
+        topology_config = std::make_unique<FatTreeTopologyCfg>(
+            2, physical_node_count, options.link_capacity_bps, buffer_bytes,
+            options.collective.hop_latency_ps, options.collective.switch_latency_ps, COMPOSITE,
+            FAIR_PRIO);
+    }
+    topology_config->set_ns_rosetta_shared_buffer_capacity(buffer_bytes);
+    return topology_config;
+}
+
+RnicAtlahsRuntimeConfig slingshotRuntimeConfig(const RnicAtlahsCliOptions& options) {
+    return RnicSsRuntimeConfig{
+        options.link_capacity_bps,
+        RnicDataPacketizationConfig(options.packet.max_wire_packet_bytes,
+                                    options.packet.data_header_bytes),
+        options.slingshot.control_wire_bytes,
+        RnicSsSelectiveRepeatConfig{options.slingshot.outstanding_window_packets,
+                                    options.slingshot.rto_ps,
+                                    options.slingshot.maximum_retransmissions},
+        RnicSsPathSelectionConfig{8, 4, options.slingshot.path_hysteresis_ps,
+                                  options.slingshot.maximum_sample_age_ps, 0},
+        RnicSsCreditConfig{options.slingshot.maximum_credit_ahead_bytes},
+        options.slingshot.q_hi_bytes,
+        options.slingshot.q_lo_bytes,
+        options.slingshot.credit_quantum_packets,
+        options.slingshot.telemetry_delay_ps,
+        options.slingshot.routing_seed,
+        options.slingshot.unordered_packet_routing,
+        options.slingshot.allow_loss_stress,
+        options.slingshot.state_trace_csv,
+        options.goodput_trace_csv,
+        options.goodput_trace_bin_ps,
+    };
 }
 
 // The resequencing window is the bandwidth jitter product of the known
@@ -126,9 +205,9 @@ std::unique_ptr<RnicAtlahsRuntimeAssembly> assembleRnicAtlahsProfile(
                 std::move(topology_config), logger_factory);
         }
         case RnicProfile::SlingshotLike:
-            throw std::invalid_argument(
-                "rnic-ss profile is not wired yet; it lands with the "
-                "slingshot-like runtime in a follow-up change");
+            return makeRnicAtlahsRuntime(
+                event_list, options.profile, slingshotRuntimeConfig(options),
+                makeSlingshotTopologyConfig(options, physical_node_count), logger_factory);
         case RnicProfile::PacketizedManifold:
             return makeRnicAtlahsRuntime(
                 event_list, options.profile,
@@ -293,6 +372,14 @@ std::string renderRnicAtlahsModelManifest(const RnicAtlahsCliOptions& options,
         manifest << '\n';
         manifest << "[RNIC manifest] model=open-slingshot-like-comparator"
                  << " proprietary_threshold_claim=false"
+                 << " calibration_status=hosted-pending-merlin-calibration"
+                 << " state_trace_csv="
+                 << (options.slingshot.state_trace_csv.has_value()
+                         ? *options.slingshot.state_trace_csv
+                         : "off")
+                 << " goodput_trace_csv="
+                 << (options.goodput_trace_csv.has_value() ? *options.goodput_trace_csv : "off")
+                 << " goodput_trace_bin_ps=" << options.goodput_trace_bin_ps
                  << " routing="
                  << (options.slingshot.unordered_packet_routing ? "unordered-packet"
                                                                 : "ordered-endpoint-pair")

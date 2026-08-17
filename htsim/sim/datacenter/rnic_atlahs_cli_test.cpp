@@ -132,6 +132,7 @@ TEST(RnicAtlahsCliTest, RecordsExplicitGeneratedCollectiveOverrides) {
 
 TEST(RnicAtlahsCliTest, ResolvesCanonicalSlingshotLikeOverrides) {
     std::vector<std::string> arguments = baseArguments("rnic-ss");
+    append(arguments, "-rnic_ss_state_trace_csv", "results/ss-state.csv");
     append(arguments, "-rnic_ss_control_wire_bytes", "96");
     append(arguments, "-rnic_ss_ns_rosetta_buffer_bytes", "16777216");
     append(arguments, "-rnic_ss_q_hi_bytes", "4194304");
@@ -150,6 +151,9 @@ TEST(RnicAtlahsCliTest, ResolvesCanonicalSlingshotLikeOverrides) {
 
     const RnicAtlahsCliOptions options = parse(std::move(arguments));
     EXPECT_EQ(options.profile, RnicProfile::SlingshotLike);
+    ASSERT_TRUE(options.slingshot.state_trace_csv.has_value());
+    EXPECT_EQ(*options.slingshot.state_trace_csv, "results/ss-state.csv");
+    EXPECT_TRUE(options.explicitly_supplied.ss_state_trace_csv);
     EXPECT_EQ(options.slingshot.control_wire_bytes, 96U);
     EXPECT_EQ(options.slingshot.ns_rosetta_shared_buffer_bytes, 16777216U);
     EXPECT_EQ(options.slingshot.q_hi_bytes, 4194304U);
@@ -179,6 +183,31 @@ TEST(RnicAtlahsCliTest, ResolvesOrderedSack128SlingshotDefaults) {
     std::vector<std::string> too_wide = baseArguments("rnic-ss");
     append(too_wide, "-rnic_ss_window_packets", "129");
     EXPECT_THROW(parse(std::move(too_wide)), std::invalid_argument);
+}
+
+TEST(RnicAtlahsCliTest, GoodputTraceIsPairedAndLimitedToSlingshotLike) {
+    std::vector<std::string> arguments = baseArguments("rnic-ss");
+    append(arguments, "-rnic_goodput_trace_csv", "results/goodput.csv");
+    append(arguments, "-rnic_goodput_trace_bin_ps", "10000000");
+    const RnicAtlahsCliOptions options = parse(std::move(arguments));
+    ASSERT_TRUE(options.goodput_trace_csv.has_value());
+    EXPECT_EQ(*options.goodput_trace_csv, "results/goodput.csv");
+    EXPECT_EQ(options.goodput_trace_bin_ps, UINT64_C(10000000));
+    EXPECT_TRUE(options.explicitly_supplied.goodput_trace_csv);
+    EXPECT_TRUE(options.explicitly_supplied.goodput_trace_bin_ps);
+
+    std::vector<std::string> path_only = baseArguments("rnic-ss");
+    append(path_only, "-rnic_goodput_trace_csv", "goodput.csv");
+    EXPECT_THROW(parse(std::move(path_only)), std::invalid_argument);
+
+    // The other profiles do not carry the audited receive-side binning yet;
+    // the CLI rejects the request instead of silently dropping it.
+    for (const std::string& profile : {"rnic-cn", "rnic-nn"}) {
+        std::vector<std::string> rejected = baseArguments(profile);
+        append(rejected, "-rnic_goodput_trace_csv", "goodput.csv");
+        append(rejected, "-rnic_goodput_trace_bin_ps", "10000000");
+        EXPECT_THROW(parse(std::move(rejected)), std::invalid_argument);
+    }
 }
 
 TEST(RnicAtlahsCliTest, ResolvesPacketizedManifoldOverrides) {

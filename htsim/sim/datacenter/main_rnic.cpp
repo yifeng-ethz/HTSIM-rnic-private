@@ -15,6 +15,7 @@
 #include "logsim-interface.h"
 #include "rnic_atlahs_cli.h"
 #include "rnic_atlahs_driver.h"
+#include "rnic_prbs_pacer.h"
 
 #ifdef HTSIM_ENABLE_SIMLLM_RNIC
 #include "rnic_flow_session.h"
@@ -152,6 +153,74 @@ void validateRuntimeQuiescence(AtlahsHtsimApi& api) {
         throw std::logic_error("RNIC ATLAHS runtime is not an assembled profile");
     }
 
+    if (auto* runtime = dynamic_cast<RnicSsRuntime*>(&assembly->implementation())) {
+        runtime->validateQuiescent();
+        const RnicSsRuntimeStatistics& statistics = runtime->statistics();
+        std::cout << "[RNIC manifest] rnic_ss_bound_kind="
+                     "controlled-clos-per-domain-aggregate-envelope"
+                  << " rnic_ss_forward_data_observation_ps="
+                  << statistics.physical_forward_data_observation_ps
+                  << " rnic_ss_last_bp_enable_feedback_ps="
+                  << statistics.physical_last_bp_enable_feedback_ps
+                  << " rnic_ss_bound_control_loop_ps=" << statistics.physical_bound_control_loop_ps
+                  << " rnic_ss_maximum_bp_enable_fan_in=" << statistics.maximum_bp_enable_fan_in
+                  << " rnic_ss_maximum_switch_endpoint_pairs="
+                  << statistics.maximum_switch_endpoint_pairs
+                  << " rnic_ss_maximum_switch_physical_ingresses="
+                  << statistics.maximum_switch_physical_ingresses
+                  << " rnic_ss_maximum_switch_physical_egresses="
+                  << statistics.maximum_switch_physical_egresses
+                  << " rnic_ss_control_loop_window_packets="
+                  << statistics.control_loop_window_packets
+                  << " rnic_ss_configured_window_below_control_loop="
+                  << (statistics.configured_window_below_control_loop ? "true" : "false")
+                  << " rnic_ss_analytical_queue_bound_bytes="
+                  << statistics.analytical_queue_bound_bytes
+                  << " rnic_ss_analytical_shared_reaction_bytes="
+                  << statistics.analytical_shared_reaction_bytes
+                  << " rnic_ss_minimum_shared_pressure_high_bytes="
+                  << statistics.minimum_shared_pressure_high_bytes
+                  << " rnic_ss_maximum_shared_pressure_high_bytes="
+                  << statistics.maximum_shared_pressure_high_bytes
+                  << " rnic_ss_source_pacer=" << RnicPrbsPacer::kAlgorithmName
+                  << " rnic_ss_source_pacer_version=" << RnicPrbsPacer::kAlgorithmVersion << '\n';
+        std::cout
+            << "[RNIC manifest] rnic_ss_new_data_packets=" << statistics.new_data_packets
+            << " rnic_ss_sack_retransmissions=" << statistics.sack_retransmissions
+            << " rnic_ss_rto_retransmissions=" << statistics.rto_retransmissions
+            << " rnic_ss_rto_deadline_pushes=" << statistics.rto_deadline_pushes
+            << " rnic_ss_rto_deadline_stale_pops=" << statistics.rto_deadline_stale_pops
+            << " rnic_ss_rto_deadline_due_pops=" << statistics.rto_deadline_due_pops
+            << " rnic_ss_rto_deadline_heap_high_watermark="
+            << statistics.rto_deadline_heap_high_watermark
+            << " rnic_ss_fabric_drops=" << statistics.fabric_drops
+            << " rnic_ss_maximum_observed_shared_buffer_bytes="
+            << statistics.maximum_observed_shared_buffer_bytes
+            << " rnic_ss_leaf_egress_bp_enable_events=" << statistics.leaf_egress_bp_enable_events
+            << " rnic_ss_spine_egress_bp_enable_events=" << statistics.spine_egress_bp_enable_events
+            << " rnic_ss_leaf_shared_bp_enable_events=" << statistics.leaf_shared_bp_enable_events
+            << " rnic_ss_spine_shared_bp_enable_events=" << statistics.spine_shared_bp_enable_events
+            << " rnic_ss_maximum_active_credit_domains=" << statistics.maximum_active_credit_domains
+            << " rnic_ss_source_prbs_data_opportunities="
+            << statistics.source_prbs_data_opportunities
+            << " rnic_ss_source_prbs_busy_deferrals=" << statistics.source_prbs_busy_deferrals
+            << " rnic_ss_ordered_path_bindings=" << statistics.ordered_path_bindings
+            << " rnic_ss_ordered_path_binding_max_leaf_skew="
+            << statistics.ordered_path_binding_max_leaf_skew
+            << " rnic_ss_ordered_path_bindings_by_path="
+            << statistics.ordered_path_bindings_by_path[0] << ':'
+            << statistics.ordered_path_bindings_by_path[1] << ':'
+            << statistics.ordered_path_bindings_by_path[2] << ':'
+            << statistics.ordered_path_bindings_by_path[3] << ':'
+            << statistics.ordered_path_bindings_by_path[4] << ':'
+            << statistics.ordered_path_bindings_by_path[5] << ':'
+            << statistics.ordered_path_bindings_by_path[6] << ':'
+            << statistics.ordered_path_bindings_by_path[7]
+            << " rnic_ss_source_priority_violations=" << statistics.source_priority_violations
+            << '\n';
+        return;
+    }
+
     if (auto* runtime = dynamic_cast<RnicCollectiveNetworkRuntime*>(&assembly->implementation())) {
         runtime->validateQuiescent();
         const RnicCollectiveRecoveryStatistics& recovery = runtime->recoveryStatistics();
@@ -173,6 +242,46 @@ void validateRuntimeQuiescence(AtlahsHtsimApi& api) {
                   << recovery.stale_nflow_updates_ignored << '\n';
         std::cout << renderRnicSevereLateDropManifest(recovery);
     }
+}
+
+RnicAtlahsRuntimeAssembly& requireAssembledProfile(AtlahsHtsimApi& api) {
+    AtlahsFlowRuntime* runtime = api.getFlowRuntime();
+#ifdef HTSIM_ENABLE_SIMLLM_RNIC
+    auto* structural =
+        dynamic_cast<htsim::simllm_rnic::SimllmAtlahsFlowRuntime*>(runtime);
+    if (structural != nullptr) {
+        runtime = &structural->networkRuntime();
+    }
+#endif
+    auto* assembly = dynamic_cast<RnicAtlahsRuntimeAssembly*>(runtime);
+    if (assembly == nullptr) {
+        throw std::logic_error("RNIC ATLAHS runtime is not an assembled profile");
+    }
+    return *assembly;
+}
+
+void writeRequestedStateTrace(AtlahsHtsimApi& api, const RnicAtlahsCliOptions& options) {
+    if (!options.slingshot.state_trace_csv.has_value()) {
+        return;
+    }
+    auto* runtime =
+        dynamic_cast<RnicSsRuntime*>(&requireAssembledProfile(api).implementation());
+    if (runtime == nullptr) {
+        throw std::logic_error("rnic-ss state trace requested for another profile");
+    }
+    runtime->writeStateTraceCsv();
+}
+
+void writeRequestedGoodputTrace(AtlahsHtsimApi& api, const RnicAtlahsCliOptions& options) {
+    if (!options.goodput_trace_csv.has_value()) {
+        return;
+    }
+    auto* runtime =
+        dynamic_cast<RnicSsRuntime*>(&requireAssembledProfile(api).implementation());
+    if (runtime == nullptr) {
+        throw std::logic_error("RNIC goodput trace requested for a profile without binning");
+    }
+    runtime->writeGoodputTraceCsv();
 }
 
 }  // namespace
@@ -254,6 +363,8 @@ int main(int argc, char* argv[]) {
         }
         validateRuntimeQuiescence(api);
         api.validateWqeQuiescent();
+        writeRequestedStateTrace(api, options);
+        writeRequestedGoodputTrace(api, options);
         if (options.completion_csv.has_value()) {
             writeCompletionCsv(*options.completion_csv, options.profile, api.completedFlows());
         }

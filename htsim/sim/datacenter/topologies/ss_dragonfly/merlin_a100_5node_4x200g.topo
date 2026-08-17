@@ -1,0 +1,33 @@
+# UNVERIFIED Merlin-shaped parameterization: pending the discovery
+# evidence from the parallel Merlin capture worker, no claim is made
+# that this matches the PSI Merlin A100 partition's real Slingshot
+# wiring.
+#
+# What discovery from five NCCL-over-sockets nodes can actually
+# determine: the per-NIC-port rate (200 Gbit/s), the number of ports
+# per node (4), and coarse effective latency between node pairs.  It
+# cannot determine the site-wide dragonfly shape, so this instance is
+# the smallest fabric consistent with those observables: all twenty
+# 200G NIC ports of the five A100 nodes attached to one Rosetta-class
+# switch (a 64-port Rosetta comfortably hosts 20 endpoint ports), that
+# is p = 20, a = 1, h = 0, g = 1.  Every endpoint pair crosses exactly
+# one switch and routing degenerates to delivery; the progressive
+# adaptive machinery is exercised only by multi-group instances.
+#
+# Endpoint numbering: host = node * 4 + port for node in 0..4 and
+# port in 0..3.
+#
+# The latency figures below are placeholders at the fixture defaults
+# and are exactly the values the calibration wave must replace from
+# the capture-derived evidence.  Status: hosted, calibration pending.
+topology dragonfly
+hosts_per_router 20
+routers_per_group 1
+global_links_per_router 0
+groups 1
+host_link_gbps 200
+host_link_latency_ps 300000
+switch_pipeline_ps 350000
+rosetta_buffer_bytes 4194304
+max_wire_packet_bytes 4160
+routing_seed 383530136519245852

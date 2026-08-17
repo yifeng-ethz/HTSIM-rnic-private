@@ -17,6 +17,9 @@ set(LIB_SOURCES
     rnic_atlahs_runtime_factory.cpp
     rnic_collective_network_runtime.cpp
     rnic_collective_route.cpp
+    rnic_ss_packet.cpp
+    rnic_ss_route.cpp
+    rnic_ss_runtime.cpp
     star_topology.cpp
     fat_tree_switch.cpp
     fat_tree_switch_factory.cpp
@@ -24,11 +27,16 @@ set(LIB_SOURCES
     ns_tm3_dcqcn_policy.cpp
     ns_tm3_switch.cpp
     ns_rosetta_switch.cpp
+    ss_dragonfly_fabric.cpp
     dragon_fly_topology.cpp
     slimfly_topology.cpp
     slimfly_switch.cpp
     dragonfly_topology.cpp
     dragonfly_switch.cpp
+    dragonfly_endpoint_placement.cpp
+    dragonfly_progressive_congestion.cpp
+    dragonfly_progressive_routing.cpp
+    dragonfly_route_state_store.cpp
     generic_topology.cpp
 )
 
@@ -65,6 +73,7 @@ set_property(TARGET htsim_eqds PROPERTY EXCLUDE_FROM_ALL TRUE)
 
 add_executable(htsim_dcqcn_atlahs main_dcqcn_atlahs.cpp)
 add_executable(htsim_rnic main_rnic.cpp)
+add_executable(htsim_ss_dragonfly main_ss_dragonfly.cpp)
 add_executable(htsim_uec main_uec.cpp)
 add_executable(htsim_uec_sf main_uec_sf.cpp)
 add_executable(htsim_uec_df main_uec_df.cpp)
@@ -106,6 +115,7 @@ set (ALL_EXECUTABLES
     htsim_eqds
     htsim_dcqcn_atlahs
     htsim_rnic
+    htsim_ss_dragonfly
     htsim_uec
     htsim_uec_sf
     htsim_uec_df
@@ -147,6 +157,46 @@ if ( ENABLE_TESTS )
     target_link_libraries(
         ns_rosetta_switch_test PRIVATE htsim_dc htsim gtest_main)
     gtest_discover_tests(ns_rosetta_switch_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
+    add_executable(
+        dragonfly_progressive_routing_test
+        dragonfly_progressive_routing_test.cpp)
+    target_link_libraries(
+        dragonfly_progressive_routing_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(dragonfly_progressive_routing_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
+    add_executable(
+        dragonfly_progressive_congestion_test
+        dragonfly_progressive_congestion_test.cpp)
+    target_link_libraries(
+        dragonfly_progressive_congestion_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(dragonfly_progressive_congestion_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
+    add_executable(
+        dragonfly_route_state_store_test
+        dragonfly_route_state_store_test.cpp)
+    target_link_libraries(
+        dragonfly_route_state_store_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(dragonfly_route_state_store_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
+    add_executable(
+        dragonfly_endpoint_placement_test
+        dragonfly_endpoint_placement_test.cpp)
+    target_link_libraries(
+        dragonfly_endpoint_placement_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(dragonfly_endpoint_placement_test
         PROPERTIES LABELS "unit"
         PROPERTIES TIMEOUT 60
     )
@@ -219,6 +269,22 @@ if ( ENABLE_TESTS )
     target_link_libraries(
         rnic_atlahs_driver_test PRIVATE htsim_dc htsim gtest_main)
     gtest_discover_tests(rnic_atlahs_driver_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
+    add_executable(rnic_ss_runtime_test rnic_ss_runtime_test.cpp)
+    target_link_libraries(
+        rnic_ss_runtime_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(rnic_ss_runtime_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
+    add_executable(ss_dragonfly_fabric_test ss_dragonfly_fabric_test.cpp)
+    target_link_libraries(
+        ss_dragonfly_fabric_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(ss_dragonfly_fabric_test
         PROPERTIES LABELS "unit"
         PROPERTIES TIMEOUT 60
     )

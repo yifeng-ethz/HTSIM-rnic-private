@@ -184,6 +184,10 @@ void validateSlingshotOptions(const RnicAtlahsCliOptions& options) {
         options.slingshot.control_wire_bytes > std::numeric_limits<std::uint16_t>::max()) {
         throw std::invalid_argument("rnic-ss DATA/control wire extents must fit uint16_t");
     }
+    if (options.slingshot.state_trace_csv.has_value() &&
+        options.slingshot.state_trace_csv->empty()) {
+        throw std::invalid_argument("-rnic_ss_state_trace_csv: path must be nonempty");
+    }
     requirePositive(options.slingshot.ns_rosetta_shared_buffer_bytes,
                     "-rnic_ss_ns_rosetta_buffer_bytes");
     requirePositive(options.slingshot.q_hi_bytes, "-rnic_ss_q_hi_bytes");
@@ -243,7 +247,13 @@ void rejectCrossProfileOptions(const RnicAtlahsCliOptions& options) {
         throw std::invalid_argument("physical Clos/control options are valid only for rnic-cn");
     }
 
-    const bool supplied_ss = supplied.ss_control_wire_bytes ||
+    if (options.profile != RnicProfile::SlingshotLike &&
+        (supplied.goodput_trace_csv || supplied.goodput_trace_bin_ps)) {
+        throw std::invalid_argument(
+            "receive-goodput tracing is wired only for the rnic-ss profile");
+    }
+
+    const bool supplied_ss = supplied.ss_state_trace_csv || supplied.ss_control_wire_bytes ||
                              supplied.ns_rosetta_shared_buffer_bytes || supplied.ss_q_hi_bytes ||
                              supplied.ss_q_lo_bytes || supplied.ss_telemetry_delay_ps ||
                              supplied.ss_path_hysteresis_ps || supplied.ss_maximum_sample_age_ps ||
@@ -263,6 +273,11 @@ void validateResolvedOptions(const RnicAtlahsCliOptions& options) {
     }
     requirePositive(options.link_capacity_bps, "-linkspeed_bps");
 
+    if (options.goodput_trace_csv.has_value() != (options.goodput_trace_bin_ps != 0)) {
+        throw std::invalid_argument(
+            "RNIC goodput trace requires -rnic_goodput_trace_csv and positive "
+            "-rnic_goodput_trace_bin_ps together");
+    }
 
     rejectCrossProfileOptions(options);
     if (isPacketProfile(options.profile)) {
@@ -334,6 +349,15 @@ RnicAtlahsCliOptions parseRnicAtlahsCli(int argc, const char* const argv[]) {
         } else if (option == "-rnic_nn_propagation_ps") {
             options.manifold.fixed_propagation_delay_ps = parseUnsigned(option, value);
             options.explicitly_supplied.fixed_propagation_delay_ps = true;
+        } else if (option == "-rnic_goodput_trace_csv") {
+            if (value.empty()) {
+                throw optionError(option, "path must be nonempty");
+            }
+            options.goodput_trace_csv = value;
+            options.explicitly_supplied.goodput_trace_csv = true;
+        } else if (option == "-rnic_goodput_trace_bin_ps") {
+            options.goodput_trace_bin_ps = parseUnsigned(option, value);
+            options.explicitly_supplied.goodput_trace_bin_ps = true;
         } else if (option == "-topo") {
             if (value.empty()) {
                 throw optionError(option, "path must be nonempty");
@@ -376,6 +400,12 @@ RnicAtlahsCliOptions parseRnicAtlahsCli(int argc, const char* const argv[]) {
         } else if (option == "-rnic_cn_retransmission_rto_ps") {
             options.collective.retransmission_rto_ps = parseUnsigned(option, value);
             options.explicitly_supplied.cn_retransmission_rto_ps = true;
+        } else if (option == "-rnic_ss_state_trace_csv") {
+            if (value.empty()) {
+                throw optionError(option, "path must be nonempty");
+            }
+            options.slingshot.state_trace_csv = value;
+            options.explicitly_supplied.ss_state_trace_csv = true;
         } else if (option == "-rnic_ss_control_wire_bytes") {
             options.slingshot.control_wire_bytes = parseUnsigned(option, value);
             options.explicitly_supplied.ss_control_wire_bytes = true;
@@ -486,7 +516,6 @@ std::string rnicAtlahsCliUsage(const std::string& program_name) {
           << "Packet profiles:"
              " [-rnic_max_wire_bytes BYTES]"
              " [-rnic_data_header_bytes BYTES]\n"
-          << "Physical profiles:"
           << "NN profiles: [-rnic_nn_propagation_ps PS]\n"
           << "rnic-cn: [-topo FILE]"
              " [-rnic_hop_latency_ps PS]"
@@ -504,6 +533,8 @@ std::string rnicAtlahsCliUsage(const std::string& program_name) {
           << "rnic-ss: [-topo FILE]"
              " [-rnic_hop_latency_ps PS]"
              " [-rnic_switch_latency_ps PS]"
+             " [-rnic_goodput_trace_csv FILE -rnic_goodput_trace_bin_ps PS]"
+             " [-rnic_ss_state_trace_csv FILE]"
              " [-rnic_ss_control_wire_bytes BYTES]"
              " [-rnic_ss_ns_rosetta_buffer_bytes BYTES]"
              " [-rnic_ss_q_hi_bytes BYTES]"

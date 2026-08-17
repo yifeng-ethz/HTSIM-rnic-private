@@ -166,10 +166,50 @@ std::unique_ptr<RnicAtlahsRuntimeAssembly> makeRnicAtlahsRuntime(
             std::move(runtime),
             profile_spec);
     }
-    case RnicProfile::SlingshotLike:
-        throw std::invalid_argument(
-            "rnic-ss profile is not wired yet; it lands with the "
-            "slingshot-like runtime in a follow-up change");
+    case RnicProfile::SlingshotLike: {
+        RnicSsRuntimeConfig& config =
+            requireRuntimeConfig<RnicSsRuntimeConfig>(runtime_config, profile);
+        config.validate();
+        if (topology_config == nullptr
+            || topology_config->get_tiers() != 2) {
+            throw std::invalid_argument(
+                "rnic-ss requires a two-tier FatTree configuration");
+        }
+        if (topology_config->uses_pause_flow_control()) {
+            throw std::invalid_argument(
+                "rnic-ss rejects PAUSE/PFC and lossless queue modes");
+        }
+        if (topology_config->failed_link_count() != 0) {
+            throw std::invalid_argument(
+                "rnic-ss controlled Clos requires failure-free links");
+        }
+        if (topology_config->downlink_speed(TOR_TIER)
+            != config.access_wire_capacity_bps) {
+            throw std::invalid_argument(
+                "rnic-ss endpoint rate must equal the leaf downlink rate");
+        }
+        topology_config->set_switch_model(FatTreeSwitchModel::NsRosetta);
+        if (topology_config->switch_model()
+            != FatTreeSwitchModel::NsRosetta) {
+            throw std::logic_error(
+                "rnic-ss failed to select the ns-rosetta switch model");
+        }
+        if (topology_config->ns_rosetta_shared_buffer_capacity(TOR_TIER)
+                < static_cast<mem_b>(config.q_hi_bytes)
+            || topology_config->ns_rosetta_shared_buffer_capacity(AGG_TIER)
+                < static_cast<mem_b>(config.q_hi_bytes)) {
+            throw std::invalid_argument(
+                "rnic-ss Q_hi exceeds an ns-rosetta shared buffer");
+        }
+
+        auto topology = std::make_unique<FatTreeTopology>(
+            topology_config.get(), logger_factory, &event_list, nullptr);
+        auto runtime = std::make_unique<RnicSsRuntime>(
+            event_list, *topology, std::move(config));
+        return std::make_unique<RnicAtlahsRuntimeAssembly>(
+            std::move(topology_config), std::move(topology),
+            std::move(runtime), profile_spec);
+    }
     case RnicProfile::PacketizedManifold: {
         rejectTopologyConfig(topology_config, profile);
         RnicPacketizedManifoldRuntimeConfig& config =
