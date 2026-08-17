@@ -146,6 +146,7 @@ set(SOURCE_FILES
     rnic_prbs_pacer.cpp
     rnic_profile.cpp
     rnic_ring_cam.cpp
+    rnic_ss_core.cpp
     rng.cpp
     roce.cpp
     rocepacket.cpp
@@ -291,6 +292,7 @@ if ( ENABLE_TESTS )
         rnic_prbs_pacer_test
         rnic_profile_test
         rnic_ring_cam_test
+        rnic_ss_core_test
     )
 
     if(HTSIM_ENABLE_SIMLLM_RNIC)

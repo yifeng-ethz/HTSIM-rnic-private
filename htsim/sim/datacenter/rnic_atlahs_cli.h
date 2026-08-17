@@ -51,6 +51,7 @@ struct RnicAtlahsCollectiveCliOptions {
 // defaults is presented as proprietary hardware arithmetic; every threshold
 // remains explicit for the required sensitivity sweeps.
 struct RnicAtlahsSlingshotCliOptions {
+    std::optional<std::string> state_trace_csv;
     std::uint64_t control_wire_bytes = 64;
     std::uint64_t ns_rosetta_shared_buffer_bytes = UINT64_C(64) << 20;
     std::uint64_t q_hi_bytes = UINT64_C(4) << 20;
@@ -91,6 +92,9 @@ struct RnicAtlahsExplicitCliOptions {
     bool cn_maximum_retransmissions = false;
     bool cn_retransmission_rto_ps = false;
 
+    bool ss_state_trace_csv = false;
+    bool goodput_trace_csv = false;
+    bool goodput_trace_bin_ps = false;
     bool ss_control_wire_bytes = false;
     bool ns_rosetta_shared_buffer_bytes = false;
     bool ss_q_hi_bytes = false;
@@ -116,6 +120,10 @@ struct RnicAtlahsCliOptions {
     std::uint32_t node_count;
     std::uint64_t link_capacity_bps;
     RnicProfile profile;
+    // Receiver-goodput tracing is wired for rnic-ss in this change; the other
+    // profiles reject it until their runtimes carry the same audited binning.
+    std::optional<std::string> goodput_trace_csv;
+    std::uint64_t goodput_trace_bin_ps{0};
 
     RnicAtlahsPacketCliOptions packet;
     RnicAtlahsManifoldCliOptions manifold;

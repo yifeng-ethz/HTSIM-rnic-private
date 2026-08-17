@@ -17,6 +17,9 @@ set(LIB_SOURCES
     rnic_atlahs_runtime_factory.cpp
     rnic_collective_network_runtime.cpp
     rnic_collective_route.cpp
+    rnic_ss_packet.cpp
+    rnic_ss_route.cpp
+    rnic_ss_runtime.cpp
     star_topology.cpp
     fat_tree_switch.cpp
     fat_tree_switch_factory.cpp
@@ -263,6 +266,14 @@ if ( ENABLE_TESTS )
     target_link_libraries(
         rnic_atlahs_driver_test PRIVATE htsim_dc htsim gtest_main)
     gtest_discover_tests(rnic_atlahs_driver_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
+    add_executable(rnic_ss_runtime_test rnic_ss_runtime_test.cpp)
+    target_link_libraries(
+        rnic_ss_runtime_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(rnic_ss_runtime_test
         PROPERTIES LABELS "unit"
         PROPERTIES TIMEOUT 60
     )
