@@ -281,6 +281,14 @@ if ( ENABLE_TESTS )
         PROPERTIES TIMEOUT 60
     )
 
+    add_executable(ss_dragonfly_fabric_test ss_dragonfly_fabric_test.cpp)
+    target_link_libraries(
+        ss_dragonfly_fabric_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(ss_dragonfly_fabric_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
     if(HTSIM_ENABLE_SIMLLM_RNIC)
         add_executable(rnic_flow_session_test rnic_flow_session_test.cpp)
         target_link_libraries(

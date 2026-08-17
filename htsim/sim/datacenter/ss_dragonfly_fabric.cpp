@@ -2,6 +2,7 @@
 #include "ss_dragonfly_fabric.h"
 
 #include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <limits>
 #include <sstream>
@@ -450,7 +451,10 @@ void SsDragonflyTopology::buildFabric() {
 
     if (!_config.singleSwitch()) {
         _control_plane = std::make_unique<ControlPlane>(_eventlist, *this);
-        _next_advertisement_tick_ps = _config.advertisement_period_ps;
+        // The advertisement cadence is anchored at the fabric's construction
+        // time, so an embedding that builds the fabric after other simulated
+        // work never schedules a tick in the past.
+        _next_advertisement_tick_ps = EventList::now() + _config.advertisement_period_ps;
         _eventlist.sourceIsPending(*_control_plane, _next_advertisement_tick_ps);
     }
 }

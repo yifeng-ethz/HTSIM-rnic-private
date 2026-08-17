@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 
+#include "../rnic_wide_integer.h"
 #include "eventlist.h"
 #include "network.h"
 #include "ss_dragonfly_fabric.h"
@@ -39,7 +40,9 @@ struct SanityOptions {
     std::uint32_t degree{1};
     simtime_picosec join_interval_ps{0};
     simtime_picosec duration_ps{0};
-    simtime_picosec drain_ps{50000000};
+    // The drain window must exceed the worst-case receiver-leaf buffer
+    // drain (shared buffer over the host link rate); 50 ms dwarfs it.
+    simtime_picosec drain_ps{50000000000};
     std::uint64_t bin_ps{0};
     std::string out_csv;
     std::string routing{"adaptive"};
@@ -279,8 +282,17 @@ int main(int argc, char* argv[]) {
         while (EventList::doNextEvent()) {
         }
 
-        fabric.validateQuiescent();
         const SsDragonflyStatistics& statistics = fabric.statistics();
+        std::cout << "[ss-dragonfly drain]";
+        for (std::uint32_t router = 0; router < fabric.routerCount(); ++router) {
+            std::cout << " r" << router << ".occ="
+                      << fabric.router(router).shared_buffer_occupancy();
+        }
+        std::cout << " live="
+                  << statistics.injected_packets - statistics.delivered_packets -
+                         statistics.dropped_packets
+                  << '\n';
+        fabric.validateQuiescent();
 
         std::ofstream out(options.out_csv, std::ios::out | std::ios::trunc);
         if (!out.is_open()) {
@@ -291,10 +303,13 @@ int main(int argc, char* argv[]) {
         for (const auto& [bin, per_flow] : bins) {
             for (const auto& [flow_id, bytes] : per_flow) {
                 const SanityFlow& flow = flows[flow_id];
+                const RnicWideInteger goodput_numerator =
+                    RnicWideInteger(bytes) * UINT64_C(8000000000000);
                 out << bin * options.bin_ps << ',' << (bin + 1) * options.bin_ps << ','
                     << flow_id << ',' << flow.source << ',' << flow.destination << ','
                     << bytes << ','
-                    << bytes * 8000000ULL * 1000000ULL / options.bin_ps << '\n';
+                    << static_cast<std::uint64_t>(goodput_numerator / options.bin_ps)
+                    << '\n';
             }
         }
         out.flush();

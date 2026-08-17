@@ -93,9 +93,10 @@ group 2, reached through the sibling's global link.
 ## F6: congestion response through the delayed advertisement
 
 Background: host0 to host6 and host1 to host7 from t = 0 until
-t = 30000000 ps, open loop at line rate. Both cross r0's global egress
-(2C offered into C), so r0's waiting bytes grow at close to 25 bytes
-per ns while the flood runs, and r0's switch-wide occupancy is what the
+t = 30000000 ps, open loop at line rate, pinned to their minimal path
+with DeterministicMinimal control. Both cross r0's global egress (2C
+offered into C), so r0's waiting bytes grow at close to 25 bytes per ns
+while the flood runs, and r0's switch-wide occupancy is what the
 r1-to-r0 downstream advertisement will carry.
 
 Probe A: one packet host2 (r1) to host4 (r2) at t = 5000000 ps,
@@ -141,4 +142,24 @@ decision, or a quiescence failure.
 
 ## Corrections
 
-None recorded.
+1. F6 background routing control (recorded after the first F6 run,
+   before any verdict was published). The registration described the
+   background as "open loop at line rate" and its arithmetic assumed
+   the flood stays on the r0 global egress, but did not name the
+   background's routing control; the first fixture implementation used
+   Adaptive0 for the background, and the adaptive background
+   self-balanced away from the hotspot exactly as the mechanism should
+   (its own minimal score exceeded the non-minimal bias within a few
+   packets), so the registered backlog never formed and probe B stayed
+   minimal. The fabric behavior is correct; the fixture now pins the
+   background to DeterministicMinimal, which is the scenario the
+   registered arithmetic described. No registered expected value was
+   changed. The observed self-balancing is itself mechanism evidence
+   and is noted in the results.
+2. Fixture time origin (recorded with the first full-suite run). The
+   registered times are offsets from each fixture's injection origin;
+   the shared test event list never rewinds between fixtures, so the
+   harness measures deliveries relative to its construction origin, and
+   the fabric anchors its advertisement cadence at construction time
+   rather than absolute zero. No registered expected value was
+   changed.
