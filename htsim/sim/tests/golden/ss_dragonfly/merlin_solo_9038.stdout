@@ -1,0 +1,4 @@
+[ss-dragonfly drain] r0.occ=0 live=0
+[ss-dragonfly manifest] evidence=sanity-not-calibration calibration_status=hosted-pending-merlin-calibration pattern=incast routing=adaptive receiver=5 degree=1 join_interval_ps=0 duration_ps=5000000000 bin_ps=1000000000 wire_bytes=9038 header_bytes=90 routing_seed=383530136519245852 topology=topologies/ss_dragonfly/merlin_a100_5node_4x200g.topo
+[ss-dragonfly manifest] p=20 a=1 h=0 g=1 routers=1 hosts=20
+[ss-dragonfly manifest] injected=13831 delivered=13831 delivered_payload_bytes=123759788 dropped=0 minimal=0 non_minimal=0 undecided=13831 advertisements_consumed=0 max_router_hops=0
