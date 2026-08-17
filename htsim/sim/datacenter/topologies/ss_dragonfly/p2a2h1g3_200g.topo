@@ -1,0 +1,31 @@
+# Canonical study dragonfly for the ss-dragonfly fixtures and sanity
+# harnesses: p = 2 hosts per router, a = 2 routers per group, h = 1
+# global link per router, g = a*h + 1 = 3 groups; 6 routers, 12 hosts.
+# All link classes run at 200 Gbit/s; the Rosetta-class switch pipeline
+# uses the 350 ns mean latency reported for the physical Rosetta ASIC
+# (De Sensi et al., SC'20, section II-A).
+#
+# Status: hosted, calibration pending.  Congestion quantizers and the
+# advertisement cadence are named calibrated abstractions; see
+# docs/ss-dragonfly-fabric/README.md.
+topology dragonfly
+hosts_per_router 2
+routers_per_group 2
+global_links_per_router 1
+groups 3
+host_link_gbps 200
+local_link_gbps 200
+global_link_gbps 200
+host_link_latency_ps 300000
+local_link_latency_ps 300000
+global_link_latency_ps 1000000
+switch_pipeline_ps 350000
+rosetta_buffer_bytes 4194304
+max_wire_packet_bytes 4160
+near_end_bytes_per_level 8320
+far_end_bytes_per_level 8320
+downstream_bytes_per_level 33280
+advertisement_period_ps 10000000
+advertisement_delay_ps 1000000
+maximum_downstream_age_ps 40000000
+routing_seed 383530136519245852

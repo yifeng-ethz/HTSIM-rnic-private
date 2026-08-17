@@ -10,8 +10,26 @@
 #include "fat_tree_topology.h"
 #include "rnic_packetized_manifold.h"
 #include "rnic_prbs_pacer.h"
+#include "ss_dragonfly_fabric.h"
 
 namespace {
+
+// The -topo path is shared between the Clos loader and the ss-dragonfly
+// dialect.  The dragonfly fabric is constructed and validated by its own
+// driver; hosting the rnic profiles on it waits for the capture-driven
+// calibration wave, so the profile assembly names that seam instead of
+// letting the Clos parser fail obscurely.
+void rejectSsDragonflyTopologyFile(const std::string& path, const char* profile) {
+    if (isSsDragonflyTopologyFile(path)) {
+        throw std::invalid_argument(
+            std::string(profile) +
+            " runs on the controlled two-tier Clos; the ss-dragonfly fabric "
+            "is hosted with calibration pending and its " +
+            profile +
+            " composition lands with the Merlin calibration wave "
+            "(htsim_ss_dragonfly drives the dragonfly fabric today)");
+    }
+}
 
 const char* resolvedGoalRankMappingName(AtlahsHtsimApi::GoalRankMapping mapping) {
     switch (mapping) {
@@ -34,6 +52,7 @@ std::unique_ptr<FatTreeTopologyCfg> makeCollectiveTopologyConfig(
             throw std::invalid_argument("cannot open rnic-cn topology file '" +
                                         *options.collective.topology_file + "'");
         }
+        rejectSsDragonflyTopologyFile(*options.collective.topology_file, "rnic-cn");
         topology_config = FatTreeTopologyCfg::load(*options.collective.topology_file, buffer_bytes,
                                                    COMPOSITE, FAIR_PRIO);
         if (topology_config == nullptr) {
@@ -70,6 +89,7 @@ std::unique_ptr<FatTreeTopologyCfg> makeSlingshotTopologyConfig(
             throw std::invalid_argument("cannot open rnic-ss topology file '" +
                                         *options.collective.topology_file + "'");
         }
+        rejectSsDragonflyTopologyFile(*options.collective.topology_file, "rnic-ss");
         topology_config = FatTreeTopologyCfg::load(*options.collective.topology_file, buffer_bytes,
                                                    COMPOSITE, FAIR_PRIO);
         if (topology_config == nullptr) {

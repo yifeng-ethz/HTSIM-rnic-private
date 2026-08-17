@@ -27,6 +27,7 @@ set(LIB_SOURCES
     ns_tm3_dcqcn_policy.cpp
     ns_tm3_switch.cpp
     ns_rosetta_switch.cpp
+    ss_dragonfly_fabric.cpp
     dragon_fly_topology.cpp
     slimfly_topology.cpp
     slimfly_switch.cpp
@@ -72,6 +73,7 @@ set_property(TARGET htsim_eqds PROPERTY EXCLUDE_FROM_ALL TRUE)
 
 add_executable(htsim_dcqcn_atlahs main_dcqcn_atlahs.cpp)
 add_executable(htsim_rnic main_rnic.cpp)
+add_executable(htsim_ss_dragonfly main_ss_dragonfly.cpp)
 add_executable(htsim_uec main_uec.cpp)
 add_executable(htsim_uec_sf main_uec_sf.cpp)
 add_executable(htsim_uec_df main_uec_df.cpp)
@@ -113,6 +115,7 @@ set (ALL_EXECUTABLES
     htsim_eqds
     htsim_dcqcn_atlahs
     htsim_rnic
+    htsim_ss_dragonfly
     htsim_uec
     htsim_uec_sf
     htsim_uec_df
