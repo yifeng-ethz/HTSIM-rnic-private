@@ -11,15 +11,25 @@ run. Everything here is sanity evidence for the hosted fabric, not
 calibration: `evidence=sanity-not-calibration`,
 `calibration_status=hosted-pending-merlin-calibration`.
 
-Verdict: **41 of 51 check rows pass, including every determinism guard
-(byte-identical repeat invocations of all ten arms), every conservation
-guard, saturation at exactly 196.92 Gbit/s (the C_p payload ceiling) in
-every steady arm, the degree-1 line-rate check, the drops-onset checks,
-and the endpoint-limit equality S1.5 at all four degrees. The 6 FAILs
-are one phenomenon registered too optimistically: deterministic
-admission-phase capture under open-loop overload. The 4 VOIDs plus one
-vacuous PASS are a registration slip in the join-epoch bin arithmetic.
-No FAIL is a fabric defect; each feeds the calibration wave.**
+Verdict, raw registered tally as scored by the runner: 41 PASS, 6
+FAIL, 4 VOID over 51 rows. Corrected substantive tally under this
+document's own reclassifications: **39 substantive PASS, 6 FAIL, 5
+VOID, and 1 narrowed-criterion PASS**. The arithmetic: of the 41 raw
+passes, S2.2-flow0-steps-down is reclassified VOID (it evaluated empty
+epoch windows, see the S2 section), moving the voids from 4 to 5, and
+S2.3-stability is set aside as a narrowed-criterion pass (its
+implemented check is narrower than its registered title, see the S2
+section), leaving 41 - 2 = 39 substantive passes.
+
+The substantive passes include every determinism guard (byte-identical
+repeat invocations of all nine arms), every conservation guard,
+saturation at exactly 196.92 Gbit/s (the C_p payload ceiling) in every
+steady arm, the degree-1 line-rate check, the drops-onset checks, and
+the endpoint-limit equality S1.5 at all four degrees. The 6 FAILs are
+one phenomenon registered too optimistically: deterministic
+admission-phase capture under open-loop overload. The 5 VOIDs are a
+registration slip in the join-epoch bin arithmetic. No FAIL is a
+fabric defect; each feeds the calibration wave.
 
 ## Harness corrections before the scored run
 
@@ -88,6 +98,19 @@ invocation and the scored run; neither changed a registered band:
   epoch end) therefore contains no complete bin, so the checks had an
   empty evaluation set. S2.2-flow0-steps-down "passed" vacuously over
   the same empty windows and must be read as VOID, not PASS.
+- S2.3 stability: a SECOND narrowed or vacuous PASS, disclosed here.
+  The registered title is "no starvation, no oscillation", but the
+  implemented check bounds only bin-to-bin wobble in the tail window.
+  It passes precisely because two of the four flows are completely
+  dead there (a dead flow has zero wobble) and the two nonzero wobble
+  measurements, flow 0's recovery step and starved flow 2's dying bin,
+  each clear the bound by exactly 0.16 percent (9.830 against
+  9.846 Gbit/s). The check therefore did not evaluate the starvation
+  half of its own title; the starvation reality is the S1.4 phenomenon
+  described above and in standing conclusion 3. Recorded as a
+  title-versus-criterion registration correction in expectations.md;
+  the row is set aside from the substantive tally as a
+  narrowed-criterion pass.
 - What the binned series itself shows (reported descriptively since
   the registered windows voided): flow 0 holds 196.9 Gbit/s alone;
   within one bin of the second flow joining the two settle at
@@ -97,12 +120,18 @@ invocation and the scored run; neither changed a registered band:
   flow 2 by bin 10, flow 3 never admits), after which flow 0
   re-monopolizes. The join transient the study was designed to show
   is present and crisp; the long-run shares repeat the S1.4 finding.
-- S2.4 drops onset: PASS (zero drops in the single-flow epoch, 15916
-  after).
+- S2.4 drops onset: PASS only for what the implemented check actually
+  evaluated, which is narrower than the registration. The registration
+  has two clauses (zero drops while only flow 0 is active; drops
+  accumulate only after the second join), but the runner tested only
+  that whole-run drops are nonzero (15916). The per-epoch clause was
+  not instrumented; the epoch-1 bins delivering at full line rate are
+  consistent with zero epoch-1 drops but do not measure them. Recorded
+  as a scope correction in expectations.md.
 
 ## Standing conclusions
 
-1. The fabric is deterministic end to end: all ten arms byte-identical
+1. The fabric is deterministic end to end: all nine arms byte-identical
    on repeat invocation, and the whole run is reproducible from the
    committed seeds.
 2. Goodput accounting is exact: saturation sits on the arithmetic
@@ -114,3 +143,24 @@ invocation and the scored run; neither changed a registered band:
 4. Adaptive routing shifts real traffic non-minimally under load and
    buys nothing at a pure endpoint bottleneck, matching the public
    record's mechanism boundary.
+
+## Run and artifact chronology
+
+1. First invocation (voided): the incast_2 arm hit the quiescence
+   fatal guard at the 50 us default drain window (harness defect 1
+   above); the run aborted there. Gap disclosure: the expectations
+   promise that voided runs are reported with their firing guard, and
+   that report is this section, but the first invocation's partial
+   CSV artifacts were overwritten in place by the scored rerun rather
+   than preserved as their own generation. Only the scored generation
+   exists on disk.
+2. Scored invocation (the run this document tallies): all nine arms
+   plus their determinism repeats, artifacts in the bulk directory
+   root.
+3. Post-review rerun: after the adversarial review's code fixes
+   (advertisement-list exception consistency, null-topology route
+   guard, loader range checks), the scored generation was archived to
+   `gen1-scored/` inside the bulk directory and the scorer rerun with
+   the rebuilt binary. The rerun reproduced the scored generation
+   byte-identically (CSV for CSV), so the tallies above describe both
+   generations.

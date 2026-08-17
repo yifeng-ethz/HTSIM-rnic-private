@@ -2,7 +2,9 @@
 
 Provenance: this document and the core it describes were authored on
 origin/codex/rnic-dragonfly-routing (commit 2efd81b, the original PR 5
-of 5) and were ported to main by the ss-dragonfly fabric wave. The
+of 5) and were ported by the ss-dragonfly fabric wave onto its branch
+codex/ss_dragonfly_fabric; none of that branch's commits is
+main-reachable until its PR merges. The
 "Current integration boundary" section below is updated to the ported
 state; the physical fabric that now consumes this core is documented in
 docs/ss-dragonfly-fabric/README.md and is hosted with calibration
@@ -206,7 +208,7 @@ transport permits reordering.
 
 ## Current integration boundary
 
-Implemented and tested on main after the port:
+Implemented and tested on the ss-dragonfly fabric branch after the port:
 
 - canonical Dragonfly geometry and stable port identities;
 - GM, GN, LM, and LN table behavior;

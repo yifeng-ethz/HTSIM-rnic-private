@@ -119,4 +119,31 @@ parameters.
 
 ## Corrections
 
-None recorded.
+All recorded after the runs they describe and cross-referenced from
+RESULTS.md; no registered numeric band or value was changed.
+
+1. Harness drain-window defect (found by the first, voided
+   invocation's quiescence guard): the harness default drain was
+   written as 50000000 ps, 50 us, against the intended 50 ms, shorter
+   than the roughly 171 us a saturated receiver-leaf buffer needs to
+   drain. Fixed to 50 ms before the scored run.
+2. Harness CSV defect: the derived goodput_bps column overflowed
+   uint64 for bins above about 2.3 MB. Fixed with 128-bit intermediate
+   arithmetic before the scored run; the delivered_payload_bytes
+   column that every registered check consumes was always exact.
+3. Join-epoch bin-arithmetic registration slip: the registered
+   250 us join interval and 100 us bins leave no complete bin inside
+   the runner's settled window (two bins after each join to the epoch
+   end). S2.1 was silently skipped, the four S2.2 epoch checks
+   evaluated empty sets and are VOID, and S2.2-flow0-steps-down passed
+   vacuously over the same empty windows and must be read as VOID.
+4. S2.3 title-versus-criterion mismatch: the registration is titled
+   "no starvation, no oscillation" but the implemented check bounds
+   only bin-to-bin wobble; it does not evaluate starvation and it
+   passes under total starvation of most flows (dead flows have zero
+   wobble). Its PASS is reclassified as a narrowed-criterion pass in
+   RESULTS.md.
+5. S2.4 implemented-scope narrowing: only the whole-run
+   drops-are-nonzero clause was instrumented; the registered zero
+   drops-while-single-flow clause was not evaluated. The PASS is
+   reported for the evaluated scope only.

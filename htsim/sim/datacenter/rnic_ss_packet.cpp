@@ -104,6 +104,11 @@ void RnicSsPacket::consumeAtEndpoint() {
 }
 
 void RnicSsPacket::free() {
+    // Every free() is reported as a fabric drop.  A free() reached from a
+    // source-side classification failure before injection would therefore be
+    // misattributed to the fabric; the runtime never frees on that path
+    // today, so any fabric_drop=true observation from a packet that never
+    // entered a physical route indicates such a misattribution.
     terminate(true);
 }
 

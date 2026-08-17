@@ -29,7 +29,8 @@ Physical constants: every link class 200 Gbit/s; wire packet 4160 B
 local propagation 300000 ps; global propagation 1000000 ps; switch
 pipeline 350000 ps; shared buffer 4 MiB; near/far quantizer step
 8320 B; downstream step 33280 B; advertisement period 10000000 ps with
-delay 1000000 ps.
+delay 1000000 ps; maximum downstream age 40000000 ps (added by
+correction 3 below; the F6 verdict depends on it).
 
 An uncontended stage-by-stage delivery time is the sum of: host queue
 serialization, host propagation, then per switch (pipeline, egress
@@ -162,4 +163,19 @@ decision, or a quiescence failure.
    harness measures deliveries relative to its construction origin, and
    the fabric anchors its advertisement cadence at construction time
    rather than absolute zero. No registered expected value was
-   changed.
+   changed. Clarification (adversarial review round): the
+   construction-time anchoring sentence above describes a change
+   introduced with the fixture commit 791ddfd, not a property the
+   fabric already had; before that commit the first tick was scheduled
+   at the absolute period.
+3. Missing constant in the registered constants list (adversarial
+   review round). The maximum downstream age was omitted from the
+   constants paragraph and from the probe-B freshness derivation,
+   which silently relied on it: at probe B the installed advertisement
+   is 10000000 ps old, fresh only because the study fabric sets
+   maximum_downstream_age_ps to 40000000 ps. At the fabric header
+   default of 400000 ps, or the ported congestion core's internal
+   default of 1000000 ps, the advertisement would already be expired
+   and F6 would fail. The constant is now listed; the registered
+   expected values themselves are unchanged, and the override is also
+   disclosed in the design note's abstraction registry entry 5.

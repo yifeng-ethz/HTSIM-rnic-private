@@ -27,12 +27,41 @@ std::uint64_t parseTopoUnsigned(const std::string& key, const std::string& text)
                                     "' requires an unsigned value");
     }
     std::size_t consumed = 0;
-    const unsigned long long value = std::stoull(text, &consumed, 10);
+    unsigned long long value = 0;
+    try {
+        value = std::stoull(text, &consumed, 10);
+    } catch (const std::out_of_range&) {
+        throw std::invalid_argument("dragonfly topology key '" + key +
+                                    "' has a value beyond uint64_t");
+    } catch (const std::invalid_argument&) {
+        throw std::invalid_argument("dragonfly topology key '" + key +
+                                    "' has a malformed value '" + text + "'");
+    }
     if (consumed != text.size()) {
         throw std::invalid_argument("dragonfly topology key '" + key +
                                     "' has a malformed value '" + text + "'");
     }
     return static_cast<std::uint64_t>(value);
+}
+
+// A value destined for a narrower field must fit it exactly; silent
+// truncation would validate a different shape than the file declared.
+std::uint64_t parseTopoBounded(const std::string& key,
+                               const std::string& text,
+                               std::uint64_t maximum) {
+    const std::uint64_t value = parseTopoUnsigned(key, text);
+    if (value > maximum) {
+        throw std::invalid_argument("dragonfly topology key '" + key +
+                                    "' exceeds its maximum of " + std::to_string(maximum));
+    }
+    return value;
+}
+
+linkspeed_bps parseTopoGbps(const std::string& key, const std::string& text) {
+    constexpr std::uint64_t kBpsPerGbps = UINT64_C(1000000000);
+    return parseTopoBounded(key, text,
+                            std::numeric_limits<std::uint64_t>::max() / kBpsPerGbps) *
+           kBpsPerGbps;
 }
 
 std::string lowered(std::string text) {
@@ -119,20 +148,23 @@ SsDragonflyConfig loadSsDragonflyConfig(std::istream& file) {
             continue;
         }
         if (key == "hosts_per_router") {
-            config.hosts_per_router = static_cast<std::uint32_t>(parseTopoUnsigned(key, value));
+            config.hosts_per_router = static_cast<std::uint32_t>(
+                parseTopoBounded(key, value, std::numeric_limits<std::uint32_t>::max()));
         } else if (key == "routers_per_group") {
-            config.routers_per_group = static_cast<std::uint16_t>(parseTopoUnsigned(key, value));
+            config.routers_per_group = static_cast<std::uint16_t>(
+                parseTopoBounded(key, value, std::numeric_limits<std::uint16_t>::max()));
         } else if (key == "global_links_per_router") {
-            config.global_links_per_router =
-                static_cast<std::uint16_t>(parseTopoUnsigned(key, value));
+            config.global_links_per_router = static_cast<std::uint16_t>(
+                parseTopoBounded(key, value, std::numeric_limits<std::uint16_t>::max()));
         } else if (key == "groups") {
-            config.group_count = static_cast<std::uint16_t>(parseTopoUnsigned(key, value));
+            config.group_count = static_cast<std::uint16_t>(
+                parseTopoBounded(key, value, std::numeric_limits<std::uint16_t>::max()));
         } else if (key == "host_link_gbps") {
-            config.host_link.rate_bps = parseTopoUnsigned(key, value) * UINT64_C(1000000000);
+            config.host_link.rate_bps = parseTopoGbps(key, value);
         } else if (key == "local_link_gbps") {
-            config.local_link.rate_bps = parseTopoUnsigned(key, value) * UINT64_C(1000000000);
+            config.local_link.rate_bps = parseTopoGbps(key, value);
         } else if (key == "global_link_gbps") {
-            config.global_link.rate_bps = parseTopoUnsigned(key, value) * UINT64_C(1000000000);
+            config.global_link.rate_bps = parseTopoGbps(key, value);
         } else if (key == "host_link_latency_ps") {
             config.host_link.propagation_ps = parseTopoUnsigned(key, value);
         } else if (key == "local_link_latency_ps") {
@@ -142,8 +174,9 @@ SsDragonflyConfig loadSsDragonflyConfig(std::istream& file) {
         } else if (key == "switch_pipeline_ps") {
             config.switch_pipeline_delay_ps = parseTopoUnsigned(key, value);
         } else if (key == "rosetta_buffer_bytes") {
-            config.rosetta_shared_buffer_bytes =
-                static_cast<mem_b>(parseTopoUnsigned(key, value));
+            config.rosetta_shared_buffer_bytes = static_cast<mem_b>(parseTopoBounded(
+                key, value,
+                static_cast<std::uint64_t>(std::numeric_limits<mem_b>::max())));
         } else if (key == "max_wire_packet_bytes") {
             config.maximum_wire_packet_bytes = parseTopoUnsigned(key, value);
         } else if (key == "near_end_bytes_per_level") {
@@ -276,6 +309,15 @@ void SsDragonflySwitch::receivePacket(Packet& pkt) {
     // is visible; NsRosetta then applies admission and request/grant on the
     // selected local egress.
     _fabric.routeAtSwitch(*this, pkt);
+    // This switch is constructed without a FatTree topology, so the FIB
+    // fallback inside the ns-rosetta egress resolution would dereference a
+    // null topology pointer.  The lookup above always installs the one-hop
+    // route; guard it explicitly so a future regression fails with a
+    // diagnostic instead of a segfault.
+    if (pkt.route() == nullptr || pkt.nexthop() >= pkt.route()->size()) {
+        throw std::logic_error(
+            "ss-dragonfly lookup left the packet without a next physical hop");
+    }
     NsRosetta::receivePacket(pkt);
 }
 
@@ -682,22 +724,27 @@ void SsDragonflyTopology::controlPlaneEvent() {
     const simtime_picosec now = EventList::now();
     // Consume every advertisement whose modeled arrival boundary is now.
     std::vector<PendingAdvertisement> retained;
+    std::vector<PendingAdvertisement> due;
+    due.reserve(_pending_advertisements.size());
     retained.reserve(_pending_advertisements.size());
     for (PendingAdvertisement& pending : _pending_advertisements) {
-        if (pending.arrival_ps == now) {
-            DirectedLink& link = _links[pending.link_index];
-            const htsim::DragonflyAdvertisementDisposition disposition =
-                link.congestion->consumeDownstreamAdvertisement(pending.advertisement, now);
-            if (disposition != htsim::DragonflyAdvertisementDisposition::Accepted) {
-                throw std::logic_error(
-                    "ss-dragonfly rejected an in-order advertisement at its arrival");
-            }
-            _statistics.advertisements_consumed++;
-        } else {
-            retained.push_back(std::move(pending));
-        }
+        (pending.arrival_ps == now ? due : retained).push_back(std::move(pending));
     }
+    // Assemble first, mutate second: the pending list is fully repartitioned
+    // before any consumption can throw, so a consumption failure propagates
+    // from a consistent list rather than leaving moved-from elements behind.
     _pending_advertisements = std::move(retained);
+
+    for (const PendingAdvertisement& pending : due) {
+        DirectedLink& link = _links[pending.link_index];
+        const htsim::DragonflyAdvertisementDisposition disposition =
+            link.congestion->consumeDownstreamAdvertisement(pending.advertisement, now);
+        if (disposition != htsim::DragonflyAdvertisementDisposition::Accepted) {
+            throw std::logic_error(
+                "ss-dragonfly rejected an in-order advertisement at its arrival");
+        }
+        _statistics.advertisements_consumed++;
+    }
 
     if (now == _next_advertisement_tick_ps) {
         emitAdvertisements();

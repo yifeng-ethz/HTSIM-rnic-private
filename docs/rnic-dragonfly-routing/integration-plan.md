@@ -1,8 +1,9 @@
 # Production integration plan
 
 Provenance: authored on origin/codex/rnic-dragonfly-routing (commit
-2efd81b) and ported to main unchanged as the standing integration
-contract. The ss-dragonfly fabric wave landed the first stage of this
+2efd81b) and ported unchanged onto the ss-dragonfly fabric branch
+(codex/ss_dragonfly_fabric, not yet main-reachable) as the standing
+integration contract. The ss-dragonfly fabric wave landed the first stage of this
 plan (the Rosetta-style dragonfly wrapper with post-pipeline lookup,
 topology-owned route state, and modeled advertisement delivery) as
 `ss_dragonfly_fabric.{h,cpp}`; deviations this wave took, such as the

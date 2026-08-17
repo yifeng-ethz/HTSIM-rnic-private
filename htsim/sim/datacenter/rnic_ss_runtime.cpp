@@ -1855,6 +1855,11 @@ struct RnicSsRuntime::Impl {
     std::map<packetid_t, RnicSsPacket*> live_packets;
     std::multimap<TimePs, ControlAction> pending_controls;
     std::priority_queue<RtoDeadline, std::vector<RtoDeadline>, LaterRtoDeadline> rto_deadlines;
+    // These three maps are keyed by switch pointer, so their iteration order
+    // depends on allocation addresses and is NOT reproducible across runs.
+    // Only order-insensitive aggregation (boolean OR, saturating maxima,
+    // keyed lookup) may traverse them; no routing, pacing, or scheduling
+    // decision may depend on their iteration order.
     std::map<std::pair<NsRosetta*, packetid_t>, TimePs> queue_entry_times;
     std::map<std::pair<NsRosetta*, std::uint32_t>, EgressPressureState> egress_pressures;
     std::map<NsRosetta*, SwitchPressureState> switch_pressures;

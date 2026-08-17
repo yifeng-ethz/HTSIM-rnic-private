@@ -83,15 +83,16 @@ the registry further down, never an invented mechanism.
    https://www.alcf.anl.gov/files/CrayXCNetwork.pdf (read via the
    Internet Archive copy of the same document)
    Read for: each tile's four route-table sets, local minimal and
-   non-minimal and global minimal and non-minimal (page 13); the
-   routing pipeline generating two minimal and two non-minimal
-   candidates per packet, selection by lightest load "using a
-   combination of downstream link load, estimated far-end link load
-   and near-end link load", load distributed to neighbors every ten
-   cycles, and the programmable minimal/non-minimal bias (pages 13 and
-   16); Valiant non-minimal routing through an in-group root; the
+   non-minimal and global minimal and non-minimal, and the routing
+   pipeline generating two minimal and two non-minimal candidates per
+   packet (pages 13 and 14); the three load metrics, the load
+   distribution to neighbors every ten cycles, and the programmable
+   minimal/non-minimal bias mechanism (page 14); selection of the
+   lightest-load path "using a combination of downstream link load,
+   estimated far-end link load and near-end link load", Valiant
+   non-minimal routing through an in-group root, and the
    deterministic-hash routing control mode for ordered traffic
-   (page 16).
+   (page 17).
 
 ## Mechanism-to-source map
 
@@ -100,15 +101,15 @@ the registry further down, never an invented mechanism.
 | Dragonfly terms p, a, h, g; canonical maximum size g = a*h + 1; local full mesh; one global connection per group pair | ISCA'08 section 3.1; SC'20 section II-B |
 | One input-buffered request/grant switch per router; whole-packet VoQ admission against a shared buffer | SC'20 section II-A (ns-rosetta model documented in docs/rnic-switch-models) |
 | Switch pipeline delay before the route decision, default 350 ns | SC'20 section II-A latency measurement |
-| Progressive per-hop lookup: every switch re-decides from its own state; a local choice commits nothing end to end; a crossed global hop fixes the intermediate group | US 9,137,143 B2; WP-Aries01-1112 page 16 |
-| Candidate families GM, GN, LM, LN with two minimal plus two non-minimal candidates | US 9,137,143 B2; WP-Aries01-1112 pages 13 and 16; SC'20 section II-C (up to four candidate paths) |
-| Congestion score = remapped four-bit near-end + far-end estimate + downstream, saturating addition | US 9,137,143 B2; WP-Aries01-1112 page 16 |
+| Progressive per-hop lookup: every switch re-decides from its own state; a local choice commits nothing end to end; a crossed global hop fixes the intermediate group | US 9,137,143 B2; WP-Aries01-1112 page 17 |
+| Candidate families GM, GN, LM, LN with two minimal plus two non-minimal candidates | US 9,137,143 B2; WP-Aries01-1112 pages 13 and 14; SC'20 section II-C (up to four candidate paths) |
+| Congestion score = remapped four-bit near-end + far-end estimate + downstream, saturating addition | US 9,137,143 B2; WP-Aries01-1112 page 17 |
 | Near-end signal from the local output's waiting plus in-service bytes | SC'20 section II-C (request-queue depth per output port) |
 | Far-end resident estimate = bytes sent minus bytes still on the wire minus credits returned, causally updated | US 9,137,143 B2 (far-end tracking beyond round trip); ported causal congestion core |
-| Downstream load advertised by the neighbor at high frequency, consumed only at its physical arrival boundary, expiring at a maximum age | WP-Aries01-1112 page 13 (every ten cycles); SC'20 section II-C (neighbor exchange piggybacked on ACKs) |
+| Downstream load advertised by the neighbor at high frequency, consumed only at its physical arrival boundary, expiring at a maximum age | WP-Aries01-1112 page 14 (every ten cycles); SC'20 section II-C (neighbor exchange piggybacked on ACKs) |
 | Per-class bias as shift plus additive; minimal wins ties; default bias prefers minimal | US 9,137,143 B2 (two-bit shift, six-bit additive); SC'20 section II-C (bias toward minimal) |
-| Non-minimal = Valiant through a safe intermediate group (or in-group root) | ISCA'08 section 4.1; WP-Aries01-1112 page 16 |
-| Deterministic flow-stable hash for ordered traffic; per-packet adaptive for unordered | WP-Aries01-1112 page 16; SC'20 section II-E (per-class ordering) |
+| Non-minimal = Valiant through a safe intermediate group (or in-group root) | ISCA'08 section 4.1; WP-Aries01-1112 page 17 |
+| Deterministic flow-stable hash for ordered traffic; per-packet adaptive for unordered | WP-Aries01-1112 page 17; SC'20 section II-E (per-class ordering) |
 | Endpoint-pair outstanding tracking and pair-selective backpressure (the hosted rnic-ss endpoint on the Clos) | SC'20 sections II-A and II-D |
 | Adaptive routing cannot relieve endpoint congestion (registered expectation S1.5 of the sanity studies) | SC'20 section II-D |
 
@@ -127,16 +128,22 @@ capture-derived values where discovery permits.
    fabric): Aries advertised every ten cycles and Rosetta piggybacks on
    ACK traffic; Slingshot's actual cadence is unpublished, so the
    exchange is modeled as a periodic per-link advertisement.
-3. `advertisement_delay_ps` (300 ns default): the physical delay of the
-   load information path; the congestion core rejects consumption
-   before this boundary.
+3. `advertisement_delay_ps` (300 ns default; 1 us in the study
+   fabric): the physical delay of the load information path; the
+   congestion core rejects consumption before this boundary.
 4. Advertisement scope, switch-aggregate waiting bytes: SC'20 names
    the per-output request-queue depth as the switch-local estimate but
    does not publish the granularity advertised between neighbors; this
    fabric advertises the neighbor's switch-wide waiting bytes on every
    directed link.
-5. `maximum_downstream_age_ps` (400 ns default): staleness bound after
-   which an unrefreshed advertisement contributes zero; unpublished.
+5. `maximum_downstream_age_ps` (400 ns default; 40 us in the study
+   fabric, a 100x override): staleness bound after which an unrefreshed
+   advertisement contributes zero; unpublished. The ported congestion
+   core additionally carries its own internal default of 1 us for the
+   same knob. The F6 congestion-response fixture depends on the
+   study-fabric value: its probe-B advertisement is 10 us old at
+   consumption and would already be expired at the header default (see
+   the fixture-expectations corrections).
 6. `adaptive_biases` (minimal shift 0 add 0, non-minimal shift 1
    add 1, all four classes): the structure is the patent's, the values
    are ours; the shift-1 default mirrors UGAL's hop-count weighting of
@@ -199,3 +206,24 @@ expectations).
   guards: `experiments/ss_dragonfly_sanity/`.
 - The ported progressive core's own exhaustive table tests:
   `dragonfly_progressive_routing_test.cpp` and neighbors.
+
+## Commit chronology disclosures
+
+Branch history is append-only, so commit-message inaccuracies are
+corrected here rather than by rewriting:
+
+- The deferred-failure boundary (`deferFailure` behind the noexcept
+  switch observation) landed with the fabric commit 9233fcd; the
+  fixture commit 791ddfd's message credits it to itself, which is
+  wrong. 791ddfd introduced the construction-time advertisement-cadence
+  anchoring and the origin-relative fixture harness.
+- dc02db1's verbatim claim is exactly true for its own scope and no
+  wider: the twelve dragonfly core files it adds are blob-identical to
+  their origin/codex/rnic-dragonfly-routing counterparts. The adapted
+  ported files (shared endpoint-pair header, RnicWideInteger
+  arithmetic) arrived later with their adaptations disclosed in
+  966e2d1.
+- 9233fcd's full-ctest gate was vacuous for that commit's own roughly
+  1100 new fabric lines: no test exercised them until the fixtures
+  arrived in 791ddfd. The byte-identity gate it reported was real and
+  covered the legacy binaries.
