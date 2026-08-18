@@ -1,0 +1,20 @@
+# Configuration B of the load-discrimination experiment: identical to
+# merlin_shape_buffer4mib.topo in every parameter except the shared
+# buffer, 1 MiB instead of 4 MiB. At the wave-19 captured loads the
+# two configurations are indistinguishable (solo-cell occupancy stays
+# at the in-service packet scale, so every scored row of the
+# calibration study is insensitive to this knob); the experiment's
+# registered claim is that a load-bearing fabric separates them.
+# Study instance for capability and sanity evidence; no claim about
+# the Merlin fabric's real buffer sizing is made.
+topology dragonfly
+hosts_per_router 20
+routers_per_group 1
+global_links_per_router 0
+groups 1
+host_link_gbps 200
+host_link_latency_ps 300000
+switch_pipeline_ps 350000
+rosetta_buffer_bytes 1048576
+max_wire_packet_bytes 9038
+routing_seed 383530136519245852
