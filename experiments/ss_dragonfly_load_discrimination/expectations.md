@@ -231,3 +231,26 @@ silently.
    evaluated with the manifest's `topology=` token masked; the bins
    CSV and chunk CSV comparisons stay literal byte identity. No
    registered numeric value, band, or direction changed.
+2. Conservation-guard bound for the multi-receiver cell (recorded
+   after the first runner invocation, which the guard voided; the
+   fabric is correct and the registered guard arithmetic was wrong).
+   The frozen guard applied the single-port 100-us quantization bound
+   (278 packets, 2487544 B) to "any bin, either cell", but the
+   CONTROL cell delivers to TWO distinct destination ports, and
+   closed-loop chunks arrive as line-rate bursts (938 packets over
+   about 339 us), so bins where the two flows' bursts overlap
+   legitimately carry up to two ports' worth of packets. The voided
+   first run's worst bin held 4957192 B = 554 * 8948, exactly two
+   full ports, and per flow (per destination port) no bin anywhere
+   exceeded 2478596 B = 277 packets, so serialization conservation
+   holds port by port and the registered bound mis-scoped a per-port
+   ceiling to a two-port aggregate. Corrected guard, the physically
+   derived form: every flow's per-bin delivered payload is bounded by
+   its destination port's quantization bound (2487544 B), and a
+   cell's per-bin aggregate is bounded by that bound times its number
+   of distinct destination ports (CONTROL 4975088 B, DISCRIMINATE
+   unchanged at 2487544 B because both flows share one port). No
+   registered row value, band, or direction changed; the voided first
+   invocation is reported in RESULTS.md and the cells were rerun with
+   identical parameters under the corrected guard (the wave-18 F6
+   correction is the precedent for this handling).

@@ -183,13 +183,22 @@ def run_cell(binary: Path, out_dir: Path, cell: str, config: str,
     if parsed["delivered"] == 0:
         checks.fatal(f"FG-delivered {cell} {config}", "delivered = 0")
         return None
-    # Registered for both cells: any bin above the aggregate quantization
-    # bound is a conservation violation (it cannot fire at control loads).
+    # Conservation guard, corrected scope (correction 2): every flow's
+    # per-bin payload is bounded by its destination port's quantization
+    # bound, and the cell aggregate by that bound times the cell's number
+    # of distinct destination ports (CONTROL has two, DISCRIMINATE one).
+    destination_ports = 2 if cell == "control" else 1
+    worst_flow = max((value for flows in parsed["bins"].values()
+                      for value in flows.values()), default=0)
     worst = max((sum(flows.values()) for flows in parsed["bins"].values()),
                 default=0)
-    if worst > QUANTIZATION_BOUND:
-        checks.fatal(f"FG-conservation {cell} {config}",
-                     f"a bin carries {worst} B, above the quantization bound")
+    if (worst_flow > QUANTIZATION_BOUND
+            or worst > destination_ports * QUANTIZATION_BOUND):
+        checks.fatal(
+            f"FG-conservation {cell} {config}",
+            f"worst per-flow bin {worst_flow} B (bound {QUANTIZATION_BOUND}), "
+            f"worst aggregate bin {worst} B "
+            f"(bound {destination_ports * QUANTIZATION_BOUND})")
         return None
     return parsed
 
