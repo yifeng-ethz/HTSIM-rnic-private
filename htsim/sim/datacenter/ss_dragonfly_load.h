@@ -28,7 +28,6 @@
 // legacy open-loop driver path does not construct any of these types.
 
 #include <cstdint>
-#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -215,12 +214,10 @@ public:
     void noteDrop(simtime_picosec at_ps);
 
     std::optional<simtime_picosec> firstDropPs() const noexcept { return _first_drop_ps; }
-    std::uint64_t droppedPackets() const noexcept { return _dropped_packets; }
 
 private:
     std::vector<SsDragonflyLoadSource*> _sources;
     std::optional<simtime_picosec> _first_drop_ps;
-    std::uint64_t _dropped_packets{0};
 };
 
 #endif  // SS_DRAGONFLY_LOAD_H

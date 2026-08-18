@@ -87,9 +87,12 @@ def manifest_value(stdout: str, key: str) -> str:
 
 
 def mask_topology_token(stdout: str) -> str:
-    """CT-4 correction 1: the manifest echoes the invocation's topology
-    path, which differs between configurations by construction; mask that
-    single invocation-identity token before the cross-config comparison."""
+    """CT-4 correction 1 as amended: the manifest echoes the invocation's
+    topology path, which differs between configurations by construction.
+    The comparison tokenizes stdout on whitespace and rejoins with single
+    spaces, so line and spacing structure is normalized as well, and the
+    topology= token is replaced; the masked token is the only content
+    difference the CT-4 verdict tolerates."""
     return " ".join("topology=MASKED" if token.startswith("topology=") else token
                     for token in stdout.split())
 
@@ -225,11 +228,29 @@ def check_control(config: str, parsed: dict, checks: Checks) -> None:
             f"{deltas_ok}")
 
 
+def flow_injected_counts(stdout: str) -> dict[int, int]:
+    """Per-flow injected packets from the harness's flow manifest lines."""
+    counts: dict[int, int] = {}
+    for line in stdout.splitlines():
+        if not line.startswith("[ss-dragonfly flow]"):
+            continue
+        tokens = dict(token.split("=", 1) for token in line.split()
+                      if "=" in token)
+        counts[int(tokens["flow"])] = int(tokens["injected_packets"])
+    return counts
+
+
 def check_discriminate(config: str, parsed: dict, checks: Checks) -> None:
+    # DP-1's registered clause includes the per-flow split (8990 per
+    # flow); evaluate both halves (review finding F5: the first scored
+    # run checked only the fabric-wide total).
+    per_flow = flow_injected_counts(parsed["stdout"])
     checks.record(
         f"DP-1 {config} exact pacing oracle",
-        parsed["injected"] == DISCRIMINATE_INJECTED,
-        f"injected={parsed['injected']} (registered {DISCRIMINATE_INJECTED})")
+        parsed["injected"] == DISCRIMINATE_INJECTED
+        and per_flow == {0: DISCRIMINATE_INJECTED // 2, 1: DISCRIMINATE_INJECTED // 2},
+        f"injected={parsed['injected']} per_flow={per_flow} "
+        f"(registered {DISCRIMINATE_INJECTED} total, 8990 per flow)")
     checks.record(f"DP-2 {config} drops occur", parsed["dropped"] > 0,
                   f"dropped={parsed['dropped']}")
     band = FIRST_DROP_BAND[config]
@@ -243,26 +264,36 @@ def check_discriminate(config: str, parsed: dict, checks: Checks) -> None:
               if start >= BIN_PS and start + BIN_PS <= DISCRIMINATE_DURATION_PS]
     aggregate_ok = True
     share_ok = True
-    detail = ""
+    aggregate_detail = ""
+    share_detail = ""
+    worst_share_delta = 0.0
     for start in steady:
         flows = parsed["bins"][start]
         aggregate = sum(flows.values())
         if not BIN_AGGREGATE_BAND[0] <= aggregate <= BIN_AGGREGATE_BAND[1]:
             aggregate_ok = False
-            detail = f"bin {start} aggregate {aggregate}"
+            aggregate_detail = f"bin {start} aggregate {aggregate}"
         for flow in (0, 1):
             share = flows.get(flow, 0) / aggregate if aggregate else 0.0
+            worst_share_delta = max(worst_share_delta, abs(share - 0.5))
             if not SHARE_BAND[0] <= share <= SHARE_BAND[1]:
                 share_ok = False
-                detail = f"bin {start} flow {flow} share {share:.3f}"
+                share_detail = f"bin {start} flow {flow} share {share:.3f}"
     checks.record(
         f"DP-5 {config} saturation band",
         bool(steady) and aggregate_ok,
-        detail or f"{len(steady)} steady bins all in {BIN_AGGREGATE_BAND}")
+        aggregate_detail
+        or f"{len(steady)} steady bins all in {BIN_AGGREGATE_BAND}")
+    # F3 disclosure: the frozen [0.4, 0.6] band is far looser than the
+    # round-robin mechanism it registers, so this row was near-unfailable
+    # as registered; the worst observed distance from 0.5 is reported so
+    # the looseness is visible.  The frozen band itself is not retuned.
     checks.record(
         f"DP-6 {config} fairness band",
         bool(steady) and share_ok,
-        detail or f"per-flow shares in {SHARE_BAND} across {len(steady)} bins")
+        share_detail
+        or (f"per-flow shares in {SHARE_BAND} across {len(steady)} bins, "
+            f"worst |share - 0.5| = {worst_share_delta:.4f}"))
 
 
 def main() -> int:
@@ -328,20 +359,51 @@ def main() -> int:
             "bins CSVs differ across configs (entailed, unscored)",
             f"identical={a['csv_bytes'] == b['csv_bytes']}")
 
+    # Entailment classification (review finding F2, applying the freeze's
+    # own rule that entailed rows are never counted as independent
+    # evidence): the B-config CONTROL rows are entailed by CT-4's byte
+    # identity of the artifacts they are read from plus their A
+    # counterparts; DP-2 is entailed by DP-3's in-band first drop; the
+    # DP-3 ordering row is entailed by its two disjoint band rows; and
+    # DP-1 B is entailed by DP-1 A under the freeze's registered
+    # open-loop identity argument.
+    entailed_names = {
+        "CT-1 B exact accounting",
+        "CT-2 B chunk counts",
+        "CT-3 B flow 0 cadence",
+        "CT-3 B flow 1 cadence",
+        "DP-1 B exact pacing oracle",
+        "DP-2 A drops occur",
+        "DP-2 B drops occur",
+        "DP-3 ordering first_drop(B) < first_drop(A)",
+    }
+    genuine_pass = sum(1 for name, verdict, _ in checks.rows
+                       if verdict == "PASS" and name not in entailed_names)
+    entailed_pass = sum(1 for name, verdict, _ in checks.rows
+                        if verdict == "PASS" and name in entailed_names)
+    derived_count = sum(1 for _, verdict, _ in checks.rows
+                        if verdict == "DERIVED")
+
     summary = {
         "manifest": manifest,
-        "rows": [{"name": name, "verdict": verdict, "detail": detail}
+        "rows": [{"name": name, "verdict": verdict, "detail": detail,
+                  "entailed": name in entailed_names}
                  for name, verdict, detail in checks.rows],
         "failed": checks.failed,
         "voided": checks.voided,
+        "genuine_risk_pass": genuine_pass,
+        "entailed_pass": entailed_pass,
+        "derived_rows": derived_count,
     }
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
 
     width = max(len(name) for name, _, _ in checks.rows)
     for name, verdict, detail in checks.rows:
-        print(f"{name:<{width}}  {verdict:7}  {detail}")
+        tag = " (entailed)" if name in entailed_names and verdict == "PASS" else ""
+        print(f"{name:<{width}}  {verdict:7}  {detail}{tag}")
     print(f"\nfailed={checks.failed} voided={checks.voided} "
-          f"rows={len(checks.rows)}")
+          f"genuine_risk_pass={genuine_pass} entailed_pass={entailed_pass} "
+          f"derived={derived_count} rows={len(checks.rows)}")
     return 1 if checks.failed or checks.voided else 0
 
 

@@ -231,6 +231,13 @@ silently.
    evaluated with the manifest's `topology=` token masked; the bins
    CSV and chunk CSV comparisons stay literal byte identity. No
    registered numeric value, band, or direction changed.
+   Amendment (adversarial review round, finding F4): the implemented
+   comparison is wider than the sentence above states. It tokenizes
+   stdout on whitespace and rejoins with single spaces, so newline and
+   spacing structure is normalized as well as the token being masked;
+   the masked token is the only content difference the verdict
+   tolerates, but byte-level line structure is not compared. This
+   amendment states what the code does; the code was not changed.
 2. Conservation-guard bound for the multi-receiver cell (recorded
    after the first runner invocation, which the guard voided; the
    fabric is correct and the registered guard arithmetic was wrong).
@@ -254,3 +261,32 @@ silently.
    invocation is reported in RESULTS.md and the cells were rerun with
    identical parameters under the corrected guard (the wave-18 F6
    correction is the precedent for this handling).
+3. Old-harness over-claim in two frozen prose passages (recorded in
+   the adversarial review round, finding F1; the registered rows,
+   bands, and directions are untouched and this corrects framing
+   prose only). The introduction's sentence "The harness could not
+   express sub-line-rate offered load or distinct-receiver-port
+   multi-flow cells, so no cell could make the fabric bind" and the
+   discrimination statement's clause "the separation is carried by
+   the new offered-load and multi-receiver capabilities
+   (sub-line-rate pacing, explicit distinct-port and shared-port flow
+   placement)" both overstate. Disproved by the review's
+   counter-demonstration: the LEGACY line-rate degree-2 incast (both
+   flows to one receiver, a shape and load the pre-load-harness
+   binary always expressed; the wave-18 F6 flood is exactly that
+   regime) run against these two instances also saturates the shared
+   egress and separates them with the same 348-packet drop
+   difference, because the excess-drop difference is the buffer delta
+   over the wire size (3145728 / 9038 = 348.05), independent of the
+   offered rate. So the old harness could make the fabric bind and
+   could separate this pair, and shared-port placement is not new
+   (both legacy patterns aim every flow at one receiver). The
+   corrected claims: (a) the pair is inseparable by the WAVE-19
+   EVIDENCE CLASS, that is, at capture-shaped loads, which the old
+   harness could not express; (b) the genuinely new capabilities are
+   sub-line-rate pacing, per-flow start and think-time declarations,
+   and DISTINCT-destination-port placement; (c) what the
+   demonstration shows is one registered design expressing both the
+   capture-shaped regime (where the pair is indistinguishable, the
+   control) and a load-bearing regime (where it separates), with the
+   control cell expressible only through the new capabilities.

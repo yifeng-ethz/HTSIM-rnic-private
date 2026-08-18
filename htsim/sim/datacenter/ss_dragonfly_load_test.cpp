@@ -361,6 +361,11 @@ TEST(SsDragonflyLoadParsingTest, FlowSpecRejectsMalformedInput) {
     EXPECT_THROW(parseSsDragonflyFlowSpec("src=1,dst="), std::invalid_argument);
     EXPECT_THROW(parseSsDragonflyFlowSpec("src=1,dst=2x"), std::invalid_argument);
     EXPECT_THROW(parseSsDragonflyFlowSpec("src=-1,dst=2"), std::invalid_argument);
+    EXPECT_THROW(parseSsDragonflyFlowSpec("src=+1,dst=2"), std::invalid_argument);
+    // Host fields are 32-bit; a wider value must be rejected, not
+    // silently narrowed.
+    EXPECT_THROW(parseSsDragonflyFlowSpec("src=4294967296,dst=2"),
+                 std::invalid_argument);
 }
 
 TEST(SsDragonflyLoadParsingTest, SourceModeParses) {
@@ -391,6 +396,10 @@ TEST(SsDragonflyLoadArithmeticTest, PacedOffsetIsExactCeilingOfTotal) {
     EXPECT_EQ(ssDragonflyPacedOffset(9038, UINT64_C(30000000000), 6), 14460800U);
     EXPECT_THROW(ssDragonflyPacedOffset(9038, 0, 1), std::invalid_argument);
     EXPECT_THROW(ssDragonflyPacedOffset(0, 1, 1), std::invalid_argument);
+    // The 64-bit wire-bits product is safe only because wire extents are
+    // held to HTSIM's uint16_t packet bound; the function enforces it.
+    EXPECT_THROW(ssDragonflyPacedOffset(65536, UINT64_C(100000000000), 1),
+                 std::invalid_argument);
 }
 
 TEST(SsDragonflyLoadMechanismTest, PacedSourceRejectsRatesBeyondTheHostLink) {

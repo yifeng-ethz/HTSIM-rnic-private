@@ -116,24 +116,26 @@ void validateLoadOptions(const SanityOptions& options) {
                     "chunk accounting requires -source paced or closed");
             }
             break;
-        case SsDragonflySourceMode::Paced:
+        case SsDragonflySourceMode::Paced: {
             if (options.think_ps.has_value() || any_flow_think) {
                 throw std::invalid_argument("think_ps requires -source closed");
             }
-            if (!options.offered_bps.has_value() && !options.flow_specs.empty()) {
+            // Without the global default, every declared flow must carry
+            // its own rate (and the incast/join patterns declare none).
+            if (!options.offered_bps.has_value()) {
+                bool every_flow_covered = !options.flow_specs.empty();
                 for (const SsDragonflyLoadFlowSpec& spec : options.flow_specs) {
-                    if (!spec.offered_bps.has_value()) {
-                        throw std::invalid_argument(
-                            "-source paced requires -offered_bps or a per-flow "
-                            "offered_bps on every flow");
-                    }
+                    every_flow_covered =
+                        every_flow_covered && spec.offered_bps.has_value();
                 }
-            } else if (!options.offered_bps.has_value()) {
-                throw std::invalid_argument(
-                    "-source paced requires -offered_bps or a per-flow offered_bps "
-                    "on every flow");
+                if (!every_flow_covered) {
+                    throw std::invalid_argument(
+                        "-source paced requires -offered_bps or a per-flow "
+                        "offered_bps on every flow");
+                }
             }
             break;
+        }
         case SsDragonflySourceMode::ClosedLoop:
             if (options.offered_bps.has_value() || any_flow_offered) {
                 throw std::invalid_argument("offered_bps requires -source paced");

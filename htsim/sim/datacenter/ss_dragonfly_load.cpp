@@ -8,8 +8,11 @@
 
 namespace {
 
-std::uint64_t parseLoadUnsigned(const std::string& field, const std::string& text) {
-    if (text.empty() || text.front() == '-') {
+std::uint64_t parseLoadUnsigned(const std::string& field,
+                                const std::string& text,
+                                std::uint64_t maximum =
+                                    std::numeric_limits<std::uint64_t>::max()) {
+    if (text.empty() || text.front() == '-' || text.front() == '+') {
         throw std::invalid_argument("-flow field '" + field +
                                     "' requires an unsigned value");
     }
@@ -24,6 +27,10 @@ std::uint64_t parseLoadUnsigned(const std::string& field, const std::string& tex
     if (consumed != text.size()) {
         throw std::invalid_argument("-flow field '" + field + "' has a malformed value '" +
                                     text + "'");
+    }
+    if (value > maximum) {
+        throw std::invalid_argument("-flow field '" + field + "' exceeds its maximum of " +
+                                    std::to_string(maximum));
     }
     return static_cast<std::uint64_t>(value);
 }
@@ -69,13 +76,15 @@ SsDragonflyLoadFlowSpec parseSsDragonflyFlowSpec(const std::string& text) {
                 throw std::invalid_argument("-flow repeats field 'src'");
             }
             source_seen = true;
-            spec.source = static_cast<std::uint32_t>(parseLoadUnsigned(key, value));
+            spec.source = static_cast<std::uint32_t>(parseLoadUnsigned(
+                key, value, std::numeric_limits<std::uint32_t>::max()));
         } else if (key == "dst") {
             if (destination_seen) {
                 throw std::invalid_argument("-flow repeats field 'dst'");
             }
             destination_seen = true;
-            spec.destination = static_cast<std::uint32_t>(parseLoadUnsigned(key, value));
+            spec.destination = static_cast<std::uint32_t>(parseLoadUnsigned(
+                key, value, std::numeric_limits<std::uint32_t>::max()));
         } else if (key == "start_ps") {
             if (start_seen) {
                 throw std::invalid_argument("-flow repeats field 'start_ps'");
@@ -116,9 +125,13 @@ simtime_picosec ssDragonflyPacedOffset(std::uint64_t wire_bytes,
     if (wire_bytes == 0 || offered_bps == 0) {
         throw std::invalid_argument("paced offsets require positive wire bytes and rate");
     }
+    if (wire_bytes > std::numeric_limits<std::uint16_t>::max()) {
+        throw std::invalid_argument("paced offsets require HTSIM uint16_t wire extents");
+    }
     // ceil(packet_index * wire_bytes * 8e12 / offered_bps), exact: the
-    // wire-bits-times-picoseconds product fits 64 bits (wire extents are
-    // bounded by uint16_t), and the index multiply widens to 128 bits.
+    // wire-bits-times-picoseconds product fits 64 bits because the wire
+    // extent is enforced to the uint16_t packet bound above, and the
+    // index multiply widens to 128 bits.
     const std::uint64_t bit_picoseconds = wire_bytes * UINT64_C(8000000000000);
     const RnicWideInteger numerator = RnicWideInteger(bit_picoseconds) * packet_index;
     const RnicWideInteger quotient =
@@ -155,6 +168,11 @@ SsDragonflyLoadSource::SsDragonflyLoadSource(EventList& eventlist,
       _header_bytes(header_bytes),
       _chunk_packets(chunk_packets),
       _packet_flow(nullptr) {
+    if (wire_bytes == 0 || wire_bytes > std::numeric_limits<std::uint16_t>::max()) {
+        // Also keeps every wire-bits-times-picoseconds product in this
+        // file inside 64 bits before the 128-bit index multiplies.
+        throw std::invalid_argument("load source wire extents must fit HTSIM's uint16_t");
+    }
     if (header_bytes >= wire_bytes) {
         throw std::invalid_argument("load source header bytes must leave payload room");
     }
@@ -172,10 +190,10 @@ void SsDragonflyLoadSource::injectOnePacket() {
     if (_sequence > std::numeric_limits<packetid_t>::max()) {
         throw std::logic_error("load source packet sequence exceeds the 32-bit packet id");
     }
-    if (_chunk_packets > 0 && _sequence % _chunk_packets == 0) {
-        _chunk_first_injection.push_back(EventList::now());
-        _chunk_delivered.push_back(0);
-    }
+    // Assemble first, mutate second: every throwing step (packet
+    // construction, fabric registration) runs before the source's own
+    // chunk bookkeeping and sequence advance, so a failure leaves no
+    // record of a packet that was never injected.
     const std::uint64_t hash =
         _fabric.packetRouteHash(_flow_id, _per_packet_hash ? _sequence : 0);
     SsDragonflyPacket* packet = SsDragonflyPacket::newPacket(
@@ -184,6 +202,10 @@ void SsDragonflyLoadSource::injectOnePacket() {
         static_cast<mem_b>(_wire_bytes),
         static_cast<mem_b>(_wire_bytes - _header_bytes));
     _fabric.registerPacket(*packet, _control, hash);
+    if (_chunk_packets > 0 && _sequence % _chunk_packets == 0) {
+        _chunk_first_injection.push_back(EventList::now());
+        _chunk_delivered.push_back(0);
+    }
     _sequence++;
     packet->sendOn();
 }
@@ -337,5 +359,4 @@ void SsDragonflyLoadDispatch::noteDrop(simtime_picosec at_ps) {
     if (!_first_drop_ps.has_value()) {
         _first_drop_ps = at_ps;
     }
-    _dropped_packets++;
 }
