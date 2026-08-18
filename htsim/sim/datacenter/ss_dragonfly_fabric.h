@@ -192,6 +192,12 @@ using SsDragonflyRouteDecisionObserver =
                        const SsDragonflyPacket&,
                        const htsim::DragonflyRoutingDecision&)>;
 
+// Drop observation for the load harness: invoked once per physically
+// dropped packet, at the drop instant, before the pooled packet is
+// recycled.  Unset by default; the legacy paths never install one.
+using SsDragonflyDropObserver =
+    std::function<void(const SsDragonflyPacket&, simtime_picosec)>;
+
 class SsDragonflyTopology {
 public:
     SsDragonflyTopology(EventList& eventlist, SsDragonflyConfig config);
@@ -221,6 +227,9 @@ public:
     }
     void setRouteDecisionObserver(SsDragonflyRouteDecisionObserver observer) {
         _route_decision_observer = std::move(observer);
+    }
+    void setDropObserver(SsDragonflyDropObserver observer) {
+        _drop_observer = std::move(observer);
     }
 
     const SsDragonflyStatistics& statistics() const noexcept { return _statistics; }
@@ -343,6 +352,7 @@ private:
 
     SsDragonflyDeliveryObserver _delivery_observer;
     SsDragonflyRouteDecisionObserver _route_decision_observer;
+    SsDragonflyDropObserver _drop_observer;
     SsDragonflyStatistics _statistics;
     std::exception_ptr _deferred_failure;
 };

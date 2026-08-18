@@ -1,0 +1,340 @@
+#!/usr/bin/env python3
+"""Run the pre-registered ss-dragonfly load-discrimination experiment.
+
+Executes both cells (CONTROL and DISCRIMINATE) of expectations.md under
+both buffer configurations (A = 4 MiB, B = 1 MiB), every invocation
+twice (repeat determinism guard), sequentially, and evaluates every
+registered row mechanically. Bulk outputs go to the output directory,
+which must live outside the repository. Capability plus sanity
+evidence; no Merlin calibration claim.
+
+Usage:
+    python3 run_discrimination.py --binary PATH/TO/htsim_ss_dragonfly \
+        --out-dir /data3/yifeng/simllm-dev/wave20-runs/w20a/discrimination
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import hashlib
+import json
+import subprocess
+import sys
+from collections import defaultdict
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+
+CONFIGS = {
+    "A": HERE / "merlin_shape_buffer4mib.topo",
+    "B": HERE / "merlin_shape_buffer1mib.topo",
+}
+
+BIN_PS = 100_000_000
+CONTROL_DURATION_PS = 200_000_000_000
+DISCRIMINATE_DURATION_PS = 5_000_000_000
+
+# Registered constants (expectations.md, hand arithmetic).
+CHUNK_SERVICE_F_PS = 340_417_280
+FLOW0_PERIOD_PS = 2_198_644_280
+FLOW1_PERIOD_PS = 1_596_855_280
+CONTROL_INJECTED = 203_546
+CONTROL_CHUNKS = {0: 91, 1: 126}
+DISCRIMINATE_INJECTED = 17_980
+FIRST_DROP_BAND = {"A": (500_000_000, 620_000_000), "B": (125_000_000, 155_000_000)}
+DROP_DIFF_BAND = (300, 400)
+BIN_AGGREGATE_BAND = (2_450_355, 2_487_544)
+QUANTIZATION_BOUND = 2_487_544
+SHARE_BAND = (0.4, 0.6)
+
+
+def sha256_of(path: Path) -> str:
+    digest = hashlib.sha256()
+    digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def control_command(binary: Path, topo: Path, out_csv: Path, chunk_csv: Path) -> list[str]:
+    return [
+        str(binary), "-topo", str(topo), "-pattern", "explicit",
+        "-routing", "adaptive", "-wire_bytes", "9038", "-header_bytes", "90",
+        "-bin_ps", str(BIN_PS), "-duration_ps", str(CONTROL_DURATION_PS),
+        "-source", "closed", "-chunk_payload_bytes", "8388608",
+        "-flow", "src=8,dst=5,think_ps=1858227000",
+        "-flow", "src=16,dst=6,think_ps=1256438000",
+        "-chunk_out", str(chunk_csv), "-out", str(out_csv),
+    ]
+
+
+def discriminate_command(binary: Path, topo: Path, out_csv: Path) -> list[str]:
+    return [
+        str(binary), "-topo", str(topo), "-pattern", "explicit",
+        "-routing", "adaptive", "-wire_bytes", "9038", "-header_bytes", "90",
+        "-bin_ps", str(BIN_PS), "-duration_ps", str(DISCRIMINATE_DURATION_PS),
+        "-source", "paced", "-offered_bps", "130000000000",
+        "-flow", "src=8,dst=5",
+        "-flow", "src=16,dst=5,start_ps=278092",
+        "-out", str(out_csv),
+    ]
+
+
+def manifest_value(stdout: str, key: str) -> str:
+    for token in stdout.split():
+        if token.startswith(key + "="):
+            return token.split("=", 1)[1]
+    raise RuntimeError(f"manifest lacks {key}")
+
+
+def mask_topology_token(stdout: str) -> str:
+    """CT-4 correction 1: the manifest echoes the invocation's topology
+    path, which differs between configurations by construction; mask that
+    single invocation-identity token before the cross-config comparison."""
+    return " ".join("topology=MASKED" if token.startswith("topology=") else token
+                    for token in stdout.split())
+
+
+def load_bins(path: Path) -> dict[int, dict[int, int]]:
+    bins: dict[int, dict[int, int]] = defaultdict(dict)
+    with path.open() as handle:
+        for row in csv.DictReader(handle):
+            bins[int(row["bin_start_ps"])][int(row["flow_id"])] = int(
+                row["delivered_payload_bytes"])
+    return dict(bins)
+
+
+def load_chunks(path: Path) -> dict[int, list[tuple[int, int, int]]]:
+    chunks: dict[int, list[tuple[int, int, int]]] = defaultdict(list)
+    with path.open() as handle:
+        for row in csv.DictReader(handle):
+            chunks[int(row["flow_id"])].append(
+                (int(row["chunk_index"]), int(row["first_injection_ps"]),
+                 int(row["completion_ps"])))
+    for rows in chunks.values():
+        rows.sort()
+    return dict(chunks)
+
+
+class Checks:
+    def __init__(self) -> None:
+        self.rows: list[tuple[str, str, str]] = []
+        self.failed = 0
+        self.voided = 0
+
+    def record(self, name: str, passed: bool, detail: str) -> None:
+        self.rows.append((name, "PASS" if passed else "FAIL", detail))
+        if not passed:
+            self.failed += 1
+
+    def fatal(self, name: str, detail: str) -> None:
+        self.rows.append((name, "VOID", detail))
+        self.voided += 1
+
+    def derived(self, name: str, detail: str) -> None:
+        self.rows.append((name, "DERIVED", detail))
+
+
+def run_cell(binary: Path, out_dir: Path, cell: str, config: str,
+             checks: Checks) -> dict | None:
+    """Runs one (cell, config) twice; returns parsed artifacts or None on a
+    fatal guard."""
+    topo = CONFIGS[config]
+    artifacts = {}
+    for repeat in (1, 2):
+        stem = f"{cell}_{config}_r{repeat}"
+        out_csv = out_dir / f"{stem}.csv"
+        chunk_csv = out_dir / f"{stem}.chunks.csv"
+        if cell == "control":
+            command = control_command(binary, topo, out_csv, chunk_csv)
+        else:
+            command = discriminate_command(binary, topo, out_csv)
+        result = subprocess.run(command, capture_output=True, text=True)
+        (out_dir / f"{stem}.stdout").write_text(result.stdout)
+        (out_dir / f"{stem}.cmd").write_text(" ".join(command) + "\n")
+        if result.returncode != 0:
+            checks.fatal(f"FG-exit {cell} {config} r{repeat}",
+                         f"exit {result.returncode}: {result.stderr.strip()}")
+            return None
+        artifacts[repeat] = {
+            "stdout": result.stdout,
+            "csv_bytes": out_csv.read_bytes(),
+            "chunk_bytes": chunk_csv.read_bytes() if cell == "control" else b"",
+        }
+    if (artifacts[1]["csv_bytes"] != artifacts[2]["csv_bytes"]
+            or artifacts[1]["stdout"] != artifacts[2]["stdout"]
+            or artifacts[1]["chunk_bytes"] != artifacts[2]["chunk_bytes"]):
+        checks.fatal(f"FG-determinism {cell} {config}",
+                     "repeat outputs are not byte-identical")
+        return None
+
+    stdout = artifacts[1]["stdout"]
+    parsed = {
+        "stdout": stdout,
+        "csv_bytes": artifacts[1]["csv_bytes"],
+        "chunk_bytes": artifacts[1]["chunk_bytes"],
+        "injected": int(manifest_value(stdout, "injected")),
+        "delivered": int(manifest_value(stdout, "delivered")),
+        "dropped": int(manifest_value(stdout, "dropped")),
+        "first_drop": manifest_value(stdout, "first_drop_ps"),
+        "bins": load_bins(out_dir / f"{cell}_{config}_r1.csv"),
+    }
+    if cell == "control":
+        parsed["chunks"] = load_chunks(out_dir / f"{cell}_{config}_r1.chunks.csv")
+    if parsed["delivered"] == 0:
+        checks.fatal(f"FG-delivered {cell} {config}", "delivered = 0")
+        return None
+    # Registered for both cells: any bin above the aggregate quantization
+    # bound is a conservation violation (it cannot fire at control loads).
+    worst = max((sum(flows.values()) for flows in parsed["bins"].values()),
+                default=0)
+    if worst > QUANTIZATION_BOUND:
+        checks.fatal(f"FG-conservation {cell} {config}",
+                     f"a bin carries {worst} B, above the quantization bound")
+        return None
+    return parsed
+
+
+def check_control(config: str, parsed: dict, checks: Checks) -> None:
+    checks.record(
+        f"CT-1 {config} exact accounting",
+        parsed["injected"] == CONTROL_INJECTED
+        and parsed["delivered"] == CONTROL_INJECTED and parsed["dropped"] == 0,
+        f"injected={parsed['injected']} delivered={parsed['delivered']} "
+        f"dropped={parsed['dropped']} (registered {CONTROL_INJECTED}, 0 drops)")
+    counts = {flow: len(rows) for flow, rows in parsed["chunks"].items()}
+    checks.record(f"CT-2 {config} chunk counts", counts == CONTROL_CHUNKS,
+                  f"counts={counts} (registered {CONTROL_CHUNKS})")
+    for flow, period in ((0, FLOW0_PERIOD_PS), (1, FLOW1_PERIOD_PS)):
+        rows = parsed["chunks"].get(flow, [])
+        first_ok = bool(rows) and rows[0][2] == CHUNK_SERVICE_F_PS
+        deltas_ok = all(
+            rows[i][2] - rows[i - 1][2] == period for i in range(1, len(rows)))
+        checks.record(
+            f"CT-3 {config} flow {flow} cadence",
+            first_ok and deltas_ok,
+            f"chunk0={rows[0][2] if rows else 'none'} every delta == {period}: "
+            f"{deltas_ok}")
+
+
+def check_discriminate(config: str, parsed: dict, checks: Checks) -> None:
+    checks.record(
+        f"DP-1 {config} exact pacing oracle",
+        parsed["injected"] == DISCRIMINATE_INJECTED,
+        f"injected={parsed['injected']} (registered {DISCRIMINATE_INJECTED})")
+    checks.record(f"DP-2 {config} drops occur", parsed["dropped"] > 0,
+                  f"dropped={parsed['dropped']}")
+    band = FIRST_DROP_BAND[config]
+    first_drop = (int(parsed["first_drop"])
+                  if parsed["first_drop"] != "none" else None)
+    checks.record(
+        f"DP-3 {config} first-drop band",
+        first_drop is not None and band[0] <= first_drop <= band[1],
+        f"first_drop_ps={parsed['first_drop']} (registered {band})")
+    steady = [start for start in parsed["bins"]
+              if start >= BIN_PS and start + BIN_PS <= DISCRIMINATE_DURATION_PS]
+    aggregate_ok = True
+    share_ok = True
+    detail = ""
+    for start in steady:
+        flows = parsed["bins"][start]
+        aggregate = sum(flows.values())
+        if not BIN_AGGREGATE_BAND[0] <= aggregate <= BIN_AGGREGATE_BAND[1]:
+            aggregate_ok = False
+            detail = f"bin {start} aggregate {aggregate}"
+        for flow in (0, 1):
+            share = flows.get(flow, 0) / aggregate if aggregate else 0.0
+            if not SHARE_BAND[0] <= share <= SHARE_BAND[1]:
+                share_ok = False
+                detail = f"bin {start} flow {flow} share {share:.3f}"
+    checks.record(
+        f"DP-5 {config} saturation band",
+        bool(steady) and aggregate_ok,
+        detail or f"{len(steady)} steady bins all in {BIN_AGGREGATE_BAND}")
+    checks.record(
+        f"DP-6 {config} fairness band",
+        bool(steady) and share_ok,
+        detail or f"per-flow shares in {SHARE_BAND} across {len(steady)} bins")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--binary", type=Path, required=True)
+    parser.add_argument("--out-dir", type=Path, required=True)
+    arguments = parser.parse_args()
+    out_dir = arguments.out_dir.resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    repo_root = HERE.parent.parent
+    if str(out_dir).startswith(str(repo_root)):
+        raise SystemExit("--out-dir must live outside the repository")
+
+    manifest = {
+        "binary_sha256": sha256_of(arguments.binary),
+        "topologies": {name: sha256_of(path) for name, path in
+                       ((name, path) for name, path in CONFIGS.items())},
+        "expectations_sha256": sha256_of(HERE / "expectations.md"),
+    }
+
+    checks = Checks()
+    parsed: dict[tuple[str, str], dict] = {}
+    for cell in ("control", "discriminate"):
+        for config in ("A", "B"):
+            result = run_cell(arguments.binary, out_dir, cell, config, checks)
+            if result is not None:
+                parsed[(cell, config)] = result
+
+    if ("control", "A") in parsed and ("control", "B") in parsed:
+        for config in ("A", "B"):
+            check_control(config, parsed[("control", config)], checks)
+        a, b = parsed[("control", "A")], parsed[("control", "B")]
+        checks.record(
+            "CT-4 control identity A == B",
+            a["csv_bytes"] == b["csv_bytes"]
+            and a["chunk_bytes"] == b["chunk_bytes"]
+            and mask_topology_token(a["stdout"]) == mask_topology_token(b["stdout"]),
+            "bins CSV and chunk CSV byte-identical; stdout identical with the "
+            "topology= invocation token masked (correction 1)")
+
+    if ("discriminate", "A") in parsed and ("discriminate", "B") in parsed:
+        for config in ("A", "B"):
+            check_discriminate(config, parsed[("discriminate", config)], checks)
+        a, b = parsed[("discriminate", "A")], parsed[("discriminate", "B")]
+        first_a = int(a["first_drop"]) if a["first_drop"] != "none" else None
+        first_b = int(b["first_drop"]) if b["first_drop"] != "none" else None
+        checks.record(
+            "DP-3 ordering first_drop(B) < first_drop(A)",
+            first_a is not None and first_b is not None and first_b < first_a,
+            f"A={first_a} B={first_b}")
+        diff = b["dropped"] - a["dropped"]
+        checks.record(
+            "DP-4 drop difference band",
+            DROP_DIFF_BAND[0] <= diff <= DROP_DIFF_BAND[1],
+            f"dropped(B)-dropped(A)={diff} (registered {DROP_DIFF_BAND}, "
+            "prediction 348)")
+        checks.derived(
+            "delivered difference (entailed, unscored)",
+            f"delivered(A)-delivered(B)={a['delivered'] - b['delivered']} "
+            f"== dropped(B)-dropped(A)={diff}: "
+            f"{a['delivered'] - b['delivered'] == diff}")
+        checks.derived(
+            "bins CSVs differ across configs (entailed, unscored)",
+            f"identical={a['csv_bytes'] == b['csv_bytes']}")
+
+    summary = {
+        "manifest": manifest,
+        "rows": [{"name": name, "verdict": verdict, "detail": detail}
+                 for name, verdict, detail in checks.rows],
+        "failed": checks.failed,
+        "voided": checks.voided,
+    }
+    (out_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+
+    width = max(len(name) for name, _, _ in checks.rows)
+    for name, verdict, detail in checks.rows:
+        print(f"{name:<{width}}  {verdict:7}  {detail}")
+    print(f"\nfailed={checks.failed} voided={checks.voided} "
+          f"rows={len(checks.rows)}")
+    return 1 if checks.failed or checks.voided else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

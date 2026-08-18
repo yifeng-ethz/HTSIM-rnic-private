@@ -28,6 +28,7 @@ set(LIB_SOURCES
     ns_tm3_switch.cpp
     ns_rosetta_switch.cpp
     ss_dragonfly_fabric.cpp
+    ss_dragonfly_load.cpp
     dragon_fly_topology.cpp
     slimfly_topology.cpp
     slimfly_switch.cpp
@@ -312,6 +313,14 @@ if ( ENABLE_TESTS )
     target_link_libraries(
         ss_dragonfly_fabric_test PRIVATE htsim_dc htsim gtest_main)
     gtest_discover_tests(ss_dragonfly_fabric_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
+    add_executable(ss_dragonfly_load_test ss_dragonfly_load_test.cpp)
+    target_link_libraries(
+        ss_dragonfly_load_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(ss_dragonfly_load_test
         PROPERTIES LABELS "unit"
         PROPERTIES TIMEOUT 60
     )

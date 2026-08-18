@@ -216,5 +216,18 @@ covers.
 
 ## Corrections
 
-None yet. Any correction is recorded here with what changed and why,
-never silently.
+Any correction is recorded here with what changed and why, never
+silently.
+
+1. CT-4 stdout comparison scope (recorded before the first run of any
+   cell, found by desk-checking the runner against the harness's
+   manifest format). The registered CT-4 text demands byte-identical
+   stdout between configurations A and B, but the harness's first
+   manifest line echoes the invocation's topology file path
+   (`topology=...`), and the two configurations are by construction
+   different files, so a literal stdout comparison would fail on the
+   invocation-identity token alone and carry no information about the
+   buffer knob's visibility. CT-4's stdout clause is therefore
+   evaluated with the manifest's `topology=` token masked; the bins
+   CSV and chunk CSV comparisons stay literal byte identity. No
+   registered numeric value, band, or direction changed.
