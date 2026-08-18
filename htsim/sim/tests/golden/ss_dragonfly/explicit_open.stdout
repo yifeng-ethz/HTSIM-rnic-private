@@ -1,0 +1,4 @@
+[ss-dragonfly drain] r0.occ=0 r1.occ=0 r2.occ=0 r3.occ=0 r4.occ=0 r5.occ=0 live=0
+[ss-dragonfly manifest] evidence=sanity-not-calibration calibration_status=hosted-pending-merlin-calibration pattern=explicit routing=adaptive receiver=0 degree=1 join_interval_ps=0 duration_ps=5000000000 bin_ps=1000000000 wire_bytes=4160 header_bytes=64 routing_seed=383530136519245852 topology=topologies/ss_dragonfly/p2a2h1g3_200g.topo
+[ss-dragonfly manifest] p=2 a=2 h=1 g=3 routers=6 hosts=12
+[ss-dragonfly manifest] injected=60098 delivered=31061 delivered_payload_bytes=127225856 dropped=29037 minimal=12 non_minimal=1000 undecided=30049 advertisements_consumed=65988 max_router_hops=1

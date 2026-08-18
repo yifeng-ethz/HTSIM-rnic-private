@@ -28,6 +28,7 @@ set(LIB_SOURCES
     ns_tm3_switch.cpp
     ns_rosetta_switch.cpp
     ss_dragonfly_fabric.cpp
+    ss_dragonfly_load.cpp
     dragon_fly_topology.cpp
     slimfly_topology.cpp
     slimfly_switch.cpp
@@ -129,6 +130,57 @@ foreach(EXECUTABLE ${ALL_EXECUTABLES})
 endforeach()
 
 if ( ENABLE_TESTS )
+    # Byte-identity lock on legacy htsim_ss_dragonfly invocations: the
+    # golden captures were produced by the binary at the pre-load-harness
+    # base commit, so any behavioral drift of a default-off invocation
+    # fails these tests.  See tests/ss_dragonfly_frozen_regression.cmake.
+    set(SS_DRAGONFLY_FROZEN_CASES
+        "incast2_adaptive|-topo topologies/ss_dragonfly/p2a2h1g3_200g.topo -pattern incast -receiver 0 -degree 2 -duration_ps 5000000000 -bin_ps 1000000000 -routing adaptive"
+        "join2_minimal|-topo topologies/ss_dragonfly/p2a2h1g3_200g.topo -pattern join -receiver 0 -degree 2 -join_interval_ps 1000000000 -duration_ps 5000000000 -bin_ps 1000000000 -routing minimal"
+        "merlin_solo_9038|-topo topologies/ss_dragonfly/merlin_a100_5node_4x200g.topo -pattern incast -receiver 5 -degree 1 -duration_ps 5000000000 -bin_ps 1000000000 -routing adaptive -wire_bytes 9038 -header_bytes 90"
+        # An explicit -source open cell whose flow list equals the legacy
+        # degree-2 incast above; its golden CSV bytes equal that case's
+        # (verified at capture) and its stdout differs only in pattern=.
+        "explicit_open|-topo topologies/ss_dragonfly/p2a2h1g3_200g.topo -pattern explicit -source open -flow src=1,dst=0 -flow src=2,dst=0 -duration_ps 5000000000 -bin_ps 1000000000 -routing adaptive"
+    )
+    foreach(frozen_case IN LISTS SS_DRAGONFLY_FROZEN_CASES)
+        string(REPLACE "|" ";" frozen_parts "${frozen_case}")
+        list(GET frozen_parts 0 frozen_name)
+        list(GET frozen_parts 1 frozen_arguments)
+        add_test(
+            NAME SsDragonflyFrozen.${frozen_name}
+            COMMAND ${CMAKE_COMMAND}
+                "-DBINARY=$<TARGET_FILE:htsim_ss_dragonfly>"
+                "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/ss_dragonfly_frozen/${frozen_name}"
+                "-DDATACENTER_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+                "-DARGUMENTS=${frozen_arguments}"
+                "-DGOLDEN_CSV=${PROJECT_SOURCE_DIR}/tests/golden/ss_dragonfly/${frozen_name}.csv"
+                "-DGOLDEN_STDOUT=${PROJECT_SOURCE_DIR}/tests/golden/ss_dragonfly/${frozen_name}.stdout"
+                -P ${PROJECT_SOURCE_DIR}/tests/ss_dragonfly_frozen_regression.cmake)
+        set_tests_properties(SsDragonflyFrozen.${frozen_name}
+            PROPERTIES LABELS "behavioral;frozen" TIMEOUT 120)
+    endforeach()
+
+    # Hash locks for the load-discrimination experiment's declared
+    # instances (the registered verdicts are tied to these exact bytes).
+    set(SS_DRAGONFLY_INSTANCE_LOCKS
+        "merlin_shape_buffer4mib|c81298d14f67365313d1b54b188c201513dbf196db24d80ce09eaf67fda0349a"
+        "merlin_shape_buffer1mib|4372520e4c2f2ad2433c8993dfed70992387840ec35eb7f8de4889c51bb6e914"
+    )
+    foreach(instance_lock IN LISTS SS_DRAGONFLY_INSTANCE_LOCKS)
+        string(REPLACE "|" ";" lock_parts "${instance_lock}")
+        list(GET lock_parts 0 lock_name)
+        list(GET lock_parts 1 lock_sha256)
+        add_test(
+            NAME SsDragonflyInstanceLock.${lock_name}
+            COMMAND ${CMAKE_COMMAND}
+                "-DINSTANCE_FILE=${PROJECT_SOURCE_DIR}/../../experiments/ss_dragonfly_load_discrimination/${lock_name}.topo"
+                "-DEXPECTED_SHA256=${lock_sha256}"
+                -P ${PROJECT_SOURCE_DIR}/tests/ss_dragonfly_instance_lock.cmake)
+        set_tests_properties(SsDragonflyInstanceLock.${lock_name}
+            PROPERTIES LABELS "structural;frozen" TIMEOUT 10)
+    endforeach()
+
     add_executable(fat_tree_switch_factory_test fat_tree_switch_factory_test.cpp)
     target_link_libraries(fat_tree_switch_factory_test PRIVATE htsim_dc htsim gtest_main)
     gtest_discover_tests(fat_tree_switch_factory_test
@@ -285,6 +337,14 @@ if ( ENABLE_TESTS )
     target_link_libraries(
         ss_dragonfly_fabric_test PRIVATE htsim_dc htsim gtest_main)
     gtest_discover_tests(ss_dragonfly_fabric_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
+    add_executable(ss_dragonfly_load_test ss_dragonfly_load_test.cpp)
+    target_link_libraries(
+        ss_dragonfly_load_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(ss_dragonfly_load_test
         PROPERTIES LABELS "unit"
         PROPERTIES TIMEOUT 60
     )

@@ -1,0 +1,23 @@
+# Configuration A of the load-discrimination experiment: the
+# Merlin-shaped single-switch instance at the fixture-default shared
+# buffer of 4 MiB. Identical to
+# topologies/ss_dragonfly/merlin_a100_5node_4x200g.topo except that it
+# lives with the experiment that declares it, so the A/B pair is
+# byte-locked next to its registration. Study instance for capability
+# and sanity evidence; no claim about the Merlin fabric's real buffer
+# sizing is made (Rosetta buffer sizing is unpublished).
+#
+# Every scored invocation passes -wire_bytes 9038 -header_bytes 90, so
+# the max_wire_packet_bytes value below is overridden by the harness
+# exactly as in the wave-19 calibration cells.
+topology dragonfly
+hosts_per_router 20
+routers_per_group 1
+global_links_per_router 0
+groups 1
+host_link_gbps 200
+host_link_latency_ps 300000
+switch_pipeline_ps 350000
+rosetta_buffer_bytes 4194304
+max_wire_packet_bytes 9038
+routing_seed 383530136519245852

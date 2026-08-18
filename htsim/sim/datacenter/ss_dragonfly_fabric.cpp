@@ -654,6 +654,9 @@ void SsDragonflyTopology::notePacketDropped(SsDragonflyPacket& pkt) {
     state.phase = htsim::DragonflyRoutePhase::Dropped;
     _route_state_store.eraseForDrop(pkt);
     _statistics.dropped_packets++;
+    if (_drop_observer) {
+        _drop_observer(pkt, EventList::now());
+    }
 }
 
 void SsDragonflyTopology::observeTransition(
