@@ -1459,17 +1459,21 @@ std::string DcqcnAtlahsRuntime::renderIngressDropManifest() const {
                 std::to_string(ns_tm3->getType()) + ":" + std::to_string(ns_tm3->getID());
             for (std::size_t ingress_id = 0; ingress_id < ns_tm3->physical_ingress_count();
                  ++ingress_id) {
-                const std::uint64_t dropped = ns_tm3->ingress_dropped_packets(
-                    static_cast<std::uint32_t>(ingress_id));
-                if (dropped == 0) {
+                const auto port = static_cast<std::uint32_t>(ingress_id);
+                const std::uint64_t admitted = ns_tm3->ingress_admitted_packets(port);
+                const std::uint64_t dropped = ns_tm3->ingress_dropped_packets(port);
+                if (admitted == 0 && dropped == 0) {
                     continue;
                 }
+                // Ports that offered but lost nothing are reported too: a
+                // clean port beside a port that lost everything is the
+                // observation a loss-sharing check exists to make.
                 manifest << "[DCQCN manifest] ns_tm3_ingress_drops switch=" << switch_name
                          << " ingress=" << ingress_id
+                         << " ns_tm3_ingress_admitted_packets=" << admitted
                          << " ns_tm3_ingress_dropped_packets=" << dropped
                          << " ns_tm3_unreacted_ingress_dropped_packets="
-                         << ns_tm3->unreacted_ingress_dropped_packets(
-                                static_cast<std::uint32_t>(ingress_id))
+                         << ns_tm3->unreacted_ingress_dropped_packets(port)
                          << '\n';
             }
         }

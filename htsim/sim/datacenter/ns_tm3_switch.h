@@ -231,6 +231,10 @@ public:
     // can answer: an endpoint sees retransmissions, and go-back-N amplifies
     // those by an amount that depends on when each sender learned of a gap.
     uint64_t ingress_dropped_packets(uint32_t ingress_id) const;
+    // Packets this ingress got into the buffer. A port that lost nothing is
+    // invisible in a drop count alone, and a port that lost nothing while
+    // its neighbour lost everything is exactly the thing to look for.
+    uint64_t ingress_admitted_packets(uint32_t ingress_id) const;
     // The same count, frozen when the first loss notification crossed this
     // switch.  Before that moment no source has reacted, so every source is
     // still offering at the rate it started with and admission is the only
@@ -292,6 +296,7 @@ private:
     NsTm3BufferCounters _buffer_counters;
 
     std::vector<std::unique_ptr<NsTm3IngressPort>> _physical_ingresses;
+    std::vector<uint64_t> _ingress_admitted_packets;
     std::vector<uint64_t> _ingress_dropped_packets;
     std::vector<uint64_t> _unreacted_ingress_dropped_packets;
     bool _loss_notification_seen{false};

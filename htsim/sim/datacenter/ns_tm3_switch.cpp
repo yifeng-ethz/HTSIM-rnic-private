@@ -293,8 +293,16 @@ PacketSink* NsTm3Switch::create_physical_ingress(const string& name) {
     auto ingress = std::make_unique<NsTm3IngressPort>(*this, ingress_id, name);
     PacketSink* result = ingress.get();
     _physical_ingresses.push_back(std::move(ingress));
+    _ingress_admitted_packets.push_back(0);
     _ingress_dropped_packets.push_back(0);
     return result;
+}
+
+uint64_t NsTm3Switch::ingress_admitted_packets(uint32_t ingress_id) const {
+    if (ingress_id >= _ingress_admitted_packets.size()) {
+        throw std::out_of_range("unknown ns-tm3 physical ingress");
+    }
+    return _ingress_admitted_packets[ingress_id];
 }
 
 uint64_t NsTm3Switch::ingress_dropped_packets(uint32_t ingress_id) const {
@@ -439,6 +447,7 @@ void NsTm3Switch::enqueue(Packet& pkt, uint32_t ingress_id, NsTm3EgressSerialize
         std::max(_shared_buffer_high_watermark, _shared_buffer_occupancy);
     _buffer_counters.admitted_packets++;
     _buffer_counters.admitted_bytes += packet_bytes;
+    _ingress_admitted_packets.at(ingress_id)++;
     if (_dcqcn_policy != nullptr) {
         _dcqcn_policy->packet_enqueued(pkt, ingress_id);
     }

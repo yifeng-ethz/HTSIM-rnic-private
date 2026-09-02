@@ -526,6 +526,9 @@ TEST(NsTm3SwitchTest, SharesAContestedEgressSlotBetweenSimultaneousIngresses) {
     EXPECT_GT(drops[1], 0U);
     EXPECT_LE(std::max(drops[0], drops[1]) - std::min(drops[0], drops[1]), 1U);
     EXPECT_EQ(drops[0] + drops[1], harness.traffic_manager->buffer_counters().dropped_packets);
+    EXPECT_EQ(harness.traffic_manager->ingress_admitted_packets(0)
+                  + harness.traffic_manager->ingress_admitted_packets(1),
+              harness.traffic_manager->buffer_counters().admitted_packets);
 }
 
 TEST(NsTm3SwitchTest, RotatesTheContestedEgressSlotAcrossThreeIngresses) {
