@@ -1443,6 +1443,43 @@ std::string DcqcnAtlahsRuntime::renderPfcPortMetricsManifest() const {
     return manifest.str();
 }
 
+std::string DcqcnAtlahsRuntime::renderIngressDropManifest() const {
+    // Measurement only, one line per switch and per port that lost a packet.
+    // A shared buffer is only shared if its loss is, and the endpoint-side
+    // retransmission counts cannot show that: go-back-N amplifies a gap by
+    // however long the sender took to notice it.
+    std::ostringstream manifest;
+    const auto render = [&](const std::vector<Switch*>& switches) {
+        for (Switch* base : switches) {
+            auto* ns_tm3 = dynamic_cast<NsTm3Switch*>(base);
+            if (ns_tm3 == nullptr || ns_tm3->buffer_counters().dropped_packets == 0) {
+                continue;
+            }
+            const std::string switch_name =
+                std::to_string(ns_tm3->getType()) + ":" + std::to_string(ns_tm3->getID());
+            for (std::size_t ingress_id = 0; ingress_id < ns_tm3->physical_ingress_count();
+                 ++ingress_id) {
+                const std::uint64_t dropped = ns_tm3->ingress_dropped_packets(
+                    static_cast<std::uint32_t>(ingress_id));
+                if (dropped == 0) {
+                    continue;
+                }
+                manifest << "[DCQCN manifest] ns_tm3_ingress_drops switch=" << switch_name
+                         << " ingress=" << ingress_id
+                         << " ns_tm3_ingress_dropped_packets=" << dropped
+                         << " ns_tm3_unreacted_ingress_dropped_packets="
+                         << ns_tm3->unreacted_ingress_dropped_packets(
+                                static_cast<std::uint32_t>(ingress_id))
+                         << '\n';
+            }
+        }
+    };
+    render(_impl->topology->switches_lp);
+    render(_impl->topology->switches_up);
+    render(_impl->topology->switches_c);
+    return manifest.str();
+}
+
 std::uint64_t DcqcnAtlahsRuntime::dropped_packet_count() const noexcept {
     return _impl->dropped_packets();
 }

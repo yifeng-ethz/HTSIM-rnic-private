@@ -95,6 +95,9 @@ public:
     // Per-switch and per-port dcqcn_pfc_* manifest lines (measurement
     // only); empty when no pause was ever sent.
     std::string renderPfcPortMetricsManifest() const;
+    // One manifest line per switch and per physical ingress that lost a
+    // packet, so a study can score how a congested buffer shared its loss.
+    std::string renderIngressDropManifest() const;
     std::uint64_t dropped_packet_count() const noexcept;
     std::uint64_t shared_pool_dropped_packet_count() const noexcept;
     std::uint64_t egress_domain_dropped_packet_count() const noexcept;

@@ -132,6 +132,69 @@ void NsTm3EgressSerializer::note_buffer_drop(Packet& pkt) {
     // are therefore the authoritative, domain-specific drop ledger.
 }
 
+NsTm3IngressArbiter::NsTm3IngressArbiter(NsTm3Switch& owner,
+                                         EventList& eventlist,
+                                         const string& name)
+    : EventSource(eventlist, name), _owner(owner) {}
+
+NsTm3IngressArbiter::~NsTm3IngressArbiter() {
+    if (_armed) {
+        EventList::cancelPendingSource(*this);
+    }
+}
+
+void NsTm3IngressArbiter::offer(Packet& pkt, uint32_t ingress_id) {
+    _offers.push_back(Offer{ingress_id, &pkt});
+    if (!_armed) {
+        _armed = true;
+        eventlist().sourceIsPendingRel(*this, 0);
+    }
+}
+
+void NsTm3IngressArbiter::doNextEvent() {
+    _armed = false;
+    if (_offers.empty()) {
+        return;
+    }
+
+    // Presenting empties the offer list, so an arrival that reaches this
+    // switch after the round has run simply opens the next one.
+    std::vector<Offer> round;
+    round.swap(_offers);
+
+    const uint32_t ports = static_cast<uint32_t>(_owner.physical_ingress_count());
+    if (ports == 0) {
+        throw std::logic_error("ns-tm3 ingress arbiter ran without a physical ingress");
+    }
+    const uint32_t first_claim = _next_grant_ingress % ports;
+    const auto distance_from_claim = [ports, first_claim](uint32_t ingress_id) {
+        return (ingress_id + ports - first_claim) % ports;
+    };
+    // Stable, so two packets from one port keep the order they arrived in.
+    std::stable_sort(round.begin(), round.end(),
+                     [&distance_from_claim](const Offer& left, const Offer& right) {
+                         return distance_from_claim(left.ingress_id) <
+                                distance_from_claim(right.ingress_id);
+                     });
+    // The grant exists only to break a tie between ports, so it moves only
+    // when there was a tie to break.  Advancing it on every round instead
+    // lets a third port that arrives alone between two contested rounds put
+    // the grant back where it started, which restores the fixed order the
+    // arbiter is here to remove: on the measured leaf the receiver's
+    // acknowledgements did exactly that, once per contested round.
+    const uint32_t winner = round.front().ingress_id;
+    const bool contested = std::any_of(
+        round.begin(), round.end(),
+        [winner](const Offer& offer) { return offer.ingress_id != winner; });
+    if (contested) {
+        _next_grant_ingress = (winner + 1) % ports;
+    }
+
+    for (const Offer& offer : round) {
+        _owner.present_to_pipeline(*offer.packet);
+    }
+}
+
 NsTm3Switch::NsTm3Switch(EventList& eventlist,
                          const string& name,
                          switch_type type,
@@ -145,6 +208,8 @@ NsTm3Switch::NsTm3Switch(EventList& eventlist,
     if (_shared_buffer_capacity <= 0) {
         throw std::invalid_argument("ns-tm3 shared-buffer capacity must be positive");
     }
+    _ingress_arbiter =
+        std::make_unique<NsTm3IngressArbiter>(*this, eventlist, name + "-ingress-arbiter");
 }
 
 NsTm3Switch::~NsTm3Switch() = default;
@@ -228,7 +293,25 @@ PacketSink* NsTm3Switch::create_physical_ingress(const string& name) {
     auto ingress = std::make_unique<NsTm3IngressPort>(*this, ingress_id, name);
     PacketSink* result = ingress.get();
     _physical_ingresses.push_back(std::move(ingress));
+    _ingress_dropped_packets.push_back(0);
     return result;
+}
+
+uint64_t NsTm3Switch::ingress_dropped_packets(uint32_t ingress_id) const {
+    if (ingress_id >= _ingress_dropped_packets.size()) {
+        throw std::out_of_range("unknown ns-tm3 physical ingress");
+    }
+    return _ingress_dropped_packets[ingress_id];
+}
+
+uint64_t NsTm3Switch::unreacted_ingress_dropped_packets(uint32_t ingress_id) const {
+    if (!_loss_notification_seen) {
+        return ingress_dropped_packets(ingress_id);
+    }
+    if (ingress_id >= _unreacted_ingress_dropped_packets.size()) {
+        throw std::out_of_range("unknown ns-tm3 physical ingress");
+    }
+    return _unreacted_ingress_dropped_packets[ingress_id];
 }
 
 void NsTm3Switch::receive_from_physical_ingress(Packet& pkt, uint32_t ingress_id) {
@@ -244,8 +327,17 @@ void NsTm3Switch::receive_from_physical_ingress(Packet& pkt, uint32_t ingress_id
     if (_dcqcn_policy != nullptr) {
         _dcqcn_policy->observe_physical_ingress(pkt, ingress_id);
     }
+    if (!_loss_notification_seen && pkt.type() == ROCENACK) {
+        // Measurement only.  The first negative acknowledgement to cross
+        // this switch is the moment its senders stop being equal-rate.
+        _loss_notification_seen = true;
+        _unreacted_ingress_dropped_packets = _ingress_dropped_packets;
+    }
 
-    schedule_through_switch_pipeline(pkt);
+    // The shared switch pipeline takes one packet at a time, so ports that
+    // deliver in the same picosecond are arbitrated before it, not by the
+    // order the simulator happened to deliver them in.
+    _ingress_arbiter->offer(pkt, ingress_id);
 }
 
 void NsTm3Switch::receivePacket(Packet& pkt) {
@@ -312,6 +404,7 @@ void NsTm3Switch::enqueue(Packet& pkt, uint32_t ingress_id, NsTm3EgressSerialize
         _buffer_counters.dropped_bytes += packet_bytes;
         _buffer_counters.shared_pool_dropped_packets++;
         _buffer_counters.shared_pool_dropped_bytes += packet_bytes;
+        _ingress_dropped_packets.at(ingress_id)++;
         egress.note_buffer_drop(pkt);
         emit_queue_observation(NsTm3QueueTransition::Dropped, packet);
         pkt.free();
@@ -323,6 +416,7 @@ void NsTm3Switch::enqueue(Packet& pkt, uint32_t ingress_id, NsTm3EgressSerialize
         _buffer_counters.dropped_bytes += packet_bytes;
         _buffer_counters.egress_domain_dropped_packets++;
         _buffer_counters.egress_domain_dropped_bytes += packet_bytes;
+        _ingress_dropped_packets.at(ingress_id)++;
         egress.note_buffer_drop(pkt);
         emit_queue_observation(NsTm3QueueTransition::Dropped, packet);
         pkt.free();
