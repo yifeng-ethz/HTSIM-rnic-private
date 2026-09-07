@@ -1050,4 +1050,34 @@ TEST(RnicCollectiveNetworkRuntimeTest, DuplicateLateRetryIsIgnoredBeforeAttemptT
     EXPECT_EQ(flow.maximum_retry_attempt_observed, 2U);
 }
 
+TEST(RnicCollectiveNetworkRuntimeTest, ResolvingOnePacketKeepsAnotherPacketsWatchdogArmed) {
+    TwoTierCollectiveFixture fixture;
+    auto config = fixture.runtimeConfig();
+    config.maximum_retransmissions = 2;
+    config.retransmission_rto_ps = timeFromUs(20.0);
+    const auto rto = config.retransmission_rto_ps;
+    RnicCollectiveNetworkRuntime runtime(fixture.events, *fixture.topology, std::move(config));
+    std::vector<AtlahsFlowId> completions;
+    runtime.setup(32, [&](AtlahsFlowId id) { completions.push_back(id); });
+    constexpr AtlahsFlowId delayed = 0x70000000cULL;
+    constexpr AtlahsFlowId resolved = 0x70000000dULL;
+    RnicCollectiveNetworkRuntimeTestPeer::dropOriginalData(runtime, delayed, 0);
+    RnicCollectiveNetworkRuntimeTestPeer::dropDataAttempt(runtime, delayed, 0, 1);
+    RnicCollectiveNetworkRuntimeTestPeer::dropOriginalData(runtime, resolved, 0);
+    runtime.send({delayed, 0, 31, 500, EventList::now(), 15});
+    runtime.send({resolved, 1, 30, 500, EventList::now(), 16});
+    fixture.stepUntil([&] { return runtime.flow(resolved).receiver_retired; });
+    EXPECT_FALSE(runtime.flow(delayed).receiver_retired);
+    fixture.drainRuntime(runtime);
+    EXPECT_EQ(completions, (std::vector<AtlahsFlowId>{resolved, delayed}));
+    EXPECT_EQ(runtime.flow(resolved).deterministic_retransmissions, 1U);
+    EXPECT_EQ(runtime.flow(delayed).deterministic_retransmissions, 2U);
+    const auto first = RnicCollectiveNetworkRuntimeTestPeer::retryDispatch(runtime, delayed, 1);
+    const auto second = RnicCollectiveNetworkRuntimeTestPeer::retryDispatch(runtime, delayed, 2);
+    ASSERT_TRUE(first.has_value());
+    ASSERT_TRUE(second.has_value());
+    EXPECT_GE(*second, *first + rto);
+    EXPECT_NO_THROW(runtime.validateQuiescent());
+}
+
 }  // namespace

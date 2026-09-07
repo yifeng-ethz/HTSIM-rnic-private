@@ -641,7 +641,11 @@ struct RnicCollectiveNetworkRuntime::Impl {
     std::multimap<TimePs, SerializedFrame> pending_launches;
     std::multimap<TimePs, GapDecision> pending_gap_decisions;
     std::multimap<TimePs, AtlahsFlowId> pending_tail_gap_audits;
-    std::multimap<TimePs, RetryTimeout> pending_retry_timeouts;
+    using RetryTimeoutQueue = std::multimap<TimePs, RetryTimeout>;
+    RetryTimeoutQueue pending_retry_timeouts;
+    // Lookup references only; the time-ordered queue remains the authority.
+    std::map<std::pair<AtlahsFlowId, std::uint64_t>,
+             std::vector<RetryTimeoutQueue::iterator>> retry_timeouts_by_packet;
     // Sender-local dwnd boundaries at which a held window snapshot becomes
     // the pacing rate.
     std::multimap<TimePs, AtlahsFlowId> pending_rate_activations;
@@ -1874,14 +1878,23 @@ void RnicCollectiveNetworkRuntime::Impl::authorizeRetry(FlowState& flow,
 void RnicCollectiveNetworkRuntime::Impl::cancelRetryTimeouts(AtlahsFlowId flow_id,
                                                              std::uint64_t packet_index,
                                                              std::uint32_t through_attempt) {
-    auto timeout = pending_retry_timeouts.begin();
-    while (timeout != pending_retry_timeouts.end()) {
-        if (timeout->second.flow_id == flow_id && timeout->second.packet_index == packet_index &&
-            timeout->second.transmission_attempt <= through_attempt) {
-            timeout = pending_retry_timeouts.erase(timeout);
+    const auto indexed = retry_timeouts_by_packet.find({flow_id, packet_index});
+    if (indexed == retry_timeouts_by_packet.end()) {
+        return;
+    }
+    auto& entries = indexed->second;
+    auto reference = entries.begin();
+    while (reference != entries.end()) {
+        const auto timeout = *reference;
+        if (timeout->second.transmission_attempt <= through_attempt) {
+            pending_retry_timeouts.erase(timeout);
+            reference = entries.erase(reference);
         } else {
-            ++timeout;
+            ++reference;
         }
+    }
+    if (entries.empty()) {
+        retry_timeouts_by_packet.erase(indexed);
     }
 }
 
@@ -1948,6 +1961,20 @@ void RnicCollectiveNetworkRuntime::Impl::processDueRetryTimeouts(TimePs now_ps) 
             throw std::logic_error("rnic-cn retry timeout escaped its deadline");
         }
         due.push_back(timeout->second);
+        const auto key = std::make_pair(timeout->second.flow_id, timeout->second.packet_index);
+        const auto indexed = retry_timeouts_by_packet.find(key);
+        if (indexed == retry_timeouts_by_packet.end()) {
+            throw std::logic_error("rnic-cn due retry timeout lost its packet index");
+        }
+        auto& entries = indexed->second;
+        const auto reference = std::find(entries.begin(), entries.end(), timeout);
+        if (reference == entries.end()) {
+            throw std::logic_error("rnic-cn due retry timeout lost its queue reference");
+        }
+        entries.erase(reference);
+        if (entries.empty()) {
+            retry_timeouts_by_packet.erase(indexed);
+        }
     }
     pending_retry_timeouts.erase(pending_retry_timeouts.begin(), due_end);
 
@@ -2900,10 +2927,11 @@ bool RnicCollectiveNetworkRuntime::Impl::dispatchData(TimePs now_ps) {
             // normal-path receiver inference and it does not make control
             // packets reliable; a routed GAP_RESOLVED or newer GAP_NACK is
             // still required to cancel/supersede it before expiry.
-            pending_retry_timeouts.emplace(
+            const auto timeout = pending_retry_timeouts.emplace(
                 checkedAdd(opportunity.end_ps, config.retransmission_rto_ps,
                            "rnic-cn retransmission RTO overflow"),
                 RetryTimeout{flow.request.flow_id, data.packet_index, data.transmission_attempt});
+            retry_timeouts_by_packet[{flow.request.flow_id, data.packet_index}].push_back(timeout);
             flow.first_retry_dispatch_ps.emplace(data.transmission_attempt, now_ps);
             if (!first_retransmission_dispatch_ps.has_value()) {
                 first_retransmission_dispatch_ps = now_ps;
@@ -3064,6 +3092,9 @@ bool RnicCollectiveNetworkRuntime::Impl::hasPendingWork() const noexcept {
 }
 
 void RnicCollectiveNetworkRuntime::Impl::validateQuiescent() const {
+    if (!retry_timeouts_by_packet.empty()) {
+        throw std::logic_error("rnic-cn quiescence retains retry timeout lookup entries");
+    }
     if (failed) {
         throw std::logic_error("failed rnic-cn runtime cannot be declared quiescent");
     }
