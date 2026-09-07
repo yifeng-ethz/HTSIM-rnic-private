@@ -8,6 +8,13 @@
 
 #include "rnic_profile.h"
 
+enum class RnicCnControlRecovery { None, Headroom };
+
+const char* rnicCnControlRecoveryName(RnicCnControlRecovery recovery);
+std::uint64_t rnicCnControlAdmittedFanIn(std::uint64_t headroom_bytes,
+                                      std::uint64_t messages_per_flow,
+                                      std::uint64_t control_wire_bytes);
+
 enum class RnicAtlahsGoalRankMapping {
     Auto,
     GpuRank,
@@ -39,6 +46,9 @@ struct RnicAtlahsCollectiveCliOptions {
     std::uint64_t control_deadline_ps = 10000000;
     std::uint32_t margin_ppm = 900000;
     std::uint64_t control_wire_bytes = 64;
+    RnicCnControlRecovery control_recovery = RnicCnControlRecovery::None;
+    std::uint64_t control_headroom_bytes = 131072;
+    std::uint64_t control_messages_per_flow = 32;
     std::uint64_t ring_delay_window_ps = 4096000;
     std::uint64_t ring_release_tick_ps = 16000;
     std::uint64_t ring_wire_capacity_bytes = UINT64_C(1) << 20;
@@ -85,6 +95,9 @@ struct RnicAtlahsExplicitCliOptions {
     bool control_deadline_ps = false;
     bool margin_ppm = false;
     bool control_wire_bytes = false;
+    bool control_recovery = false;
+    bool control_headroom_bytes = false;
+    bool control_messages_per_flow = false;
     bool ring_delay_window_ps = false;
     bool ring_release_tick_ps = false;
     bool ring_wire_capacity_bytes = false;

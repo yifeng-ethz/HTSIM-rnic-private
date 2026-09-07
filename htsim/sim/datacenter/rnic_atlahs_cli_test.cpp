@@ -508,4 +508,57 @@ TEST(RnicAtlahsCliTest, UsageNamesOnlyCanonicalProfilesAndExactUnits) {
     EXPECT_EQ(usage.find("rnic-null"), std::string::npos);
 }
 
+TEST(RnicAtlahsCliTest, ControlRecoveryIsExplicitAndProfileChecked) {
+    const auto defaults = parse(baseArguments("rnic-cn"));
+    EXPECT_EQ(defaults.collective.control_recovery, RnicCnControlRecovery::None);
+    EXPECT_FALSE(defaults.explicitly_supplied.control_recovery);
+    for (const std::string mode : {"none", "headroom"}) {
+        auto arguments = baseArguments("rnic-cn");
+        append(arguments, "-rnic_cn_control_recovery", mode);
+        const auto options = parse(arguments);
+        EXPECT_EQ(rnicCnControlRecoveryName(options.collective.control_recovery), mode);
+        EXPECT_TRUE(options.explicitly_supplied.control_recovery);
+    }
+    for (const std::string profile : {"rnic-nn", "rnic-nn-fluid", "rnic-ss"}) {
+        auto arguments = baseArguments(profile);
+        append(arguments, "-rnic_cn_control_recovery", "none");
+        EXPECT_THROW(parse(arguments), std::invalid_argument);
+    }
+    auto invalid = baseArguments("rnic-cn");
+    append(invalid, "-rnic_cn_control_recovery", "retry");
+    EXPECT_THROW(parse(invalid), std::invalid_argument);
+    for (const std::string flag : {"-rnic_cn_control_headroom_bytes",
+                                  "-rnic_cn_control_messages_per_flow"}) {
+        auto off = baseArguments("rnic-cn");
+        append(off, flag, "64");
+        EXPECT_THROW(parse(off), std::invalid_argument);
+        for (const std::string value : {"0", "-1", "18446744073709551616"}) {
+            auto arguments = baseArguments("rnic-cn");
+            append(arguments, "-rnic_cn_control_recovery", "headroom");
+            append(arguments, flag, value);
+            EXPECT_THROW(parse(arguments), std::invalid_argument);
+        }
+    }
+    auto sized = baseArguments("rnic-cn");
+    append(sized, "-rnic_cn_control_recovery", "headroom");
+    append(sized, "-rnic_cn_control_headroom_bytes", "6144");
+    append(sized, "-rnic_cn_control_messages_per_flow", "2");
+    const auto options = parse(sized);
+    EXPECT_EQ(options.collective.control_headroom_bytes, 6144U);
+    EXPECT_EQ(options.collective.control_messages_per_flow, 2U);
+    EXPECT_TRUE(options.explicitly_supplied.control_headroom_bytes);
+    EXPECT_TRUE(options.explicitly_supplied.control_messages_per_flow);
+    EXPECT_NE(rnicAtlahsCliUsage("htsim_rnic").find("none|headroom"), std::string::npos);
+}
+
+TEST(RnicAtlahsCliTest, ControlSizingUsesExactFloorWithoutMultiplicationOverflow) {
+    EXPECT_EQ(rnicCnControlAdmittedFanIn(131072, 32, 64), 64U);
+    EXPECT_EQ(rnicCnControlAdmittedFanIn(63, 1, 64), 0U);
+    EXPECT_EQ(rnicCnControlAdmittedFanIn(64, 1, 64), 1U);
+    EXPECT_EQ(rnicCnControlAdmittedFanIn(131072, 32, 96), 42U);
+    EXPECT_EQ(rnicCnControlAdmittedFanIn(128, UINT64_MAX, 64), 0U);
+    EXPECT_THROW(rnicCnControlAdmittedFanIn(128, 0, 64), std::invalid_argument);
+    EXPECT_THROW(rnicCnControlAdmittedFanIn(128, 1, 0), std::invalid_argument);
+}
+
 }  // namespace

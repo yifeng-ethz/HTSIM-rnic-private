@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <memory>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -810,6 +811,132 @@ TEST(NsTm3SwitchTest, ExplicitlyRejectsPauseQueueModes) {
 
         EXPECT_THROW(FatTreeTopology(&cfg, nullptr, &eventlist, nullptr), std::invalid_argument);
     }
+}
+
+class ControlLifecycleObserver final : public RnicCollectivePacketLifecycleObserver {
+public:
+    void observe(const RnicCollectivePacketObservation& observation) noexcept override {
+        if (observation.lifecycle == RnicCollectivePacketLifecycle::ENDPOINT_CONSUMED) {
+            ++consumed;
+        } else if (observation.lifecycle == RnicCollectivePacketLifecycle::FABRIC_DROP) {
+            ++dropped;
+        }
+    }
+    uint64_t consumed{0};
+    uint64_t dropped{0};
+};
+
+class ControlEndpoint final : public PacketSink {
+public:
+    void receivePacket(Packet& packet) override {
+        if (auto* control = dynamic_cast<RnicCollectivePacket*>(&packet)) {
+            control->consumeAtEndpoint();
+        }
+    }
+    const string& nodename() override { return name; }
+    string name{"control-endpoint"};
+};
+
+RnicCollectivePacket* makeControl(RnicCollectivePacketKind kind, PacketFlow& flow,
+                                  const Route& route, packetid_t id,
+                                  std::shared_ptr<ControlLifecycleObserver> observer) {
+    using Kind = RnicCollectivePacketKind;
+    const RnicCollectiveGrant grant{1, 1, 1000000, kLinkSpeed, 1000000,
+        kind == Kind::ACCEPT ? RnicCollectiveGrantKind::Accept : RnicCollectiveGrantKind::Update,
+        0, 0};
+    switch (kind) {
+        case Kind::DECLARE:
+            return RnicCollectivePacket::newDeclare(flow, route, id, 1, 0, 1, 64,
+                                                    {1000000}, observer);
+        case Kind::NFLOW_UPDATE:
+            return RnicCollectivePacket::newNflowUpdate(flow, route, id, 1, 0, 1, 64,
+                                                        {500000}, observer);
+        case Kind::ACCEPT:
+            return RnicCollectivePacket::newAccept(flow, route, id, 0, 1, 64, grant, observer);
+        case Kind::GRANT_UPDATE:
+            return RnicCollectivePacket::newGrantUpdate(flow, route, id, 0, 1, 64, grant, observer);
+        case Kind::GAP_NACK:
+            return RnicCollectivePacket::newGapNack(flow, route, id, 1, 0, 1, 64,
+                                                    {0, 0, RnicPacketExtent(64, 128), 1}, observer);
+        case Kind::GAP_RESOLVED:
+            return RnicCollectivePacket::newGapResolved(flow, route, id, 1, 0, 1, 64,
+                {0, 0, RnicPacketExtent(64, 128), 1}, observer);
+        case Kind::RETIRE:
+            return RnicCollectivePacket::newRetire(flow, route, id, 1, 0, 1, 64,
+                                                    {{64, 128, 1}, 1000000}, observer);
+        case Kind::DATA: break;
+    }
+    throw std::invalid_argument("control fixture requires a control kind");
+}
+
+TEST(NsTm3SwitchTest, ControlReservePreventsEveryKindOfAdmissionDropAndExhaustsExactly) {
+    for (int kind = 1; kind <= 7; ++kind) {
+        for (mem_b base : {64, 128}) {
+            for (mem_b reserve : {0, 64, 128}) {
+                for (bool egress_domain : {false, true}) {
+                    SCOPED_TRACE(::testing::Message() << kind << ',' << base << ','
+                                                     << reserve << ',' << egress_domain);
+                    NsTm3Harness harness(egress_domain ? 2 * base : base);
+                    auto& serializer = harness.add_egress();
+                    auto& ingress = harness.add_ingress("ingress");
+                    harness.traffic_manager->set_egress_buffer_capacity(base);
+                    harness.traffic_manager->set_control_headroom_capacity(reserve);
+                    ControlEndpoint endpoint;
+                    Route route;
+                    route.push_back(&serializer);
+                    route.push_back(&endpoint);
+                    PacketFlow flow(nullptr);
+                    TestPacket in_service(flow, route, 1, Packet::PRIO_LO, base);
+                    TestPacket buffered(flow, route, 2, Packet::PRIO_LO, base);
+                    TestPacket excess_data(flow, route, 3, Packet::PRIO_LO, 64);
+                    TestPacket unclassified_high(flow, route, 4, Packet::PRIO_HI, 64);
+                    auto observer = std::make_shared<ControlLifecycleObserver>();
+                    ingress.receivePacket(in_service);
+                    ingress.receivePacket(buffered);
+                    for (packetid_t id = 5; id < 8; ++id) {
+                        ingress.receivePacket(*makeControl(
+                            static_cast<RnicCollectivePacketKind>(kind), flow, route, id, observer));
+                    }
+                    ingress.receivePacket(excess_data);
+                    ingress.receivePacket(unclassified_high);
+                    NsTm3Harness::drain_all_events();
+                    EXPECT_EQ(observer->consumed, static_cast<uint64_t>(reserve / 64));
+                    EXPECT_EQ(observer->dropped, static_cast<uint64_t>(3 - reserve / 64));
+                    EXPECT_TRUE(excess_data.dropped);
+                    EXPECT_TRUE(unclassified_high.dropped);
+                    EXPECT_EQ(harness.traffic_manager->shared_buffer_occupancy(), 0);
+                    EXPECT_EQ(harness.traffic_manager->control_headroom_occupancy(), 0);
+                    EXPECT_EQ(harness.traffic_manager->control_headroom_egress_peak(), reserve);
+                    EXPECT_EQ(harness.traffic_manager->control_headroom_admissions()[kind],
+                              static_cast<uint64_t>(reserve / 64));
+                    const auto& counters = harness.traffic_manager->buffer_counters();
+                    EXPECT_EQ(counters.admitted_packets, counters.dequeued_packets);
+                    EXPECT_EQ(counters.admitted_bytes, counters.dequeued_bytes);
+                    EXPECT_EQ(counters.dropped_packets, static_cast<uint64_t>(5 - reserve / 64));
+                    EXPECT_EQ(egress_domain ? counters.shared_pool_dropped_packets
+                                            : counters.egress_domain_dropped_packets, 0U);
+                }
+            }
+        }
+    }
+}
+
+TEST(NsTm3SwitchTest, ControlReserveRejectsOverflowAndChangesAfterTraffic) {
+    NsTm3Harness harness;
+    auto& serializer = harness.add_egress();
+    auto& ingress = harness.add_ingress("ingress");
+    EXPECT_THROW(harness.traffic_manager->set_control_headroom_capacity(-1), std::invalid_argument);
+    EXPECT_THROW(harness.traffic_manager->set_control_headroom_capacity(
+        std::numeric_limits<mem_b>::max()), std::invalid_argument);
+    harness.traffic_manager->set_control_headroom_capacity(128);
+    RecordingSink sink;
+    Route route = route_via(serializer, sink);
+    PacketFlow flow(nullptr);
+    TestPacket packet(flow, route, 1, Packet::PRIO_LO);
+    ingress.receivePacket(packet);
+    EXPECT_THROW(harness.traffic_manager->set_control_headroom_capacity(64), std::logic_error);
+    NsTm3Harness::drain_all_events();
+    EXPECT_THROW(harness.traffic_manager->set_control_headroom_capacity(64), std::logic_error);
 }
 
 }  // namespace

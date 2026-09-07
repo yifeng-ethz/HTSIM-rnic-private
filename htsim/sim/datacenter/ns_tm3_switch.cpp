@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cassert>
 #include <iterator>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -272,12 +273,29 @@ void NsTm3Switch::set_egress_buffer_capacity(mem_b capacity) {
     _egress_buffer_capacity = capacity;
 }
 
+void NsTm3Switch::set_control_headroom_capacity(mem_b capacity) {
+    if (capacity < 0 || capacity >
+        (std::numeric_limits<mem_b>::max() - _shared_buffer_capacity) /
+            static_cast<mem_b>(std::max<size_t>(1, _egresses.size()))) {
+        throw std::invalid_argument("ns-tm3 control headroom exceeds physical storage range");
+    }
+    if (_buffer_counters.admitted_packets != 0 || !_pipeline_ingress.empty()) {
+        throw std::logic_error("ns-tm3 control headroom must be configured before traffic");
+    }
+    _control_headroom_capacity = capacity;
+}
+
 int NsTm3Switch::addPort(BaseQueue* queue) {
     auto* serializer = dynamic_cast<NsTm3EgressSerializer*>(queue);
     if (serializer == nullptr) {
         throw std::invalid_argument("ns-tm3 switch ports must be physical egress serializers");
     }
 
+    if (_control_headroom_capacity >
+        (std::numeric_limits<mem_b>::max() - _shared_buffer_capacity) /
+            static_cast<mem_b>(_egresses.size() + 1)) {
+        throw std::invalid_argument("ns-tm3 additional port overflows control storage");
+    }
     const int egress_id = FatTreeSwitch::addPort(queue);
     serializer->bind(*this, static_cast<uint32_t>(egress_id));
 
@@ -406,29 +424,44 @@ void NsTm3Switch::enqueue(Packet& pkt, uint32_t ingress_id, NsTm3EgressSerialize
     EgressState& state = egress_state(egress.egress_id());
     const PacketSummary packet{ingress_id,    egress.egress_id(), pkt.priority(),
                                pkt.flow_id(), pkt.id(),           packet_bytes};
-    if (packet_bytes > _shared_buffer_capacity ||
-        _shared_buffer_occupancy > _shared_buffer_capacity - packet_bytes) {
-        _buffer_counters.dropped_packets++;
-        _buffer_counters.dropped_bytes += packet_bytes;
-        _buffer_counters.shared_pool_dropped_packets++;
-        _buffer_counters.shared_pool_dropped_bytes += packet_bytes;
-        _ingress_dropped_packets.at(ingress_id)++;
-        egress.note_buffer_drop(pkt);
-        emit_queue_observation(NsTm3QueueTransition::Dropped, packet);
-        pkt.free();
-        return;
-    }
-    if (packet_bytes > _egress_buffer_capacity ||
-        state.buffered_bytes > _egress_buffer_capacity - packet_bytes) {
-        _buffer_counters.dropped_packets++;
-        _buffer_counters.dropped_bytes += packet_bytes;
-        _buffer_counters.egress_domain_dropped_packets++;
-        _buffer_counters.egress_domain_dropped_bytes += packet_bytes;
-        _ingress_dropped_packets.at(ingress_id)++;
-        egress.note_buffer_drop(pkt);
-        emit_queue_observation(NsTm3QueueTransition::Dropped, packet);
-        pkt.free();
-        return;
+    const mem_b shared_base_bytes = _shared_buffer_occupancy - _control_headroom_occupancy;
+    const mem_b egress_base_bytes = state.buffered_bytes - state.control_headroom_bytes;
+    const bool shared_full = packet_bytes > _shared_buffer_capacity ||
+                            shared_base_bytes > _shared_buffer_capacity - packet_bytes;
+    const bool egress_full = packet_bytes > _egress_buffer_capacity ||
+                            egress_base_bytes > _egress_buffer_capacity - packet_bytes;
+    if (shared_full || egress_full) {
+        auto* control = _control_headroom_capacity == 0
+                            ? nullptr : dynamic_cast<RnicCollectivePacket*>(&pkt);
+        const bool protected_control = control != nullptr &&
+            control->kind() != RnicCollectivePacketKind::DATA &&
+            packet_bytes <= _control_headroom_capacity &&
+            state.control_headroom_bytes <= _control_headroom_capacity - packet_bytes;
+        if (protected_control) {
+            if (!state.control_headroom_packets.insert(&pkt).second) {
+                throw std::logic_error("duplicate ns-tm3 control reserve admission");
+            }
+            state.control_headroom_bytes += packet_bytes;
+            _control_headroom_occupancy += packet_bytes;
+            _control_headroom_egress_peak =
+                std::max(_control_headroom_egress_peak, state.control_headroom_bytes);
+            _control_headroom_admissions.at(static_cast<size_t>(control->kind()))++;
+        } else {
+            _buffer_counters.dropped_packets++;
+            _buffer_counters.dropped_bytes += packet_bytes;
+            if (shared_full) {
+                _buffer_counters.shared_pool_dropped_packets++;
+                _buffer_counters.shared_pool_dropped_bytes += packet_bytes;
+            } else {
+                _buffer_counters.egress_domain_dropped_packets++;
+                _buffer_counters.egress_domain_dropped_bytes += packet_bytes;
+            }
+            _ingress_dropped_packets.at(ingress_id)++;
+            egress.note_buffer_drop(pkt);
+            emit_queue_observation(NsTm3QueueTransition::Dropped, packet);
+            pkt.free();
+            return;
+        }
     }
 
     state.traffic_classes[traffic_class(pkt.priority())].packets_by_ingress[ingress_id].push_back(
@@ -546,6 +579,14 @@ void NsTm3Switch::schedule_egress(uint32_t egress_id) {
         throw std::logic_error("ns-tm3 dequeued packet does not target its serializer");
     }
 
+    if (state.control_headroom_packets.erase(packet) != 0) {
+        if (state.control_headroom_bytes < packet_bytes ||
+            _control_headroom_occupancy < packet_bytes) {
+            throw std::logic_error("ns-tm3 control headroom accounting underflow");
+        }
+        state.control_headroom_bytes -= packet_bytes;
+        _control_headroom_occupancy -= packet_bytes;
+    }
     state.buffered_bytes -= packet_bytes;
     _shared_buffer_occupancy -= packet_bytes;
     _buffer_counters.dequeued_packets++;

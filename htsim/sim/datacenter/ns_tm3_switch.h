@@ -4,6 +4,7 @@
 
 #include "fat_tree_switch.h"
 #include "queue.h"
+#include "rnic_collective_packet.h"
 
 #include <array>
 #include <cstdint>
@@ -13,6 +14,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -212,6 +214,16 @@ public:
     void set_voq_arbitration(NsTm3VoqArbitration arbitration);
     NsTm3VoqArbitration voq_arbitration() const noexcept { return _voq_arbitration; }
 
+    // Only collective controls rejected by a base domain may use this
+    // additional storage. DATA admission continues to use the base domains.
+    void set_control_headroom_capacity(mem_b capacity);
+    mem_b control_headroom_capacity() const { return _control_headroom_capacity; }
+    mem_b control_headroom_occupancy() const { return _control_headroom_occupancy; }
+    mem_b control_headroom_egress_peak() const { return _control_headroom_egress_peak; }
+    const std::array<uint64_t, 8>& control_headroom_admissions() const {
+        return _control_headroom_admissions;
+    }
+
     mem_b shared_buffer_capacity() const { return _shared_buffer_capacity; }
     // The shared capacity is one switch-wide physical pool.  This separate
     // cap bounds the switch-owned VoQ bytes mapped to any one physical
@@ -272,6 +284,8 @@ private:
         NsTm3EgressSerializer* serializer{nullptr};
         std::array<TrafficClassVoqs, kTrafficClassCount> traffic_classes;
         mem_b buffered_bytes{0};
+        mem_b control_headroom_bytes{0};
+        std::unordered_set<Packet*> control_headroom_packets;
         std::unordered_map<Packet*, simtime_picosec> enqueue_time_ps;
         NsTm3EgressStatistics statistics;
         std::optional<PacketSummary> active_packet;
@@ -294,6 +308,10 @@ private:
     mem_b _shared_buffer_occupancy{0};
     mem_b _shared_buffer_high_watermark{0};
     NsTm3BufferCounters _buffer_counters;
+    mem_b _control_headroom_capacity{0};
+    mem_b _control_headroom_occupancy{0};
+    mem_b _control_headroom_egress_peak{0};
+    std::array<uint64_t, 8> _control_headroom_admissions{};
 
     std::vector<std::unique_ptr<NsTm3IngressPort>> _physical_ingresses;
     std::vector<uint64_t> _ingress_admitted_packets;

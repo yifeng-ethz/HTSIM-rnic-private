@@ -9,6 +9,7 @@
 
 #include "fat_tree_topology.h"
 #include "ns_rosetta_switch.h"
+#include "ns_tm3_switch.h"
 #include "rnic_atlahs_driver.h"
 #include "rnic_collective_network_runtime.h"
 #include "rnic_fluid_manifold_runtime.h"
@@ -230,6 +231,26 @@ TEST(RnicAtlahsDriverTest, ManifoldManifestsExcludePhysicalTopology) {
         EXPECT_NE(manifest.find("manifold_queue=none"), std::string::npos);
         EXPECT_EQ(manifest.find("switch=ns-tm3"), std::string::npos);
     }
+}
+
+TEST(RnicAtlahsDriverTest, ControlHeadroomConfiguresPhysicalSwitchesAndReportsZeroCounters) {
+    EventList& event_list = testEventList();
+    auto options = optionsFor(RnicProfile::CollectiveNetwork);
+    options.collective.control_recovery = RnicCnControlRecovery::Headroom;
+    auto session = assembleRnicAtlahsProfile(event_list, options, 32);
+    for (auto* base : session->physicalTopology()->switches_lp) {
+        auto* sw = dynamic_cast<NsTm3Switch*>(base);
+        ASSERT_NE(sw, nullptr);
+        EXPECT_EQ(sw->shared_buffer_capacity(), 1048576);
+        EXPECT_EQ(sw->control_headroom_capacity(), 131072);
+    }
+    const auto manifest = renderRnicAtlahsModelManifest(options, goalLayout(), *session);
+    EXPECT_NE(manifest.find("rnic_cn_control_recovery=headroom"), std::string::npos);
+    EXPECT_NE(manifest.find("rnic_cn_control_admitted_fan_in=64"), std::string::npos);
+    EXPECT_NE(manifest.find("control_loss=bounded-headroom-then-fatal"), std::string::npos);
+    const auto counters = renderRnicControlRecoveryManifest(*session);
+    EXPECT_NE(counters.find("rnic_cn_control_headroom_admissions=0"), std::string::npos);
+    EXPECT_NE(counters.find("rnic_cn_control_headroom_remaining_bytes=0"), std::string::npos);
 }
 
 }  // namespace
