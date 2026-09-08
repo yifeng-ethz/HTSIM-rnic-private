@@ -372,6 +372,11 @@ std::string renderRnicAtlahsModelManifest(const RnicAtlahsCliOptions& options,
                  << options.collective.ns_tm3_shared_buffer_bytes << '\n';
         manifest << "[RNIC manifest] rnic_cn_data_recovery="
                  << rnicCnDataRecoveryName(options.collective.data_recovery)
+                 << " rnic_cn_probe_backoff="
+                 << (options.collective.data_recovery == RnicCnDataRecovery::None ? "none" :
+                     options.collective.data_recovery == RnicCnDataRecovery::Exponential
+                         ? "exponential" : "constant")
+                 << " rnic_cn_terminal_retry=legacy-timeout"
                  << " rnic_cn_retry_probe_windows=" << options.collective.retry_probe_windows
                  << " rnic_cn_initial_window="
                  << (options.collective.initial_window_bytes.has_value() ? "bounded" : "none")
@@ -384,11 +389,11 @@ std::string renderRnicAtlahsModelManifest(const RnicAtlahsCliOptions& options,
                  << " rnic_cn_recovery_release=actual-arrival-tick" << '\n';
         manifest << "[RNIC manifest] recovery=deterministic-gap-nack-retransmission"
                  << " late_admission="
-                 << (options.collective.data_recovery == RnicCnDataRecovery::Deadline
+                 << (options.collective.data_recovery != RnicCnDataRecovery::None
                          ? "authenticated-retry-at-arrival-tick" : "rejected-as-gap")
                  << " early_admission=hard-error"
                  << " overflow_admission="
-                 << (options.collective.data_recovery == RnicCnDataRecovery::Deadline
+                 << (options.collective.data_recovery != RnicCnDataRecovery::None
                          ? "strict-hard-error-late-retry-nack" : "hard-error")
                  << " gap_decision=post-resequence-same-timestamp"
                  << " gap_decision_epsilon_ps=0"

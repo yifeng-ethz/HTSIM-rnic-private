@@ -155,6 +155,15 @@ void validateCollectiveOptions(const RnicAtlahsCliOptions& options) {
     if (probe_interval > std::numeric_limits<std::uint64_t>::max()) {
         throw std::invalid_argument("retry probe interval overflows uint64_t");
     }
+    if (options.collective.data_recovery == RnicCnDataRecovery::Exponential &&
+        options.collective.maximum_retransmissions > 1) {
+        const auto longest = rnicCnRetryProbeIntervalPs(
+            options.collective.data_recovery, static_cast<std::uint64_t>(probe_interval),
+            options.collective.maximum_retransmissions - 1);
+        if (longest >= options.collective.retransmission_rto_ps) {
+            throw std::invalid_argument("legacy timeout must follow exponential probe deadlines");
+        }
+    }
     if (options.explicitly_supplied.initial_window_bytes !=
         options.explicitly_supplied.initial_window_fan_in) {
         throw std::invalid_argument("initial window bytes and fan-in must be supplied together");
@@ -440,8 +449,10 @@ RnicAtlahsCliOptions parseRnicAtlahsCli(int argc, const char* const argv[]) {
                 options.collective.data_recovery = RnicCnDataRecovery::None;
             } else if (value == "deadline") {
                 options.collective.data_recovery = RnicCnDataRecovery::Deadline;
+            } else if (value == "exponential") {
+                options.collective.data_recovery = RnicCnDataRecovery::Exponential;
             } else {
-                throw optionError(option, "expected none or deadline");
+                throw optionError(option, "expected none, deadline or exponential");
             }
             options.explicitly_supplied.data_recovery = true;
         } else if (option == "-rnic_cn_retry_probe_windows") {
@@ -622,7 +633,7 @@ std::string rnicAtlahsCliUsage(const std::string& program_name) {
              " [-rnic_cn_ns_tm3_buffer_bytes BYTES]"
              " [-rnic_cn_max_retransmissions N]"
              " [-rnic_cn_retransmission_rto_ps PS]"
-             " [-rnic_cn_data_recovery none|deadline]"
+             " [-rnic_cn_data_recovery none|deadline|exponential]"
              " [-rnic_cn_retry_probe_windows N]"
              " [-rnic_cn_initial_window_bytes BYTES -rnic_cn_initial_window_fan_in N]\n"
           << "rnic-ss: [-topo FILE]"
@@ -652,6 +663,7 @@ const char* rnicCnDataRecoveryName(RnicCnDataRecovery recovery) {
     switch (recovery) {
         case RnicCnDataRecovery::None: return "none";
         case RnicCnDataRecovery::Deadline: return "deadline";
+        case RnicCnDataRecovery::Exponential: return "exponential";
     }
     throw std::invalid_argument("unknown rnic-cn data recovery selection");
 }

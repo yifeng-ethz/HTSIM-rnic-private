@@ -605,4 +605,24 @@ TEST(RnicAtlahsCliTest, RejectsUnboundedIncompleteAndForeignRecoveryOptions) {
     }
 }
 
+TEST(RnicAtlahsCliTest, ExponentialRecoveryChecksLargestIntervalAndFallbackOrdering) {
+    auto arguments = baseArguments("rnic-cn");
+    append(arguments, "-rnic_cn_data_recovery", "exponential");
+    EXPECT_EQ(parse(arguments).collective.data_recovery, RnicCnDataRecovery::Exponential);
+    for (const auto retries : {"60", "66", "4294967295"}) {
+        auto invalid = arguments;
+        append(invalid, "-rnic_cn_max_retransmissions", retries);
+        EXPECT_THROW(parse(invalid), std::invalid_argument);
+    }
+    auto preempted = arguments;
+    append(preempted, "-rnic_cn_retransmission_rto_ps", "2560000000");
+    EXPECT_THROW(parse(preempted), std::invalid_argument);
+    EXPECT_EQ(rnicCnRetryProbeIntervalPs(RnicCnDataRecovery::Exponential, 40000000, 7),
+              2560000000ULL);
+    EXPECT_THROW(rnicCnRetryProbeIntervalPs(RnicCnDataRecovery::Exponential, UINT64_MAX, 2),
+                 std::invalid_argument);
+    EXPECT_THROW(rnicCnRetryProbeIntervalPs(RnicCnDataRecovery::Exponential, 1, 65),
+                 std::invalid_argument);
+}
+
 }  // namespace

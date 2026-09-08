@@ -165,6 +165,8 @@ private:
     void replayResolvedGapNackForTesting(AtlahsFlowId flow_id, std::uint64_t packet_index);
     void replayGapResolvedForTesting(AtlahsFlowId flow_id, std::uint64_t packet_index);
     bool initialGrantReceivedForTesting(AtlahsFlowId flow_id) const;
+    std::optional<std::uint64_t> terminalResolutionForTesting(
+        AtlahsFlowId flow_id, std::uint64_t packet_index) const;
     std::uint64_t maxOriginalReleaseForTesting(AtlahsFlowId flow_id) const;
     std::uint64_t finalOriginalReleaseForTesting(AtlahsFlowId flow_id) const;
     std::optional<std::uint64_t> publishedRetireDeadlineForTesting(AtlahsFlowId flow_id) const;

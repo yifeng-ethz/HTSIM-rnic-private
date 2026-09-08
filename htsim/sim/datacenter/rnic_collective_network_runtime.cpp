@@ -307,6 +307,7 @@ struct RnicCollectiveNetworkRuntime::Impl {
         std::uint32_t timeout_fired_through_attempt{0};
         std::uint32_t resolved_through_attempt{0};
         bool terminal_resolved{false};
+        std::optional<TimePs> terminal_resolution_ps;
         std::set<std::uint32_t> tail_probe_attempts;
     };
 
@@ -726,7 +727,8 @@ void RnicCollectiveNetworkRuntime::Impl::validateConfiguration() const {
         throw std::invalid_argument("rnic-cn retransmission RTO must be positive");
     }
     if (config.data_recovery != RnicCnDataRecovery::None &&
-        config.data_recovery != RnicCnDataRecovery::Deadline) {
+        config.data_recovery != RnicCnDataRecovery::Deadline &&
+        config.data_recovery != RnicCnDataRecovery::Exponential) {
         throw std::invalid_argument("rnic-cn unknown data recovery selection");
     }
     if (config.retry_probe_windows == 0 ||
@@ -736,6 +738,15 @@ void RnicCollectiveNetworkRuntime::Impl::validateConfiguration() const {
     }
     if (config.data_recovery == RnicCnDataRecovery::None && config.retry_probe_windows != 4) {
         throw std::invalid_argument("rnic-cn probe interval requires deadline recovery");
+    }
+    if (config.data_recovery == RnicCnDataRecovery::Exponential &&
+        config.maximum_retransmissions > 1) {
+        const auto longest = rnicCnRetryProbeIntervalPs(
+            config.data_recovery, config.retry_probe_windows * config.control_deadline_ps,
+            config.maximum_retransmissions - 1);
+        if (longest >= config.retransmission_rto_ps) {
+            throw std::invalid_argument("legacy timeout must follow exponential probe deadlines");
+        }
     }
     if (config.initial_window_bytes.has_value()) {
         if (config.initial_window_fan_in == 0 ||
@@ -1531,7 +1542,7 @@ void RnicCollectiveNetworkRuntime::Impl::processDataArrival(
         arrival.lifecycle_id,    arrival.flow_id, received.eta_ps,
         arrival.arrival_time_ps, received.extent,
     };
-    const bool recover_late = config.data_recovery == RnicCnDataRecovery::Deadline &&
+    const bool recover_late = config.data_recovery != RnicCnDataRecovery::None &&
         received.transmission_attempt != 0 && missing != flow.rx_missing_packets.end() &&
         arrival.arrival_time_ps >= received.eta_ps &&
         arrival.arrival_time_ps - received.eta_ps > config.ring_cam.delay_window_ps;
@@ -2004,11 +2015,12 @@ void RnicCollectiveNetworkRuntime::Impl::processGapResolvedArrival(const Endpoin
     }
     state.highest_authorized_attempt =
         std::max(state.highest_authorized_attempt, resolved.acknowledged_transmission_attempt);
-    if (config.data_recovery == RnicCnDataRecovery::Deadline) {
+    if (config.data_recovery != RnicCnDataRecovery::None) {
         // The physical ACK confirms the logical extent, including when an
         // older successful attempt overtakes a newer probe. Routed duplicates
         // still drain, but sender-side work for these bytes is terminal.
         state.terminal_resolved = true;
+        state.terminal_resolution_ps = now_ps;
         state.resolved_through_attempt = state.highest_authorized_attempt;
         cancelRetryTimeouts(flow.request.flow_id, resolved.packet_index,
                             std::numeric_limits<std::uint32_t>::max());
@@ -3128,8 +3140,13 @@ bool RnicCollectiveNetworkRuntime::Impl::dispatchData(TimePs now_ps) {
                            "rnic-cn retransmission RTO overflow"),
                 RetryTimeout{flow.request.flow_id, data.packet_index, data.transmission_attempt});
             retry_timeouts_by_packet[{flow.request.flow_id, data.packet_index}].push_back(timeout);
-            if (config.data_recovery == RnicCnDataRecovery::Deadline) {
-                const TimePs interval = config.retry_probe_windows * config.control_deadline_ps;
+            // No ninth retry is legal. The final physical attempt keeps its
+            // existing long timeout so delayed resolution can still arrive.
+            if (config.data_recovery != RnicCnDataRecovery::None &&
+                data.transmission_attempt < config.maximum_retransmissions) {
+                const TimePs interval = rnicCnRetryProbeIntervalPs(
+                    config.data_recovery, config.retry_probe_windows * config.control_deadline_ps,
+                    data.transmission_attempt);
                 const auto probe = pending_retry_timeouts.emplace(
                     checkedAdd(opportunity.end_ps, interval, "rnic-cn tail probe deadline overflow"),
                     RetryTimeout{flow.request.flow_id, data.packet_index,
@@ -3549,6 +3566,13 @@ void RnicCollectiveNetworkRuntime::dropDataAttemptForTesting(AtlahsFlowId flow_i
 void RnicCollectiveNetworkRuntime::duplicateOriginalDataForTesting(AtlahsFlowId flow_id,
                                                                    std::uint64_t packet_index) {
     _impl->duplicateOriginalDataForTesting(flow_id, packet_index);
+}
+
+std::optional<std::uint64_t> RnicCollectiveNetworkRuntime::terminalResolutionForTesting(
+    AtlahsFlowId flow_id, std::uint64_t packet_index) const {
+    const auto& states = _impl->requireFlow(flow_id).tx_retry_states;
+    const auto state = states.find(packet_index);
+    return state == states.end() ? std::nullopt : state->second.terminal_resolution_ps;
 }
 
 bool RnicCollectiveNetworkRuntime::initialGrantReceivedForTesting(AtlahsFlowId flow_id) const {
