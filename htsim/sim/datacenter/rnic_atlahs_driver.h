@@ -42,4 +42,6 @@ std::string renderRnicAtlahsModelManifest(
     const AtlahsHtsimApi::GoalLayout& goal_layout,
     const RnicAtlahsRuntimeAssembly& assembly);
 
+std::string renderRnicControlRecoveryManifest(const RnicAtlahsRuntimeAssembly& assembly);
+
 #endif  // RNIC_ATLAHS_DRIVER_H

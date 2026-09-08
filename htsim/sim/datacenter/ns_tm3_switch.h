@@ -4,6 +4,7 @@
 
 #include "fat_tree_switch.h"
 #include "queue.h"
+#include "rnic_collective_packet.h"
 
 #include <array>
 #include <cstdint>
@@ -13,6 +14,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -102,6 +104,41 @@ private:
     std::string _name;
 };
 
+// Several physical ingress ports can deliver a packet in the very same
+// picosecond, and the switch pipeline behind them is one shared queue that
+// has to take them one at a time.  The order it takes them in decides who
+// gets the buffer space a departing packet has just freed, because a
+// congested egress frees exactly one packet of room per packet time.  A
+// fixed order therefore hands every contested slot to the same port for as
+// long as the congestion lasts.  This arbiter presents same-instant
+// arrivals in a rotating port order instead, which is what an ingress
+// arbiter does in silicon and what a shared buffer needs if its loss is to
+// be shared.  A port that arrives alone is a round of one at the same
+// instant, so uncontested traffic keeps both its order and its timing.
+class NsTm3IngressArbiter : public EventSource {
+public:
+    NsTm3IngressArbiter(NsTm3Switch& owner, EventList& eventlist, const string& name);
+    ~NsTm3IngressArbiter() override;
+
+    // Takes one arrival for presentation at the end of the current instant.
+    void offer(Packet& pkt, uint32_t ingress_id);
+    void doNextEvent() override;
+    // The arbiter carries no payload of its own and never holds a packet
+    // across an instant, so it is not a traffic event.
+    bool isTraffic() override { return false; }
+
+private:
+    struct Offer {
+        uint32_t ingress_id;
+        Packet* packet;
+    };
+
+    NsTm3Switch& _owner;
+    std::vector<Offer> _offers;
+    bool _armed{false};
+    uint32_t _next_grant_ingress{0};
+};
+
 // An ns-tm3 egress has no independent packet buffer. It only represents
 // physical link serialization; all waiting packets remain in switch-owned
 // ingress/egress/class VoQs until this serializer becomes idle.
@@ -177,6 +214,16 @@ public:
     void set_voq_arbitration(NsTm3VoqArbitration arbitration);
     NsTm3VoqArbitration voq_arbitration() const noexcept { return _voq_arbitration; }
 
+    // Only collective controls rejected by a base domain may use this
+    // additional storage. DATA admission continues to use the base domains.
+    void set_control_headroom_capacity(mem_b capacity);
+    mem_b control_headroom_capacity() const { return _control_headroom_capacity; }
+    mem_b control_headroom_occupancy() const { return _control_headroom_occupancy; }
+    mem_b control_headroom_egress_peak() const { return _control_headroom_egress_peak; }
+    const std::array<uint64_t, 8>& control_headroom_admissions() const {
+        return _control_headroom_admissions;
+    }
+
     mem_b shared_buffer_capacity() const { return _shared_buffer_capacity; }
     // The shared capacity is one switch-wide physical pool.  This separate
     // cap bounds the switch-owned VoQ bytes mapped to any one physical
@@ -191,8 +238,26 @@ public:
     size_t physical_egress_count() const { return _egresses.size(); }
     const NsTm3EgressStatistics& egress_statistics(uint32_t egress_id) const;
     size_t physical_ingress_count() const { return _physical_ingresses.size(); }
+    // Drops charged to one physical ingress, over both admission domains.
+    // Whether a shared buffer shares its loss is a question only the switch
+    // can answer: an endpoint sees retransmissions, and go-back-N amplifies
+    // those by an amount that depends on when each sender learned of a gap.
+    uint64_t ingress_dropped_packets(uint32_t ingress_id) const;
+    // Packets this ingress got into the buffer. A port that lost nothing is
+    // invisible in a drop count alone, and a port that lost nothing while
+    // its neighbour lost everything is exactly the thing to look for.
+    uint64_t ingress_admitted_packets(uint32_t ingress_id) const;
+    // The same count, frozen when the first loss notification crossed this
+    // switch.  Before that moment no source has reacted, so every source is
+    // still offering at the rate it started with and admission is the only
+    // thing that can make the loss unequal.  Equal to the cumulative count
+    // while no notification has crossed.
+    uint64_t unreacted_ingress_dropped_packets(uint32_t ingress_id) const;
+    bool loss_notification_seen() const noexcept { return _loss_notification_seen; }
 
 private:
+    friend class NsTm3IngressArbiter;
+
     static constexpr size_t kTrafficClassCount = 3;
 
     struct PacketSummary {
@@ -219,12 +284,16 @@ private:
         NsTm3EgressSerializer* serializer{nullptr};
         std::array<TrafficClassVoqs, kTrafficClassCount> traffic_classes;
         mem_b buffered_bytes{0};
+        mem_b control_headroom_bytes{0};
+        std::unordered_set<Packet*> control_headroom_packets;
         std::unordered_map<Packet*, simtime_picosec> enqueue_time_ps;
         NsTm3EgressStatistics statistics;
         std::optional<PacketSummary> active_packet;
     };
 
     static size_t traffic_class(Packet::PktPriority priority);
+    // Only the ingress arbiter hands a packet to the shared switch pipeline.
+    void present_to_pipeline(Packet& pkt) { schedule_through_switch_pipeline(pkt); }
     NsTm3EgressSerializer& resolve_selected_egress(Packet& pkt);
     void enqueue(Packet& pkt, uint32_t ingress_id, NsTm3EgressSerializer& egress);
     std::optional<SelectedPacket> select_next_packet(EgressState& egress);
@@ -239,9 +308,18 @@ private:
     mem_b _shared_buffer_occupancy{0};
     mem_b _shared_buffer_high_watermark{0};
     NsTm3BufferCounters _buffer_counters;
+    mem_b _control_headroom_capacity{0};
+    mem_b _control_headroom_occupancy{0};
+    mem_b _control_headroom_egress_peak{0};
+    std::array<uint64_t, 8> _control_headroom_admissions{};
 
     std::vector<std::unique_ptr<NsTm3IngressPort>> _physical_ingresses;
+    std::vector<uint64_t> _ingress_admitted_packets;
+    std::vector<uint64_t> _ingress_dropped_packets;
+    std::vector<uint64_t> _unreacted_ingress_dropped_packets;
+    bool _loss_notification_seen{false};
     std::vector<EgressState> _egresses;
+    std::unique_ptr<NsTm3IngressArbiter> _ingress_arbiter;
     std::unordered_map<Packet*, uint32_t> _pipeline_ingress;
     std::unique_ptr<NsTm3DcqcnPolicy> _dcqcn_policy;
     std::shared_ptr<NsTm3QueueObserver> _queue_observer;

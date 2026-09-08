@@ -905,4 +905,27 @@ TEST(RnicNodeTest, SourceDispatchCompletionDoesNotImplyDestinationDelivery) {
     EXPECT_EQ(node.rxPort().deliveredWireBytes(10), 0u);
 }
 
+TEST(RnicRxPortTest, LateRecoveryAndNormalDataShareOneSerializer) {
+    RnicRxPort port(8000000000000ULL, {100, 10, 2000});
+    ASSERT_EQ(port.processArrival({1, 10, 0, 0, {936, 1000}}).admission,
+              RnicRingCamAdmission::Admitted);
+    const auto late = port.processRecoveryArrival({2, 11, 0, 101, {936, 1000}});
+    ASSERT_EQ(late.admission, RnicRingCamAdmission::Admitted);
+    ASSERT_EQ(late.serializations_scheduled_before_admission.size(), 1U);
+    EXPECT_EQ(late.serializations_scheduled_before_admission.front().serializer_start_ps, 100U);
+    EXPECT_EQ(late.serializations_scheduled_before_admission.front().serializer_end_ps, 1100U);
+    const auto recovery = port.advanceToWithCompletions(110);
+    ASSERT_EQ(recovery.serializations_scheduled.size(), 1U);
+    EXPECT_EQ(recovery.serializations_scheduled.front().serializer_start_ps, 1100U);
+    EXPECT_EQ(recovery.serializations_scheduled.front().serializer_end_ps, 2100U);
+    EXPECT_EQ(recovery.serializations_scheduled.front().release.packet.eta_ps, 0U);
+    EXPECT_EQ(port.deliveredPayloadBytes(10), 0U);
+    EXPECT_EQ(port.deliveredPayloadBytes(11), 0U);
+    port.advanceToWithCompletions(2100);
+    EXPECT_EQ(port.deliveredPayloadBytes(10), 936U);
+    EXPECT_EQ(port.deliveredPayloadBytes(11), 936U);
+    EXPECT_EQ(port.pendingSerializerWireBytes(), 0U);
+    EXPECT_FALSE(port.nextEventTimePs().has_value());
+}
+
 }  // namespace

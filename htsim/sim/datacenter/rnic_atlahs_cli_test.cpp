@@ -508,4 +508,121 @@ TEST(RnicAtlahsCliTest, UsageNamesOnlyCanonicalProfilesAndExactUnits) {
     EXPECT_EQ(usage.find("rnic-null"), std::string::npos);
 }
 
+TEST(RnicAtlahsCliTest, ControlRecoveryIsExplicitAndProfileChecked) {
+    const auto defaults = parse(baseArguments("rnic-cn"));
+    EXPECT_EQ(defaults.collective.control_recovery, RnicCnControlRecovery::None);
+    EXPECT_FALSE(defaults.explicitly_supplied.control_recovery);
+    for (const std::string mode : {"none", "headroom"}) {
+        auto arguments = baseArguments("rnic-cn");
+        append(arguments, "-rnic_cn_control_recovery", mode);
+        const auto options = parse(arguments);
+        EXPECT_EQ(rnicCnControlRecoveryName(options.collective.control_recovery), mode);
+        EXPECT_TRUE(options.explicitly_supplied.control_recovery);
+    }
+    for (const std::string profile : {"rnic-nn", "rnic-nn-fluid", "rnic-ss"}) {
+        auto arguments = baseArguments(profile);
+        append(arguments, "-rnic_cn_control_recovery", "none");
+        EXPECT_THROW(parse(arguments), std::invalid_argument);
+    }
+    auto invalid = baseArguments("rnic-cn");
+    append(invalid, "-rnic_cn_control_recovery", "retry");
+    EXPECT_THROW(parse(invalid), std::invalid_argument);
+    for (const std::string flag : {"-rnic_cn_control_headroom_bytes",
+                                  "-rnic_cn_control_messages_per_flow"}) {
+        auto off = baseArguments("rnic-cn");
+        append(off, flag, "64");
+        EXPECT_THROW(parse(off), std::invalid_argument);
+        for (const std::string value : {"0", "-1", "18446744073709551616"}) {
+            auto arguments = baseArguments("rnic-cn");
+            append(arguments, "-rnic_cn_control_recovery", "headroom");
+            append(arguments, flag, value);
+            EXPECT_THROW(parse(arguments), std::invalid_argument);
+        }
+    }
+    auto sized = baseArguments("rnic-cn");
+    append(sized, "-rnic_cn_control_recovery", "headroom");
+    append(sized, "-rnic_cn_control_headroom_bytes", "6144");
+    append(sized, "-rnic_cn_control_messages_per_flow", "2");
+    const auto options = parse(sized);
+    EXPECT_EQ(options.collective.control_headroom_bytes, 6144U);
+    EXPECT_EQ(options.collective.control_messages_per_flow, 2U);
+    EXPECT_TRUE(options.explicitly_supplied.control_headroom_bytes);
+    EXPECT_TRUE(options.explicitly_supplied.control_messages_per_flow);
+    EXPECT_NE(rnicAtlahsCliUsage("htsim_rnic").find("none|headroom"), std::string::npos);
+}
+
+TEST(RnicAtlahsCliTest, ControlSizingUsesExactFloorWithoutMultiplicationOverflow) {
+    EXPECT_EQ(rnicCnControlAdmittedFanIn(131072, 32, 64), 64U);
+    EXPECT_EQ(rnicCnControlAdmittedFanIn(63, 1, 64), 0U);
+    EXPECT_EQ(rnicCnControlAdmittedFanIn(64, 1, 64), 1U);
+    EXPECT_EQ(rnicCnControlAdmittedFanIn(131072, 32, 96), 42U);
+    EXPECT_EQ(rnicCnControlAdmittedFanIn(128, UINT64_MAX, 64), 0U);
+    EXPECT_THROW(rnicCnControlAdmittedFanIn(128, 0, 64), std::invalid_argument);
+    EXPECT_THROW(rnicCnControlAdmittedFanIn(128, 1, 0), std::invalid_argument);
+}
+
+TEST(RnicAtlahsCliTest, ParsesIndependentBoundedWindowAndDeadlineRecovery) {
+    auto arguments = baseArguments("rnic-cn");
+    append(arguments, "-rnic_cn_data_recovery", "deadline");
+    append(arguments, "-rnic_cn_retry_probe_windows", "2");
+    append(arguments, "-rnic_cn_initial_window_bytes", "0");
+    append(arguments, "-rnic_cn_initial_window_fan_in", "448");
+    const auto options = parse(arguments);
+    EXPECT_EQ(options.collective.data_recovery, RnicCnDataRecovery::Deadline);
+    EXPECT_EQ(options.collective.retry_probe_windows, 2U);
+    EXPECT_EQ(options.collective.initial_window_bytes, 0U);
+    EXPECT_EQ(options.collective.initial_window_fan_in, 448U);
+    EXPECT_EQ(options.collective.retransmission_rto_ps, 50000000000ULL);
+    EXPECT_EQ(options.collective.maximum_retransmissions, 8U);
+}
+
+TEST(RnicAtlahsCliTest, RejectsUnboundedIncompleteAndForeignRecoveryOptions) {
+    const std::vector<std::vector<std::string>> invalid = {
+        {"-rnic_cn_data_recovery", "unknown"},
+        {"-rnic_cn_retry_probe_windows", "2"},
+        {"-rnic_cn_data_recovery", "deadline", "-rnic_cn_retry_probe_windows", "0"},
+        {"-rnic_cn_initial_window_bytes", "0"},
+        {"-rnic_cn_initial_window_fan_in", "4"},
+        {"-rnic_cn_initial_window_bytes", "1", "-rnic_cn_initial_window_fan_in", "0"},
+        {"-rnic_cn_initial_window_bytes", "262145", "-rnic_cn_initial_window_fan_in", "4"},
+        {"-rnic_cn_initial_window_bytes", "18446744073709551615",
+         "-rnic_cn_initial_window_fan_in", "18446744073709551615"},
+        {"-rnic_cn_initial_window_bytes", "-1", "-rnic_cn_initial_window_fan_in", "4"},
+    };
+    for (const auto& flags : invalid) {
+        auto arguments = baseArguments("rnic-cn");
+        arguments.insert(arguments.end(), flags.begin(), flags.end());
+        EXPECT_THROW(parse(arguments), std::invalid_argument);
+    }
+    auto exact = baseArguments("rnic-cn");
+    append(exact, "-rnic_cn_initial_window_bytes", "262144");
+    append(exact, "-rnic_cn_initial_window_fan_in", "4");
+    EXPECT_NO_THROW(parse(exact));
+    for (const auto& profile : {"rnic-nn", "rnic-nn-fluid", "rnic-ss"}) {
+        auto arguments = baseArguments(profile);
+        append(arguments, "-rnic_cn_data_recovery", "deadline");
+        EXPECT_THROW(parse(arguments), std::invalid_argument);
+    }
+}
+
+TEST(RnicAtlahsCliTest, ExponentialRecoveryChecksLargestIntervalAndFallbackOrdering) {
+    auto arguments = baseArguments("rnic-cn");
+    append(arguments, "-rnic_cn_data_recovery", "exponential");
+    EXPECT_EQ(parse(arguments).collective.data_recovery, RnicCnDataRecovery::Exponential);
+    for (const auto retries : {"60", "66", "4294967295"}) {
+        auto invalid = arguments;
+        append(invalid, "-rnic_cn_max_retransmissions", retries);
+        EXPECT_THROW(parse(invalid), std::invalid_argument);
+    }
+    auto preempted = arguments;
+    append(preempted, "-rnic_cn_retransmission_rto_ps", "2560000000");
+    EXPECT_THROW(parse(preempted), std::invalid_argument);
+    EXPECT_EQ(rnicCnRetryProbeIntervalPs(RnicCnDataRecovery::Exponential, 40000000, 7),
+              2560000000ULL);
+    EXPECT_THROW(rnicCnRetryProbeIntervalPs(RnicCnDataRecovery::Exponential, UINT64_MAX, 2),
+                 std::invalid_argument);
+    EXPECT_THROW(rnicCnRetryProbeIntervalPs(RnicCnDataRecovery::Exponential, 1, 65),
+                 std::invalid_argument);
+}
+
 }  // namespace

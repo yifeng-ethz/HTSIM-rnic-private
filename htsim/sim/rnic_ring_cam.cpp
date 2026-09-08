@@ -61,6 +61,14 @@ std::vector<RnicRingCamRelease> RnicRingCam::advanceTo(uint64_t now_ps) {
 }
 
 RnicRingCamArrivalResult RnicRingCam::processArrival(const RnicRingCamPacket& packet) {
+    return admit(packet, false);
+}
+
+RnicRingCamArrivalResult RnicRingCam::processRecoveryArrival(const RnicRingCamPacket& packet) {
+    return admit(packet, true);
+}
+
+RnicRingCamArrivalResult RnicRingCam::admit(const RnicRingCamPacket& packet, bool recover_late) {
     if (packet.arrival_ps < current_time_ps_) {
         throw std::invalid_argument("Ring-CAM arrival precedes current time");
     }
@@ -70,10 +78,11 @@ RnicRingCamArrivalResult RnicRingCam::processArrival(const RnicRingCamPacket& pa
         admission = RnicRingCamAdmission::Early;
     } else {
         const uint64_t age_ps = packet.arrival_ps - packet.eta_ps;
-        if (age_ps > config_.delay_window_ps) {
+        if (age_ps > config_.delay_window_ps && !recover_late) {
             admission = RnicRingCamAdmission::Late;
         } else {
-            const uint64_t release_edge_ps = checkedAdd(
+            const uint64_t release_edge_ps = age_ps > config_.delay_window_ps
+                ? packet.arrival_ps : checkedAdd(
                 packet.eta_ps,
                 config_.delay_window_ps,
                 "Ring-CAM ETA plus delay window overflow");

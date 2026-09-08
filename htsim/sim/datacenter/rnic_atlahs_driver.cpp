@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "fat_tree_topology.h"
+#include "ns_tm3_switch.h"
 #include "rnic_packetized_manifold.h"
 #include "rnic_prbs_pacer.h"
 #include "ss_dragonfly_fabric.h"
@@ -180,6 +181,10 @@ RnicAtlahsRuntimeConfig collectiveRuntimeConfig(const RnicAtlahsCliOptions& opti
         {},
         options.collective.maximum_retransmissions,
         options.collective.retransmission_rto_ps,
+        options.collective.data_recovery,
+        options.collective.retry_probe_windows,
+        options.collective.initial_window_bytes,
+        options.collective.initial_window_fan_in,
     };
 }
 
@@ -200,9 +205,25 @@ std::unique_ptr<RnicAtlahsRuntimeAssembly> assembleRnicAtlahsProfile(
                 makeCollectiveTopologyConfig(options, physical_node_count);
             auto runtime_config = collectiveRuntimeConfig(
                 options, *topology_config, physical_node_count);
-            return makeRnicAtlahsRuntime(
+            auto assembly = makeRnicAtlahsRuntime(
                 event_list, options.profile, std::move(runtime_config),
                 std::move(topology_config), logger_factory);
+            if (options.collective.control_recovery == RnicCnControlRecovery::Headroom) {
+                const auto configure = [&](const std::vector<Switch*>& switches) {
+                    for (Switch* base : switches) {
+                        auto* sw = dynamic_cast<NsTm3Switch*>(base);
+                        if (sw == nullptr) {
+                            throw std::logic_error("control headroom requires ns-tm3 switches");
+                        }
+                        sw->set_control_headroom_capacity(
+                            static_cast<mem_b>(options.collective.control_headroom_bytes));
+                    }
+                };
+                configure(assembly->physicalTopology()->switches_lp);
+                configure(assembly->physicalTopology()->switches_up);
+                configure(assembly->physicalTopology()->switches_c);
+            }
+            return assembly;
         }
         case RnicProfile::SlingshotLike:
             return makeRnicAtlahsRuntime(
@@ -333,10 +354,47 @@ std::string renderRnicAtlahsModelManifest(const RnicAtlahsCliOptions& options,
                  << " eta=source-route-injection-plus-packet-specific-no-load-transit"
                  << " eta_transit=pipe-switch-latency-plus-remaining-ns-tm3-egress-serialization"
                  << " same_time_order=release-before-admission" << '\n';
+        const bool headroom =
+            options.collective.control_recovery == RnicCnControlRecovery::Headroom;
+        const std::uint64_t reserve = headroom ? options.collective.control_headroom_bytes : 0;
+        manifest << "[RNIC manifest] rnic_cn_control_recovery="
+                 << rnicCnControlRecoveryName(options.collective.control_recovery)
+                 << " rnic_cn_control_headroom_bytes=" << reserve
+                 << " rnic_cn_control_messages_per_flow="
+                 << options.collective.control_messages_per_flow
+                 << " rnic_cn_control_wire_bytes=" << options.collective.control_wire_bytes
+                 << " rnic_cn_control_admitted_fan_in="
+                 << rnicCnControlAdmittedFanIn(reserve,
+                        options.collective.control_messages_per_flow,
+                        options.collective.control_wire_bytes)
+                 << " rnic_cn_control_sizing=per-egress-H-over-M-C"
+                 << " rnic_cn_control_base_buffer_bytes="
+                 << options.collective.ns_tm3_shared_buffer_bytes << '\n';
+        manifest << "[RNIC manifest] rnic_cn_data_recovery="
+                 << rnicCnDataRecoveryName(options.collective.data_recovery)
+                 << " rnic_cn_probe_backoff="
+                 << (options.collective.data_recovery == RnicCnDataRecovery::None ? "none" :
+                     options.collective.data_recovery == RnicCnDataRecovery::Exponential
+                         ? "exponential" : "constant")
+                 << " rnic_cn_terminal_retry=legacy-timeout"
+                 << " rnic_cn_retry_probe_windows=" << options.collective.retry_probe_windows
+                 << " rnic_cn_initial_window="
+                 << (options.collective.initial_window_bytes.has_value() ? "bounded" : "none")
+                 << " rnic_cn_initial_window_bytes="
+                 << options.collective.initial_window_bytes.value_or(0)
+                 << " rnic_cn_initial_window_fan_in=" << options.collective.initial_window_fan_in
+                 << " rnic_cn_initial_buffer_bytes=" << options.collective.ns_tm3_shared_buffer_bytes
+                 << " rnic_cn_initial_sizing=F-times-U-at-most-B"
+                 << " rnic_cn_probe_epoch=physical-retry-serialization-end"
+                 << " rnic_cn_recovery_release=actual-arrival-tick" << '\n';
         manifest << "[RNIC manifest] recovery=deterministic-gap-nack-retransmission"
-                 << " late_admission=rejected-as-gap"
+                 << " late_admission="
+                 << (options.collective.data_recovery != RnicCnDataRecovery::None
+                         ? "authenticated-retry-at-arrival-tick" : "rejected-as-gap")
                  << " early_admission=hard-error"
-                 << " overflow_admission=hard-error"
+                 << " overflow_admission="
+                 << (options.collective.data_recovery != RnicCnDataRecovery::None
+                         ? "strict-hard-error-late-retry-nack" : "hard-error")
                  << " gap_decision=post-resequence-same-timestamp"
                  << " gap_decision_epsilon_ps=0"
                  << " gap_nack_priority=high"
@@ -350,7 +408,8 @@ std::string renderRnicAtlahsModelManifest(const RnicAtlahsCliOptions& options,
                  << " maximum_retransmissions=" << options.collective.maximum_retransmissions
                  << " retransmission_rto_ps=" << options.collective.retransmission_rto_ps
                  << " retransmission_rto_epoch=physical-retry-serialization-end"
-                 << " control_loss=fatal-no-control-recovery"
+                 << " control_loss="
+                 << (headroom ? "bounded-headroom-then-fatal" : "fatal-no-control-recovery")
                  << " retire_deadline=max-original-release"
                  << " retirement_gate=exact-rx-ledger-and-no-gap" << '\n';
     } else if (spec.profile == RnicProfile::SlingshotLike) {
@@ -462,5 +521,52 @@ std::string renderRnicAtlahsModelManifest(const RnicAtlahsCliOptions& options,
                      << " propagation=after-last-serviced-bit" << '\n';
         }
     }
+    return manifest.str();
+}
+
+std::string renderRnicControlRecoveryManifest(const RnicAtlahsRuntimeAssembly& assembly) {
+    if (assembly.profileSpec().profile != RnicProfile::CollectiveNetwork) {
+        return {};
+    }
+    std::array<std::uint64_t, 8> admissions{};
+    mem_b peak = 0;
+    mem_b remaining = 0;
+    std::ostringstream manifest;
+    const auto inspect = [&](const std::vector<Switch*>& switches, const char* tier) {
+        for (Switch* base : switches) {
+            auto* sw = dynamic_cast<NsTm3Switch*>(base);
+            if (sw == nullptr) {
+                throw std::logic_error("control manifest requires ns-tm3 switches");
+            }
+            for (size_t kind = 0; kind < admissions.size(); ++kind) {
+                admissions[kind] += sw->control_headroom_admissions()[kind];
+            }
+            peak = std::max(peak, sw->control_headroom_egress_peak());
+            remaining += sw->control_headroom_occupancy();
+            for (uint32_t port = 0; port < sw->physical_ingress_count(); ++port) {
+                const auto drops = sw->ingress_dropped_packets(port);
+                if (drops != 0) {
+                    manifest << "[RNIC manifest] ns_tm3_ingress_drops switch=" << tier
+                             << ':' << sw->getID() << " ingress=" << port
+                             << " dropped_packets=" << drops << '\n';
+                }
+            }
+        }
+    };
+    inspect(assembly.physicalTopology()->switches_lp, "leaf");
+    inspect(assembly.physicalTopology()->switches_up, "spine");
+    inspect(assembly.physicalTopology()->switches_c, "core");
+    constexpr std::array<const char*, 8> names{
+        "data", "declare", "accept", "grant_update", "gap_nack",
+        "gap_resolved", "retire", "nflow_update"};
+    std::uint64_t total = 0;
+    manifest << "[RNIC manifest]";
+    for (size_t kind = 1; kind < names.size(); ++kind) {
+        manifest << " rnic_cn_control_headroom_" << names[kind] << '=' << admissions[kind];
+        total += admissions[kind];
+    }
+    manifest << " rnic_cn_control_headroom_admissions=" << total
+             << " rnic_cn_control_headroom_peak_egress_bytes=" << peak
+             << " rnic_cn_control_headroom_remaining_bytes=" << remaining << '\n';
     return manifest.str();
 }

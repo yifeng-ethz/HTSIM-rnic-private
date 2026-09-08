@@ -239,7 +239,13 @@ void validateRuntimeQuiescence(AtlahsHtsimApi& api) {
                   << " rnic_cn_stale_declarations_ignored="
                   << recovery.stale_declarations_ignored
                   << " rnic_cn_stale_nflow_updates_ignored="
-                  << recovery.stale_nflow_updates_ignored << '\n';
+                  << recovery.stale_nflow_updates_ignored
+                  << " rnic_cn_tail_probes=" << recovery.tail_probes
+                  << " rnic_cn_tail_probe_wire_bytes=" << recovery.tail_probe_wire_bytes
+                  << " rnic_cn_late_retry_admissions=" << recovery.late_retry_admissions
+                  << " rnic_cn_initial_window_holds=" << recovery.initial_window_holds
+                  << " rnic_cn_initial_grants_dispatched=" << recovery.initial_grants_dispatched
+                  << '\n';
         std::cout << renderRnicSevereLateDropManifest(recovery);
     }
 }
@@ -334,41 +340,49 @@ int main(int argc, char* argv[]) {
         logsim.htsim_api = &api;
         logsim.set_protocol(RNIC_PROTOCOL);
 
-        const int result = start_lgs(
-            options.goal_file, logsim, [&](const AtlahsHtsimApi::GoalLayout& goal_layout) {
-                auto session =
-                    assembleRnicAtlahsProfile(event_list, options, goal_layout.physical_node_count);
-                api.setTopologyCfg(session->topologyConfig());
-                api.setTopology(session->physicalTopology());
-                std::cout << renderRnicAtlahsModelManifest(options, goal_layout, *session);
-#ifdef HTSIM_ENABLE_SIMLLM_RNIC
-                if (options.profile != RnicProfile::FluidManifold) {
-                    api.setFlowRuntime(
-                        htsim::simllm_rnic::makeComposedSimllmAtlahsFlowRuntime(
-                            event_list,
-                            structuralRuntimeConfig(options, goal_layout),
-                            std::move(session)));
-                } else {
+        try {
+            const int result = start_lgs(
+                options.goal_file, logsim, [&](const AtlahsHtsimApi::GoalLayout& goal_layout) {
+                    auto session =
+                        assembleRnicAtlahsProfile(event_list, options, goal_layout.physical_node_count);
+                    api.setTopologyCfg(session->topologyConfig());
+                    api.setTopology(session->physicalTopology());
+                    std::cout << renderRnicAtlahsModelManifest(options, goal_layout, *session);
+    #ifdef HTSIM_ENABLE_SIMLLM_RNIC
+                    if (options.profile != RnicProfile::FluidManifold) {
+                        api.setFlowRuntime(
+                            htsim::simllm_rnic::makeComposedSimllmAtlahsFlowRuntime(
+                                event_list,
+                                structuralRuntimeConfig(options, goal_layout),
+                                std::move(session)));
+                    } else {
+                        api.setFlowRuntime(std::move(session));
+                    }
+    #else
                     api.setFlowRuntime(std::move(session));
-                }
-#else
-                api.setFlowRuntime(std::move(session));
-#endif
-            });
-        if (result != 0) {
-            throw std::runtime_error("ATLAHS GOAL execution returned " + std::to_string(result));
+    #endif
+                });
+            if (result != 0) {
+                throw std::runtime_error("ATLAHS GOAL execution returned " + std::to_string(result));
+            }
+            if (api.runtimeHasPendingPhysicalWork()) {
+                throw std::logic_error("ATLAHS returned before RNIC physical quiescence");
+            }
+            validateRuntimeQuiescence(api);
+            api.validateWqeQuiescent();
+            writeRequestedStateTrace(api, options);
+            writeRequestedGoodputTrace(api, options);
+            if (options.completion_csv.has_value()) {
+                writeCompletionCsv(*options.completion_csv, options.profile, api.completedFlows());
+            }
+            std::cout << "[RNIC manifest] physical_quiescence=verified\n";
+            std::cout << renderRnicControlRecoveryManifest(requireAssembledProfile(api));
+        } catch (...) {
+            if (api.getFlowRuntime() != nullptr) {
+                std::cout << renderRnicControlRecoveryManifest(requireAssembledProfile(api));
+            }
+            throw;
         }
-        if (api.runtimeHasPendingPhysicalWork()) {
-            throw std::logic_error("ATLAHS returned before RNIC physical quiescence");
-        }
-        validateRuntimeQuiescence(api);
-        api.validateWqeQuiescent();
-        writeRequestedStateTrace(api, options);
-        writeRequestedGoodputTrace(api, options);
-        if (options.completion_csv.has_value()) {
-            writeCompletionCsv(*options.completion_csv, options.profile, api.completedFlows());
-        }
-        std::cout << "[RNIC manifest] physical_quiescence=verified\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "htsim_rnic: " << error.what() << '\n'

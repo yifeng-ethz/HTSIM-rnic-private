@@ -142,6 +142,7 @@ int main(int argc, char* argv[]) {
             installed_runtime->writeGoodputTraceCsv();
         }
         std::cout << installed_runtime->renderPfcPortMetricsManifest();
+        std::cout << installed_runtime->renderIngressDropManifest();
         std::cout << "[DCQCN manifest] completed_flows="
                   << installed_runtime->completed_flow_count()
                   << " silent_rtos=" << installed_runtime->silent_rto_count()

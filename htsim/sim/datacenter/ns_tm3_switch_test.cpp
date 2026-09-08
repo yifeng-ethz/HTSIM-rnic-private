@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <memory>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -25,9 +26,11 @@ public:
                const Route& route,
                packetid_t packet_id,
                PktPriority priority,
-               uint16_t bytes = kPacketBytes)
+               uint16_t bytes = kPacketBytes,
+               packet_type wire_type = IP)
         : _priority(priority) {
         set_route(flow, route, bytes, packet_id);
+        _type = wire_type;
     }
 
     PktPriority priority() const override { return _priority; }
@@ -38,6 +41,72 @@ public:
 private:
     PktPriority _priority;
 };
+
+// Delivers a fixed set of packets, one per named ingress, at every firing.
+// Equal-rate senders sharing one congested egress arrive exactly like this:
+// the same set of ports, in the same picosecond, once per packet time.
+class ScheduledArrivals : public EventSource {
+public:
+    ScheduledArrivals(EventList& eventlist,
+                      simtime_picosec first,
+                      simtime_picosec period,
+                      std::vector<NsTm3IngressPort*> ports,
+                      std::vector<std::vector<TestPacket*>> rounds)
+        : EventSource(eventlist, "scheduled-arrivals"),
+          _period(period),
+          _ports(std::move(ports)),
+          _rounds(std::move(rounds)) {
+        eventlist.sourceIsPendingRel(*this, first);
+    }
+
+    void doNextEvent() override {
+        const std::vector<TestPacket*>& round = _rounds.at(_next_round++);
+        for (size_t port = 0; port < _ports.size(); ++port) {
+            _ports[port]->receivePacket(*round.at(port));
+        }
+        if (_next_round < _rounds.size()) {
+            eventlist().sourceIsPendingRel(*this, _period);
+        }
+    }
+
+private:
+    simtime_picosec _period;
+    std::vector<NsTm3IngressPort*> _ports;
+    std::vector<std::vector<TestPacket*>> _rounds;
+    size_t _next_round{0};
+};
+
+// Owns the packets one arrival schedule needs and hands out the rounds.
+class PacketRounds {
+public:
+    PacketRounds(PacketFlow& flow, const Route& route, size_t ports, size_t rounds,
+                 packetid_t first_id) {
+        for (size_t round = 0; round < rounds; ++round) {
+            std::vector<TestPacket*> offered;
+            for (size_t port = 0; port < ports; ++port) {
+                _owned.push_back(std::make_unique<TestPacket>(
+                    flow, route, first_id++, Packet::PRIO_LO));
+                offered.push_back(_owned.back().get());
+            }
+            _rounds.push_back(std::move(offered));
+        }
+    }
+
+    const std::vector<std::vector<TestPacket*>>& rounds() const { return _rounds; }
+
+private:
+    std::vector<std::unique_ptr<TestPacket>> _owned;
+    std::vector<std::vector<TestPacket*>> _rounds;
+};
+
+std::vector<uint64_t> drops_by_ingress(const NsTm3Switch& traffic_manager) {
+    std::vector<uint64_t> result;
+    for (size_t ingress = 0; ingress < traffic_manager.physical_ingress_count(); ++ingress) {
+        result.push_back(
+            traffic_manager.ingress_dropped_packets(static_cast<uint32_t>(ingress)));
+    }
+    return result;
+}
 
 class RecordingSink : public PacketSink {
 public:
@@ -283,6 +352,8 @@ TEST(NsTm3SwitchTest, ConservesOneSharedBufferAccountingDomain) {
     ingress.receivePacket(first);
     ingress.receivePacket(second);
     ingress.receivePacket(third);
+    // One event presents the round, then one per packet through the pipeline.
+    ASSERT_TRUE(EventList::doNextEvent());
     ASSERT_TRUE(EventList::doNextEvent());
     ASSERT_TRUE(EventList::doNextEvent());
     ASSERT_TRUE(EventList::doNextEvent());
@@ -364,6 +435,8 @@ TEST(NsTm3SwitchTest, DropsOnlyWhenSharedBufferCapacityIsExceeded) {
     ingress.receivePacket(first);
     ingress.receivePacket(buffered);
     ingress.receivePacket(dropped);
+    // One event presents the round, then one per packet through the pipeline.
+    ASSERT_TRUE(EventList::doNextEvent());
     ASSERT_TRUE(EventList::doNextEvent());
     ASSERT_TRUE(EventList::doNextEvent());
     ASSERT_TRUE(EventList::doNextEvent());
@@ -404,6 +477,8 @@ TEST(NsTm3SwitchTest, CapsOneEgressDomainWithoutRelabelingTheSwitchSharedPool) {
     ingress.receivePacket(fills_egress_domain);
     ingress.receivePacket(exceeds_egress_domain);
     ingress.receivePacket(other_egress);
+    // One event presents the round, then one per packet through the pipeline.
+    ASSERT_TRUE(EventList::doNextEvent());
     ASSERT_TRUE(EventList::doNextEvent());
     ASSERT_TRUE(EventList::doNextEvent());
     ASSERT_TRUE(EventList::doNextEvent());
@@ -425,6 +500,129 @@ TEST(NsTm3SwitchTest, CapsOneEgressDomainWithoutRelabelingTheSwitchSharedPool) {
     EXPECT_EQ(sink.arrivals.size(), 3U);
     EXPECT_EQ(sink.arrival_time(1), sink.arrival_time(4));
     EXPECT_LT(sink.arrival_time(1), sink.arrival_time(2));
+}
+
+TEST(NsTm3SwitchTest, SharesAContestedEgressSlotBetweenSimultaneousIngresses) {
+    // Two ports offer one packet each per packet time into an egress that
+    // drains one, so exactly one of every pair has to be refused.  Which one
+    // must not always be the same port.
+    constexpr size_t kRounds = 24;
+    NsTm3Harness harness(1000);
+    harness.traffic_manager->set_egress_buffer_capacity(300);
+    NsTm3EgressSerializer& egress = harness.add_egress();
+    NsTm3IngressPort& ingress_0 = harness.add_ingress("ingress-0");
+    NsTm3IngressPort& ingress_1 = harness.add_ingress("ingress-1");
+    RecordingSink sink;
+    Route route = route_via(egress, sink);
+    PacketFlow flow(nullptr);
+    PacketRounds offered(flow, route, 2, kRounds, 1);
+    ScheduledArrivals arrivals(harness.eventlist, 0, timeFromNs(100u),
+                               {&ingress_0, &ingress_1}, offered.rounds());
+
+    NsTm3Harness::drain_all_events();
+
+    const std::vector<uint64_t> drops = drops_by_ingress(*harness.traffic_manager);
+    ASSERT_EQ(drops.size(), 2U);
+    EXPECT_GT(drops[0], 0U);
+    EXPECT_GT(drops[1], 0U);
+    EXPECT_LE(std::max(drops[0], drops[1]) - std::min(drops[0], drops[1]), 1U);
+    EXPECT_EQ(drops[0] + drops[1], harness.traffic_manager->buffer_counters().dropped_packets);
+    EXPECT_EQ(harness.traffic_manager->ingress_admitted_packets(0)
+                  + harness.traffic_manager->ingress_admitted_packets(1),
+              harness.traffic_manager->buffer_counters().admitted_packets);
+}
+
+TEST(NsTm3SwitchTest, RotatesTheContestedEgressSlotAcrossThreeIngresses) {
+    constexpr size_t kRounds = 20;
+    NsTm3Harness harness(1000);
+    harness.traffic_manager->set_egress_buffer_capacity(300);
+    NsTm3EgressSerializer& egress = harness.add_egress();
+    NsTm3IngressPort& ingress_0 = harness.add_ingress("ingress-0");
+    NsTm3IngressPort& ingress_1 = harness.add_ingress("ingress-1");
+    NsTm3IngressPort& ingress_2 = harness.add_ingress("ingress-2");
+    RecordingSink sink;
+    Route route = route_via(egress, sink);
+    PacketFlow flow(nullptr);
+    PacketRounds offered(flow, route, 3, kRounds, 1);
+    ScheduledArrivals arrivals(harness.eventlist, 0, timeFromNs(100u),
+                               {&ingress_0, &ingress_1, &ingress_2}, offered.rounds());
+
+    NsTm3Harness::drain_all_events();
+
+    const std::vector<uint64_t> drops = drops_by_ingress(*harness.traffic_manager);
+    ASSERT_EQ(drops.size(), 3U);
+    const uint64_t most = *std::max_element(drops.begin(), drops.end());
+    const uint64_t least = *std::min_element(drops.begin(), drops.end());
+    EXPECT_GT(least, 0U);
+    EXPECT_LE(most - least, 1U);
+}
+
+TEST(NsTm3SwitchTest, KeepsTheGrantWhenALonePortArrivesBetweenContestedRounds) {
+    // The receiver's acknowledgements cross the same switch, one per packet
+    // time, on a port that never contends.  A grant that advanced on every
+    // round would be put back where it started by each of them, which is the
+    // fixed order this arbiter exists to remove.
+    constexpr size_t kRounds = 24;
+    NsTm3Harness harness(2000);
+    harness.traffic_manager->set_egress_buffer_capacity(300);
+    NsTm3EgressSerializer& congested_egress = harness.add_egress();
+    NsTm3EgressSerializer& reverse_egress = harness.add_egress();
+    NsTm3IngressPort& ingress_0 = harness.add_ingress("ingress-0");
+    NsTm3IngressPort& ingress_1 = harness.add_ingress("ingress-1");
+    NsTm3IngressPort& reverse_ingress = harness.add_ingress("ingress-2");
+    RecordingSink sink;
+    Route congested_route = route_via(congested_egress, sink);
+    Route reverse_route = route_via(reverse_egress, sink);
+    PacketFlow flow(nullptr);
+    PacketRounds contended(flow, congested_route, 2, kRounds, 1);
+    PacketRounds acknowledgements(flow, reverse_route, 1, kRounds, 1000);
+    ScheduledArrivals arrivals(harness.eventlist, 0, timeFromNs(100u),
+                               {&ingress_0, &ingress_1}, contended.rounds());
+    ScheduledArrivals reverse(harness.eventlist, timeFromNs(50u), timeFromNs(100u),
+                              {&reverse_ingress}, acknowledgements.rounds());
+
+    NsTm3Harness::drain_all_events();
+
+    const std::vector<uint64_t> drops = drops_by_ingress(*harness.traffic_manager);
+    ASSERT_EQ(drops.size(), 3U);
+    EXPECT_EQ(drops[2], 0U);
+    EXPECT_GT(drops[0], 0U);
+    EXPECT_GT(drops[1], 0U);
+    EXPECT_LE(std::max(drops[0], drops[1]) - std::min(drops[0], drops[1]), 1U);
+}
+
+TEST(NsTm3SwitchTest, FreezesTheIngressDropSplitAtTheFirstLossNotification) {
+    NsTm3Harness harness(150);
+    NsTm3EgressSerializer& egress = harness.add_egress();
+    NsTm3IngressPort& ingress = harness.add_ingress("ingress-0");
+    RecordingSink sink;
+    Route route = route_via(egress, sink);
+    PacketFlow flow(nullptr);
+    TestPacket in_service(flow, route, 1, Packet::PRIO_LO);
+    TestPacket buffered(flow, route, 2, Packet::PRIO_LO);
+    TestPacket refused_before(flow, route, 3, Packet::PRIO_LO);
+    TestPacket notification(flow, route, 4, Packet::PRIO_HI, 100, ROCENACK);
+    TestPacket in_service_again(flow, route, 5, Packet::PRIO_LO);
+    TestPacket buffered_again(flow, route, 6, Packet::PRIO_LO);
+    TestPacket refused_after(flow, route, 7, Packet::PRIO_LO);
+
+    ingress.receivePacket(in_service);
+    ingress.receivePacket(buffered);
+    ingress.receivePacket(refused_before);
+    NsTm3Harness::drain_all_events();
+    EXPECT_FALSE(harness.traffic_manager->loss_notification_seen());
+    EXPECT_EQ(harness.traffic_manager->unreacted_ingress_dropped_packets(0), 1U);
+
+    ingress.receivePacket(notification);
+    NsTm3Harness::drain_all_events();
+    EXPECT_TRUE(harness.traffic_manager->loss_notification_seen());
+
+    ingress.receivePacket(in_service_again);
+    ingress.receivePacket(buffered_again);
+    ingress.receivePacket(refused_after);
+    NsTm3Harness::drain_all_events();
+    EXPECT_EQ(harness.traffic_manager->ingress_dropped_packets(0), 2U);
+    EXPECT_EQ(harness.traffic_manager->unreacted_ingress_dropped_packets(0), 1U);
 }
 
 TEST(NsTm3SwitchTest, RejectsInvalidOrMidFlightEgressDomainChanges) {
@@ -497,6 +695,8 @@ TEST(NsTm3SwitchTest, SharedDropDoesNotMisreportAnEmptyEgressQueue) {
     ingress.receivePacket(in_service);
     ingress.receivePacket(fills_shared_buffer);
     ingress.receivePacket(dropped_at_empty_egress);
+    // One event presents the round, then one per packet through the pipeline.
+    ASSERT_TRUE(EventList::doNextEvent());
     ASSERT_TRUE(EventList::doNextEvent());
     ASSERT_TRUE(EventList::doNextEvent());
     ASSERT_TRUE(EventList::doNextEvent());
@@ -611,6 +811,132 @@ TEST(NsTm3SwitchTest, ExplicitlyRejectsPauseQueueModes) {
 
         EXPECT_THROW(FatTreeTopology(&cfg, nullptr, &eventlist, nullptr), std::invalid_argument);
     }
+}
+
+class ControlLifecycleObserver final : public RnicCollectivePacketLifecycleObserver {
+public:
+    void observe(const RnicCollectivePacketObservation& observation) noexcept override {
+        if (observation.lifecycle == RnicCollectivePacketLifecycle::ENDPOINT_CONSUMED) {
+            ++consumed;
+        } else if (observation.lifecycle == RnicCollectivePacketLifecycle::FABRIC_DROP) {
+            ++dropped;
+        }
+    }
+    uint64_t consumed{0};
+    uint64_t dropped{0};
+};
+
+class ControlEndpoint final : public PacketSink {
+public:
+    void receivePacket(Packet& packet) override {
+        if (auto* control = dynamic_cast<RnicCollectivePacket*>(&packet)) {
+            control->consumeAtEndpoint();
+        }
+    }
+    const string& nodename() override { return name; }
+    string name{"control-endpoint"};
+};
+
+RnicCollectivePacket* makeControl(RnicCollectivePacketKind kind, PacketFlow& flow,
+                                  const Route& route, packetid_t id,
+                                  std::shared_ptr<ControlLifecycleObserver> observer) {
+    using Kind = RnicCollectivePacketKind;
+    const RnicCollectiveGrant grant{1, 1, 1000000, kLinkSpeed, 1000000,
+        kind == Kind::ACCEPT ? RnicCollectiveGrantKind::Accept : RnicCollectiveGrantKind::Update,
+        0, 0};
+    switch (kind) {
+        case Kind::DECLARE:
+            return RnicCollectivePacket::newDeclare(flow, route, id, 1, 0, 1, 64,
+                                                    {1000000}, observer);
+        case Kind::NFLOW_UPDATE:
+            return RnicCollectivePacket::newNflowUpdate(flow, route, id, 1, 0, 1, 64,
+                                                        {500000}, observer);
+        case Kind::ACCEPT:
+            return RnicCollectivePacket::newAccept(flow, route, id, 0, 1, 64, grant, observer);
+        case Kind::GRANT_UPDATE:
+            return RnicCollectivePacket::newGrantUpdate(flow, route, id, 0, 1, 64, grant, observer);
+        case Kind::GAP_NACK:
+            return RnicCollectivePacket::newGapNack(flow, route, id, 1, 0, 1, 64,
+                                                    {0, 0, RnicPacketExtent(64, 128), 1}, observer);
+        case Kind::GAP_RESOLVED:
+            return RnicCollectivePacket::newGapResolved(flow, route, id, 1, 0, 1, 64,
+                {0, 0, RnicPacketExtent(64, 128), 1}, observer);
+        case Kind::RETIRE:
+            return RnicCollectivePacket::newRetire(flow, route, id, 1, 0, 1, 64,
+                                                    {{64, 128, 1}, 1000000}, observer);
+        case Kind::DATA: break;
+    }
+    throw std::invalid_argument("control fixture requires a control kind");
+}
+
+TEST(NsTm3SwitchTest, ControlReservePreventsEveryKindOfAdmissionDropAndExhaustsExactly) {
+    for (int kind = 1; kind <= 7; ++kind) {
+        for (mem_b base : {64, 128}) {
+            for (mem_b reserve : {0, 64, 128}) {
+                for (bool egress_domain : {false, true}) {
+                    SCOPED_TRACE(::testing::Message() << kind << ',' << base << ','
+                                                     << reserve << ',' << egress_domain);
+                    NsTm3Harness harness(egress_domain ? 2 * base : base);
+                    auto& serializer = harness.add_egress();
+                    auto& ingress = harness.add_ingress("ingress");
+                    harness.traffic_manager->set_egress_buffer_capacity(base);
+                    harness.traffic_manager->set_control_headroom_capacity(reserve);
+                    ControlEndpoint endpoint;
+                    Route route;
+                    route.push_back(&serializer);
+                    route.push_back(&endpoint);
+                    PacketFlow flow(nullptr);
+                    TestPacket in_service(flow, route, 1, Packet::PRIO_LO, base);
+                    TestPacket buffered(flow, route, 2, Packet::PRIO_LO, base);
+                    TestPacket excess_data(flow, route, 3, Packet::PRIO_LO, 64);
+                    TestPacket unclassified_high(flow, route, 4, Packet::PRIO_HI, 64);
+                    auto observer = std::make_shared<ControlLifecycleObserver>();
+                    ingress.receivePacket(in_service);
+                    ingress.receivePacket(buffered);
+                    for (packetid_t id = 5; id < 8; ++id) {
+                        ingress.receivePacket(*makeControl(
+                            static_cast<RnicCollectivePacketKind>(kind), flow, route, id, observer));
+                    }
+                    ingress.receivePacket(excess_data);
+                    ingress.receivePacket(unclassified_high);
+                    NsTm3Harness::drain_all_events();
+                    EXPECT_EQ(observer->consumed, static_cast<uint64_t>(reserve / 64));
+                    EXPECT_EQ(observer->dropped, static_cast<uint64_t>(3 - reserve / 64));
+                    EXPECT_TRUE(excess_data.dropped);
+                    EXPECT_TRUE(unclassified_high.dropped);
+                    EXPECT_EQ(harness.traffic_manager->shared_buffer_occupancy(), 0);
+                    EXPECT_EQ(harness.traffic_manager->control_headroom_occupancy(), 0);
+                    EXPECT_EQ(harness.traffic_manager->control_headroom_egress_peak(), reserve);
+                    EXPECT_EQ(harness.traffic_manager->control_headroom_admissions()[kind],
+                              static_cast<uint64_t>(reserve / 64));
+                    const auto& counters = harness.traffic_manager->buffer_counters();
+                    EXPECT_EQ(counters.admitted_packets, counters.dequeued_packets);
+                    EXPECT_EQ(counters.admitted_bytes, counters.dequeued_bytes);
+                    EXPECT_EQ(counters.dropped_packets, static_cast<uint64_t>(5 - reserve / 64));
+                    EXPECT_EQ(egress_domain ? counters.shared_pool_dropped_packets
+                                            : counters.egress_domain_dropped_packets, 0U);
+                }
+            }
+        }
+    }
+}
+
+TEST(NsTm3SwitchTest, ControlReserveRejectsOverflowAndChangesAfterTraffic) {
+    NsTm3Harness harness;
+    auto& serializer = harness.add_egress();
+    auto& ingress = harness.add_ingress("ingress");
+    EXPECT_THROW(harness.traffic_manager->set_control_headroom_capacity(-1), std::invalid_argument);
+    EXPECT_THROW(harness.traffic_manager->set_control_headroom_capacity(
+        std::numeric_limits<mem_b>::max()), std::invalid_argument);
+    harness.traffic_manager->set_control_headroom_capacity(128);
+    RecordingSink sink;
+    Route route = route_via(serializer, sink);
+    PacketFlow flow(nullptr);
+    TestPacket packet(flow, route, 1, Packet::PRIO_LO);
+    ingress.receivePacket(packet);
+    EXPECT_THROW(harness.traffic_manager->set_control_headroom_capacity(64), std::logic_error);
+    NsTm3Harness::drain_all_events();
+    EXPECT_THROW(harness.traffic_manager->set_control_headroom_capacity(64), std::logic_error);
 }
 
 }  // namespace

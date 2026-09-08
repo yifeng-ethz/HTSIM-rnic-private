@@ -10,6 +10,23 @@
 #include <string>
 #include <system_error>
 
+const char* rnicCnControlRecoveryName(RnicCnControlRecovery recovery) {
+    switch (recovery) {
+        case RnicCnControlRecovery::None: return "none";
+        case RnicCnControlRecovery::Headroom: return "headroom";
+    }
+    throw std::invalid_argument("invalid rnic-cn control recovery selection");
+}
+
+std::uint64_t rnicCnControlAdmittedFanIn(std::uint64_t headroom_bytes,
+                                      std::uint64_t messages_per_flow,
+                                      std::uint64_t control_wire_bytes) {
+    if (messages_per_flow == 0 || control_wire_bytes == 0) {
+        throw std::invalid_argument("control sizing requires positive message count and wire bytes");
+    }
+    return headroom_bytes / control_wire_bytes / messages_per_flow;
+}
+
 namespace {
 
 using Wide = RnicWideInteger;
@@ -126,6 +143,50 @@ void validateCollectiveOptions(const RnicAtlahsCliOptions& options) {
     if (options.collective.margin_ppm == 0 || options.collective.margin_ppm > 1000000) {
         throw std::invalid_argument("-rnic_cn_margin_ppm: value must be in [1, 1000000]");
     }
+    rnicCnControlRecoveryName(options.collective.control_recovery);
+    rnicCnDataRecoveryName(options.collective.data_recovery);
+    requirePositive(options.collective.retry_probe_windows, "-rnic_cn_retry_probe_windows");
+    if (options.collective.data_recovery == RnicCnDataRecovery::None &&
+        options.explicitly_supplied.retry_probe_windows) {
+        throw std::invalid_argument("retry probe windows require deadline data recovery");
+    }
+    const Wide probe_interval = static_cast<Wide>(options.collective.retry_probe_windows) *
+                                options.collective.control_deadline_ps;
+    if (probe_interval > std::numeric_limits<std::uint64_t>::max()) {
+        throw std::invalid_argument("retry probe interval overflows uint64_t");
+    }
+    if (options.collective.data_recovery == RnicCnDataRecovery::Exponential &&
+        options.collective.maximum_retransmissions > 1) {
+        const auto longest = rnicCnRetryProbeIntervalPs(
+            options.collective.data_recovery, static_cast<std::uint64_t>(probe_interval),
+            options.collective.maximum_retransmissions - 1);
+        if (longest >= options.collective.retransmission_rto_ps) {
+            throw std::invalid_argument("legacy timeout must follow exponential probe deadlines");
+        }
+    }
+    if (options.explicitly_supplied.initial_window_bytes !=
+        options.explicitly_supplied.initial_window_fan_in) {
+        throw std::invalid_argument("initial window bytes and fan-in must be supplied together");
+    }
+    if (options.collective.initial_window_bytes.has_value() &&
+        (options.collective.initial_window_fan_in == 0 ||
+         static_cast<Wide>(*options.collective.initial_window_bytes) *
+             options.collective.initial_window_fan_in >
+             options.collective.ns_tm3_shared_buffer_bytes)) {
+        throw std::invalid_argument("initial window requires positive fan-in and F*U <= buffer");
+    }
+    requirePositive(options.collective.control_headroom_bytes, "-rnic_cn_control_headroom_bytes");
+    requirePositive(options.collective.control_messages_per_flow,
+                    "-rnic_cn_control_messages_per_flow");
+    if (options.collective.control_headroom_bytes >
+        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+        throw std::invalid_argument("-rnic_cn_control_headroom_bytes: value exceeds HTSIM mem_b");
+    }
+    if (options.collective.control_recovery == RnicCnControlRecovery::None &&
+        (options.explicitly_supplied.control_headroom_bytes ||
+         options.explicitly_supplied.control_messages_per_flow)) {
+        throw std::invalid_argument("control sizing overrides require headroom recovery");
+    }
     requirePositive(options.collective.control_wire_bytes, "-rnic_cn_control_wire_bytes");
     if (options.collective.control_wire_bytes > std::numeric_limits<std::uint16_t>::max()) {
         throw std::invalid_argument("-rnic_cn_control_wire_bytes: value exceeds uint16_t");
@@ -238,11 +299,15 @@ void rejectCrossProfileOptions(const RnicAtlahsCliOptions& options) {
 
     const bool supplied_collective =
         supplied.global_prbs_seed || supplied.control_deadline_ps || supplied.margin_ppm ||
-        supplied.control_wire_bytes || supplied.ring_delay_window_ps ||
+        supplied.control_wire_bytes || supplied.control_recovery ||
+        supplied.control_headroom_bytes || supplied.control_messages_per_flow ||
+        supplied.ring_delay_window_ps ||
         supplied.ring_release_tick_ps || supplied.ring_wire_capacity_bytes ||
         supplied.ns_tm3_shared_buffer_bytes ||
         supplied.cn_maximum_retransmissions ||
-        supplied.cn_retransmission_rto_ps;
+        supplied.cn_retransmission_rto_ps || supplied.data_recovery ||
+        supplied.retry_probe_windows || supplied.initial_window_bytes ||
+        supplied.initial_window_fan_in;
     if (options.profile != RnicProfile::CollectiveNetwork && supplied_collective) {
         throw std::invalid_argument("physical Clos/control options are valid only for rnic-cn");
     }
@@ -379,6 +444,41 @@ RnicAtlahsCliOptions parseRnicAtlahsCli(int argc, const char* const argv[]) {
         } else if (option == "-rnic_cn_margin_ppm") {
             options.collective.margin_ppm = parseUnsigned32(option, value);
             options.explicitly_supplied.margin_ppm = true;
+        } else if (option == "-rnic_cn_data_recovery") {
+            if (value == "none") {
+                options.collective.data_recovery = RnicCnDataRecovery::None;
+            } else if (value == "deadline") {
+                options.collective.data_recovery = RnicCnDataRecovery::Deadline;
+            } else if (value == "exponential") {
+                options.collective.data_recovery = RnicCnDataRecovery::Exponential;
+            } else {
+                throw optionError(option, "expected none, deadline or exponential");
+            }
+            options.explicitly_supplied.data_recovery = true;
+        } else if (option == "-rnic_cn_retry_probe_windows") {
+            options.collective.retry_probe_windows = parseUnsigned32(option, value);
+            options.explicitly_supplied.retry_probe_windows = true;
+        } else if (option == "-rnic_cn_initial_window_bytes") {
+            options.collective.initial_window_bytes = parseUnsigned(option, value);
+            options.explicitly_supplied.initial_window_bytes = true;
+        } else if (option == "-rnic_cn_initial_window_fan_in") {
+            options.collective.initial_window_fan_in = parseUnsigned(option, value);
+            options.explicitly_supplied.initial_window_fan_in = true;
+        } else if (option == "-rnic_cn_control_recovery") {
+            if (value == "none") {
+                options.collective.control_recovery = RnicCnControlRecovery::None;
+            } else if (value == "headroom") {
+                options.collective.control_recovery = RnicCnControlRecovery::Headroom;
+            } else {
+                throw std::invalid_argument(option + ": expected none or headroom");
+            }
+            options.explicitly_supplied.control_recovery = true;
+        } else if (option == "-rnic_cn_control_headroom_bytes") {
+            options.collective.control_headroom_bytes = parseUnsigned(option, value);
+            options.explicitly_supplied.control_headroom_bytes = true;
+        } else if (option == "-rnic_cn_control_messages_per_flow") {
+            options.collective.control_messages_per_flow = parseUnsigned(option, value);
+            options.explicitly_supplied.control_messages_per_flow = true;
         } else if (option == "-rnic_cn_control_wire_bytes") {
             options.collective.control_wire_bytes = parseUnsigned(option, value);
             options.explicitly_supplied.control_wire_bytes = true;
@@ -524,12 +624,18 @@ std::string rnicAtlahsCliUsage(const std::string& program_name) {
              " [-rnic_cn_control_deadline_ps PS]"
              " [-rnic_cn_margin_ppm PPM]"
              " [-rnic_cn_control_wire_bytes BYTES]"
+             " [-rnic_cn_control_recovery none|headroom]"
+             " [-rnic_cn_control_headroom_bytes BYTES_PER_EGRESS]"
+             " [-rnic_cn_control_messages_per_flow COUNT]"
              " [-rnic_cn_ring_window_ps PS]"
              " [-rnic_cn_ring_tick_ps PS]"
              " [-rnic_cn_ring_capacity_bytes BYTES]"
              " [-rnic_cn_ns_tm3_buffer_bytes BYTES]"
              " [-rnic_cn_max_retransmissions N]"
-             " [-rnic_cn_retransmission_rto_ps PS]\n"
+             " [-rnic_cn_retransmission_rto_ps PS]"
+             " [-rnic_cn_data_recovery none|deadline|exponential]"
+             " [-rnic_cn_retry_probe_windows N]"
+             " [-rnic_cn_initial_window_bytes BYTES -rnic_cn_initial_window_fan_in N]\n"
           << "rnic-ss: [-topo FILE]"
              " [-rnic_hop_latency_ps PS]"
              " [-rnic_switch_latency_ps PS]"
@@ -551,4 +657,13 @@ std::string rnicAtlahsCliUsage(const std::string& program_name) {
              " [-rnic_ss_routing unordered|ordered]"
              " [-rnic_ss_loss_stress off|on]\n";
     return usage.str();
+}
+
+const char* rnicCnDataRecoveryName(RnicCnDataRecovery recovery) {
+    switch (recovery) {
+        case RnicCnDataRecovery::None: return "none";
+        case RnicCnDataRecovery::Deadline: return "deadline";
+        case RnicCnDataRecovery::Exponential: return "exponential";
+    }
+    throw std::invalid_argument("unknown rnic-cn data recovery selection");
 }

@@ -125,6 +125,8 @@ public:
     void rebaseDataClassIdle(uint64_t now_ps);
 
 private:
+    friend class RnicCollectiveNetworkRuntimeTestPeer;
+
     struct FlowState {
         uint64_t flow_id;
         uint64_t payload_size_bytes;
@@ -193,6 +195,7 @@ public:
     RnicRxPort(uint64_t access_capacity_bps, RnicRingCamConfig ring_cam_config);
 
     RnicRxArrivalResult processArrival(const RnicRingCamPacket& packet);
+    RnicRxArrivalResult processRecoveryArrival(const RnicRingCamPacket& packet);
 
     // The completion-aware entry point for an event-driven runtime.  It
     // releases every Ring-CAM entry due through now_ps, schedules those exact
@@ -218,6 +221,7 @@ public:
     const RnicRingCam& ringCam() const { return _ring_cam; }
 
 private:
+    RnicRxArrivalResult admit(const RnicRingCamPacket& packet, bool recover_late);
     std::vector<RnicRxScheduledSerialization> scheduleSerializations(
         const std::vector<RnicRingCamRelease>& logical_releases);
     std::vector<RnicRxPacketCompletion> accountDeliveriesThrough(uint64_t now_ps);

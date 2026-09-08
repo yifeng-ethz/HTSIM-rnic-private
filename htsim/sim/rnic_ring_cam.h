@@ -67,6 +67,11 @@ public:
     // admission at that same timestamp.
     RnicRingCamArrivalResult processArrival(const RnicRingCamPacket& packet);
 
+    // A separately authenticated recovery packet may use an arrival-time
+    // release after its timestamp window expired. Capacity, stored identity
+    // and release ordering remain owned by this same receive store.
+    RnicRingCamArrivalResult processRecoveryArrival(const RnicRingCamPacket& packet);
+
     uint64_t currentTimePs() const { return current_time_ps_; }
     uint64_t wireOccupancyBytes() const { return wire_occupancy_bytes_; }
     uint64_t wireHighWatermarkBytes() const { return wire_high_watermark_bytes_; }
@@ -74,6 +79,7 @@ public:
     size_t packetCount() const { return entries_.size(); }
 
 private:
+    RnicRingCamArrivalResult admit(const RnicRingCamPacket& packet, bool recover_late);
     struct ReleaseKey {
         uint64_t logical_release_ps;
         uint64_t eta_ps;

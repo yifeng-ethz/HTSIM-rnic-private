@@ -298,6 +298,15 @@ if ( ENABLE_TESTS )
         PROPERTIES TIMEOUT 60
     )
 
+    add_test(NAME RnicControlRecovery.NoLossCompletionBytes
+        COMMAND ${CMAKE_COMMAND}
+            -DRNIC=$<TARGET_FILE:htsim_rnic>
+            -DTXT2BIN=$<TARGET_FILE:txt2bin>
+            -DWORK=${CMAKE_CURRENT_BINARY_DIR}/control_recovery_test
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/rnic_control_recovery_test.cmake)
+    set_tests_properties(RnicControlRecovery.NoLossCompletionBytes
+        PROPERTIES LABELS "unit" TIMEOUT 180)
+
     add_executable(rnic_atlahs_cli_test rnic_atlahs_cli_test.cpp)
     target_link_libraries(
         rnic_atlahs_cli_test PRIVATE htsim_dc htsim gtest_main)

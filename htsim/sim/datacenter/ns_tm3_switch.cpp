@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cassert>
 #include <iterator>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -132,6 +133,69 @@ void NsTm3EgressSerializer::note_buffer_drop(Packet& pkt) {
     // are therefore the authoritative, domain-specific drop ledger.
 }
 
+NsTm3IngressArbiter::NsTm3IngressArbiter(NsTm3Switch& owner,
+                                         EventList& eventlist,
+                                         const string& name)
+    : EventSource(eventlist, name), _owner(owner) {}
+
+NsTm3IngressArbiter::~NsTm3IngressArbiter() {
+    if (_armed) {
+        EventList::cancelPendingSource(*this);
+    }
+}
+
+void NsTm3IngressArbiter::offer(Packet& pkt, uint32_t ingress_id) {
+    _offers.push_back(Offer{ingress_id, &pkt});
+    if (!_armed) {
+        _armed = true;
+        eventlist().sourceIsPendingRel(*this, 0);
+    }
+}
+
+void NsTm3IngressArbiter::doNextEvent() {
+    _armed = false;
+    if (_offers.empty()) {
+        return;
+    }
+
+    // Presenting empties the offer list, so an arrival that reaches this
+    // switch after the round has run simply opens the next one.
+    std::vector<Offer> round;
+    round.swap(_offers);
+
+    const uint32_t ports = static_cast<uint32_t>(_owner.physical_ingress_count());
+    if (ports == 0) {
+        throw std::logic_error("ns-tm3 ingress arbiter ran without a physical ingress");
+    }
+    const uint32_t first_claim = _next_grant_ingress % ports;
+    const auto distance_from_claim = [ports, first_claim](uint32_t ingress_id) {
+        return (ingress_id + ports - first_claim) % ports;
+    };
+    // Stable, so two packets from one port keep the order they arrived in.
+    std::stable_sort(round.begin(), round.end(),
+                     [&distance_from_claim](const Offer& left, const Offer& right) {
+                         return distance_from_claim(left.ingress_id) <
+                                distance_from_claim(right.ingress_id);
+                     });
+    // The grant exists only to break a tie between ports, so it moves only
+    // when there was a tie to break.  Advancing it on every round instead
+    // lets a third port that arrives alone between two contested rounds put
+    // the grant back where it started, which restores the fixed order the
+    // arbiter is here to remove: on the measured leaf the receiver's
+    // acknowledgements did exactly that, once per contested round.
+    const uint32_t winner = round.front().ingress_id;
+    const bool contested = std::any_of(
+        round.begin(), round.end(),
+        [winner](const Offer& offer) { return offer.ingress_id != winner; });
+    if (contested) {
+        _next_grant_ingress = (winner + 1) % ports;
+    }
+
+    for (const Offer& offer : round) {
+        _owner.present_to_pipeline(*offer.packet);
+    }
+}
+
 NsTm3Switch::NsTm3Switch(EventList& eventlist,
                          const string& name,
                          switch_type type,
@@ -145,6 +209,8 @@ NsTm3Switch::NsTm3Switch(EventList& eventlist,
     if (_shared_buffer_capacity <= 0) {
         throw std::invalid_argument("ns-tm3 shared-buffer capacity must be positive");
     }
+    _ingress_arbiter =
+        std::make_unique<NsTm3IngressArbiter>(*this, eventlist, name + "-ingress-arbiter");
 }
 
 NsTm3Switch::~NsTm3Switch() = default;
@@ -207,12 +273,29 @@ void NsTm3Switch::set_egress_buffer_capacity(mem_b capacity) {
     _egress_buffer_capacity = capacity;
 }
 
+void NsTm3Switch::set_control_headroom_capacity(mem_b capacity) {
+    if (capacity < 0 || capacity >
+        (std::numeric_limits<mem_b>::max() - _shared_buffer_capacity) /
+            static_cast<mem_b>(std::max<size_t>(1, _egresses.size()))) {
+        throw std::invalid_argument("ns-tm3 control headroom exceeds physical storage range");
+    }
+    if (_buffer_counters.admitted_packets != 0 || !_pipeline_ingress.empty()) {
+        throw std::logic_error("ns-tm3 control headroom must be configured before traffic");
+    }
+    _control_headroom_capacity = capacity;
+}
+
 int NsTm3Switch::addPort(BaseQueue* queue) {
     auto* serializer = dynamic_cast<NsTm3EgressSerializer*>(queue);
     if (serializer == nullptr) {
         throw std::invalid_argument("ns-tm3 switch ports must be physical egress serializers");
     }
 
+    if (_control_headroom_capacity >
+        (std::numeric_limits<mem_b>::max() - _shared_buffer_capacity) /
+            static_cast<mem_b>(_egresses.size() + 1)) {
+        throw std::invalid_argument("ns-tm3 additional port overflows control storage");
+    }
     const int egress_id = FatTreeSwitch::addPort(queue);
     serializer->bind(*this, static_cast<uint32_t>(egress_id));
 
@@ -228,7 +311,33 @@ PacketSink* NsTm3Switch::create_physical_ingress(const string& name) {
     auto ingress = std::make_unique<NsTm3IngressPort>(*this, ingress_id, name);
     PacketSink* result = ingress.get();
     _physical_ingresses.push_back(std::move(ingress));
+    _ingress_admitted_packets.push_back(0);
+    _ingress_dropped_packets.push_back(0);
     return result;
+}
+
+uint64_t NsTm3Switch::ingress_admitted_packets(uint32_t ingress_id) const {
+    if (ingress_id >= _ingress_admitted_packets.size()) {
+        throw std::out_of_range("unknown ns-tm3 physical ingress");
+    }
+    return _ingress_admitted_packets[ingress_id];
+}
+
+uint64_t NsTm3Switch::ingress_dropped_packets(uint32_t ingress_id) const {
+    if (ingress_id >= _ingress_dropped_packets.size()) {
+        throw std::out_of_range("unknown ns-tm3 physical ingress");
+    }
+    return _ingress_dropped_packets[ingress_id];
+}
+
+uint64_t NsTm3Switch::unreacted_ingress_dropped_packets(uint32_t ingress_id) const {
+    if (!_loss_notification_seen) {
+        return ingress_dropped_packets(ingress_id);
+    }
+    if (ingress_id >= _unreacted_ingress_dropped_packets.size()) {
+        throw std::out_of_range("unknown ns-tm3 physical ingress");
+    }
+    return _unreacted_ingress_dropped_packets[ingress_id];
 }
 
 void NsTm3Switch::receive_from_physical_ingress(Packet& pkt, uint32_t ingress_id) {
@@ -244,8 +353,17 @@ void NsTm3Switch::receive_from_physical_ingress(Packet& pkt, uint32_t ingress_id
     if (_dcqcn_policy != nullptr) {
         _dcqcn_policy->observe_physical_ingress(pkt, ingress_id);
     }
+    if (!_loss_notification_seen && pkt.type() == ROCENACK) {
+        // Measurement only.  The first negative acknowledgement to cross
+        // this switch is the moment its senders stop being equal-rate.
+        _loss_notification_seen = true;
+        _unreacted_ingress_dropped_packets = _ingress_dropped_packets;
+    }
 
-    schedule_through_switch_pipeline(pkt);
+    // The shared switch pipeline takes one packet at a time, so ports that
+    // deliver in the same picosecond are arbitrated before it, not by the
+    // order the simulator happened to deliver them in.
+    _ingress_arbiter->offer(pkt, ingress_id);
 }
 
 void NsTm3Switch::receivePacket(Packet& pkt) {
@@ -306,27 +424,44 @@ void NsTm3Switch::enqueue(Packet& pkt, uint32_t ingress_id, NsTm3EgressSerialize
     EgressState& state = egress_state(egress.egress_id());
     const PacketSummary packet{ingress_id,    egress.egress_id(), pkt.priority(),
                                pkt.flow_id(), pkt.id(),           packet_bytes};
-    if (packet_bytes > _shared_buffer_capacity ||
-        _shared_buffer_occupancy > _shared_buffer_capacity - packet_bytes) {
-        _buffer_counters.dropped_packets++;
-        _buffer_counters.dropped_bytes += packet_bytes;
-        _buffer_counters.shared_pool_dropped_packets++;
-        _buffer_counters.shared_pool_dropped_bytes += packet_bytes;
-        egress.note_buffer_drop(pkt);
-        emit_queue_observation(NsTm3QueueTransition::Dropped, packet);
-        pkt.free();
-        return;
-    }
-    if (packet_bytes > _egress_buffer_capacity ||
-        state.buffered_bytes > _egress_buffer_capacity - packet_bytes) {
-        _buffer_counters.dropped_packets++;
-        _buffer_counters.dropped_bytes += packet_bytes;
-        _buffer_counters.egress_domain_dropped_packets++;
-        _buffer_counters.egress_domain_dropped_bytes += packet_bytes;
-        egress.note_buffer_drop(pkt);
-        emit_queue_observation(NsTm3QueueTransition::Dropped, packet);
-        pkt.free();
-        return;
+    const mem_b shared_base_bytes = _shared_buffer_occupancy - _control_headroom_occupancy;
+    const mem_b egress_base_bytes = state.buffered_bytes - state.control_headroom_bytes;
+    const bool shared_full = packet_bytes > _shared_buffer_capacity ||
+                            shared_base_bytes > _shared_buffer_capacity - packet_bytes;
+    const bool egress_full = packet_bytes > _egress_buffer_capacity ||
+                            egress_base_bytes > _egress_buffer_capacity - packet_bytes;
+    if (shared_full || egress_full) {
+        auto* control = _control_headroom_capacity == 0
+                            ? nullptr : dynamic_cast<RnicCollectivePacket*>(&pkt);
+        const bool protected_control = control != nullptr &&
+            control->kind() != RnicCollectivePacketKind::DATA &&
+            packet_bytes <= _control_headroom_capacity &&
+            state.control_headroom_bytes <= _control_headroom_capacity - packet_bytes;
+        if (protected_control) {
+            if (!state.control_headroom_packets.insert(&pkt).second) {
+                throw std::logic_error("duplicate ns-tm3 control reserve admission");
+            }
+            state.control_headroom_bytes += packet_bytes;
+            _control_headroom_occupancy += packet_bytes;
+            _control_headroom_egress_peak =
+                std::max(_control_headroom_egress_peak, state.control_headroom_bytes);
+            _control_headroom_admissions.at(static_cast<size_t>(control->kind()))++;
+        } else {
+            _buffer_counters.dropped_packets++;
+            _buffer_counters.dropped_bytes += packet_bytes;
+            if (shared_full) {
+                _buffer_counters.shared_pool_dropped_packets++;
+                _buffer_counters.shared_pool_dropped_bytes += packet_bytes;
+            } else {
+                _buffer_counters.egress_domain_dropped_packets++;
+                _buffer_counters.egress_domain_dropped_bytes += packet_bytes;
+            }
+            _ingress_dropped_packets.at(ingress_id)++;
+            egress.note_buffer_drop(pkt);
+            emit_queue_observation(NsTm3QueueTransition::Dropped, packet);
+            pkt.free();
+            return;
+        }
     }
 
     state.traffic_classes[traffic_class(pkt.priority())].packets_by_ingress[ingress_id].push_back(
@@ -345,6 +480,7 @@ void NsTm3Switch::enqueue(Packet& pkt, uint32_t ingress_id, NsTm3EgressSerialize
         std::max(_shared_buffer_high_watermark, _shared_buffer_occupancy);
     _buffer_counters.admitted_packets++;
     _buffer_counters.admitted_bytes += packet_bytes;
+    _ingress_admitted_packets.at(ingress_id)++;
     if (_dcqcn_policy != nullptr) {
         _dcqcn_policy->packet_enqueued(pkt, ingress_id);
     }
@@ -443,6 +579,14 @@ void NsTm3Switch::schedule_egress(uint32_t egress_id) {
         throw std::logic_error("ns-tm3 dequeued packet does not target its serializer");
     }
 
+    if (state.control_headroom_packets.erase(packet) != 0) {
+        if (state.control_headroom_bytes < packet_bytes ||
+            _control_headroom_occupancy < packet_bytes) {
+            throw std::logic_error("ns-tm3 control headroom accounting underflow");
+        }
+        state.control_headroom_bytes -= packet_bytes;
+        _control_headroom_occupancy -= packet_bytes;
+    }
     state.buffered_bytes -= packet_bytes;
     _shared_buffer_occupancy -= packet_bytes;
     _buffer_counters.dequeued_packets++;

@@ -7,6 +7,15 @@
 #include <string>
 
 #include "rnic_profile.h"
+#include "rnic_data_recovery.h"
+
+enum class RnicCnControlRecovery { None, Headroom };
+
+const char* rnicCnControlRecoveryName(RnicCnControlRecovery recovery);
+const char* rnicCnDataRecoveryName(RnicCnDataRecovery recovery);
+std::uint64_t rnicCnControlAdmittedFanIn(std::uint64_t headroom_bytes,
+                                      std::uint64_t messages_per_flow,
+                                      std::uint64_t control_wire_bytes);
 
 enum class RnicAtlahsGoalRankMapping {
     Auto,
@@ -39,12 +48,19 @@ struct RnicAtlahsCollectiveCliOptions {
     std::uint64_t control_deadline_ps = 10000000;
     std::uint32_t margin_ppm = 900000;
     std::uint64_t control_wire_bytes = 64;
+    RnicCnControlRecovery control_recovery = RnicCnControlRecovery::None;
+    std::uint64_t control_headroom_bytes = 131072;
+    std::uint64_t control_messages_per_flow = 32;
     std::uint64_t ring_delay_window_ps = 4096000;
     std::uint64_t ring_release_tick_ps = 16000;
     std::uint64_t ring_wire_capacity_bytes = UINT64_C(1) << 20;
     std::uint64_t ns_tm3_shared_buffer_bytes = UINT64_C(1) << 20;
     std::uint32_t maximum_retransmissions = 8;
     std::uint64_t retransmission_rto_ps = UINT64_C(50000000000);
+    RnicCnDataRecovery data_recovery = RnicCnDataRecovery::None;
+    std::uint32_t retry_probe_windows = 4;
+    std::optional<std::uint64_t> initial_window_bytes;
+    std::uint64_t initial_window_fan_in = 0;
 };
 
 // Public-mechanism parameters for the open rnic-ss comparator.  None of these
@@ -85,12 +101,19 @@ struct RnicAtlahsExplicitCliOptions {
     bool control_deadline_ps = false;
     bool margin_ppm = false;
     bool control_wire_bytes = false;
+    bool control_recovery = false;
+    bool control_headroom_bytes = false;
+    bool control_messages_per_flow = false;
     bool ring_delay_window_ps = false;
     bool ring_release_tick_ps = false;
     bool ring_wire_capacity_bytes = false;
     bool ns_tm3_shared_buffer_bytes = false;
     bool cn_maximum_retransmissions = false;
     bool cn_retransmission_rto_ps = false;
+    bool data_recovery = false;
+    bool retry_probe_windows = false;
+    bool initial_window_bytes = false;
+    bool initial_window_fan_in = false;
 
     bool ss_state_trace_csv = false;
     bool goodput_trace_csv = false;

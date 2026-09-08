@@ -306,12 +306,16 @@ struct RnicCollectiveNetworkRuntime::Impl {
         std::uint32_t highest_dispatched_attempt{0};
         std::uint32_t timeout_fired_through_attempt{0};
         std::uint32_t resolved_through_attempt{0};
+        bool terminal_resolved{false};
+        std::optional<TimePs> terminal_resolution_ps;
+        std::set<std::uint32_t> tail_probe_attempts;
     };
 
     struct RetryTimeout {
         AtlahsFlowId flow_id;
         std::uint64_t packet_index;
         std::uint32_t transmission_attempt;
+        bool tail_probe{false};
     };
 
     struct ReadyPacket {
@@ -356,6 +360,10 @@ struct RnicCollectiveNetworkRuntime::Impl {
         std::uint64_t nflow_updates_dispatched = 0;
         bool declaration_dispatched = false;
         bool declaration_observed = false;
+        bool initial_grant_received = false;
+        bool initial_feedback_sent = false;
+        bool initial_accept_pending = false;
+        bool initial_window_blocked = false;
         bool retire_control_queued = false;
         bool retire_dispatched = false;
         bool retire_received = false;
@@ -561,6 +569,9 @@ struct RnicCollectiveNetworkRuntime::Impl {
     void processDueTailGapAudits(TimePs now_ps);
     void queueDueGapNacks(TimePs now_ps);
     void processDueRetryTimeouts(TimePs now_ps);
+    void processInitialAccepts(TimePs now_ps);
+    void scheduleInitialAccept(FlowState& flow, TimePs observed_at_ps);
+    void refreshInitialEligibility(FlowState& flow);
     void queueGapResolved(FlowState& flow,
                           const RxMissingPacket& missing,
                           std::uint32_t acknowledged_attempt,
@@ -577,6 +588,7 @@ struct RnicCollectiveNetworkRuntime::Impl {
                                    std::uint32_t transmission_attempt);
     void duplicateOriginalDataForTesting(AtlahsFlowId flow_id, std::uint64_t packet_index);
     void replayResolvedGapNackForTesting(AtlahsFlowId flow_id, std::uint64_t packet_index);
+    void replayGapResolvedForTesting(AtlahsFlowId flow_id, std::uint64_t packet_index);
     void redeclareFlowForTesting(AtlahsFlowId flow_id);
     bool queuedRetransmissionIsCurrent(const FlowState& flow,
                                        const RnicCollectiveDataMetadata& retransmission) const;
@@ -640,8 +652,13 @@ struct RnicCollectiveNetworkRuntime::Impl {
 
     std::multimap<TimePs, SerializedFrame> pending_launches;
     std::multimap<TimePs, GapDecision> pending_gap_decisions;
+    std::multimap<TimePs, AtlahsFlowId> pending_initial_accepts;
     std::multimap<TimePs, AtlahsFlowId> pending_tail_gap_audits;
-    std::multimap<TimePs, RetryTimeout> pending_retry_timeouts;
+    using RetryTimeoutQueue = std::multimap<TimePs, RetryTimeout>;
+    RetryTimeoutQueue pending_retry_timeouts;
+    // Lookup references only; the time-ordered queue remains the authority.
+    std::map<std::pair<AtlahsFlowId, std::uint64_t>,
+             std::vector<RetryTimeoutQueue::iterator>> retry_timeouts_by_packet;
     // Sender-local dwnd boundaries at which a held window snapshot becomes
     // the pacing rate.
     std::multimap<TimePs, AtlahsFlowId> pending_rate_activations;
@@ -708,6 +725,37 @@ void RnicCollectiveNetworkRuntime::Impl::validateConfiguration() const {
     }
     if (config.retransmission_rto_ps == 0) {
         throw std::invalid_argument("rnic-cn retransmission RTO must be positive");
+    }
+    if (config.data_recovery != RnicCnDataRecovery::None &&
+        config.data_recovery != RnicCnDataRecovery::Deadline &&
+        config.data_recovery != RnicCnDataRecovery::Exponential) {
+        throw std::invalid_argument("rnic-cn unknown data recovery selection");
+    }
+    if (config.retry_probe_windows == 0 ||
+        static_cast<Wide>(config.retry_probe_windows) * config.control_deadline_ps >
+            std::numeric_limits<TimePs>::max()) {
+        throw std::invalid_argument("rnic-cn invalid retry probe interval");
+    }
+    if (config.data_recovery == RnicCnDataRecovery::None && config.retry_probe_windows != 4) {
+        throw std::invalid_argument("rnic-cn probe interval requires deadline recovery");
+    }
+    if (config.data_recovery == RnicCnDataRecovery::Exponential &&
+        config.maximum_retransmissions > 1) {
+        const auto longest = rnicCnRetryProbeIntervalPs(
+            config.data_recovery, config.retry_probe_windows * config.control_deadline_ps,
+            config.maximum_retransmissions - 1);
+        if (longest >= config.retransmission_rto_ps) {
+            throw std::invalid_argument("legacy timeout must follow exponential probe deadlines");
+        }
+    }
+    if (config.initial_window_bytes.has_value()) {
+        if (config.initial_window_fan_in == 0 ||
+            static_cast<Wide>(*config.initial_window_bytes) * config.initial_window_fan_in >
+                static_cast<Wide>(clos.ns_tm3_shared_buffer_capacity(TOR_TIER))) {
+            throw std::invalid_argument("rnic-cn initial window requires F*U <= shared buffer");
+        }
+    } else if (config.initial_window_fan_in != 0) {
+        throw std::invalid_argument("rnic-cn initial fan-in requires a byte window");
     }
     if (config.packetization.maxWirePacketBytes() > std::numeric_limits<std::uint16_t>::max()) {
         throw std::invalid_argument("rnic-cn DATA extent must fit exactly in uint16_t");
@@ -1158,6 +1206,9 @@ void RnicCollectiveNetworkRuntime::Impl::launchFrame(const SerializedFrame& fram
             packet = RnicCollectivePacket::newAccept(
                 flow.packet_flow, route, packet_id, frame.source, frame.destination,
                 frame.wire_bytes, *frame.grant, packet_observer);
+            if (config.initial_window_bytes.has_value()) {
+                ++recovery_statistics.initial_grants_dispatched;
+            }
             break;
         case RnicCollectivePacketKind::GRANT_UPDATE:
             if (!frame.grant.has_value()) {
@@ -1211,7 +1262,8 @@ void RnicCollectiveNetworkRuntime::Impl::launchFrame(const SerializedFrame& fram
             if (retry == flow.tx_retry_states.end() ||
                 frame.data->transmission_attempt > retry->second.highest_dispatched_attempt ||
                 frame.data->transmission_attempt > retry->second.highest_authorized_attempt ||
-                frame.data->transmission_attempt <= retry->second.resolved_through_attempt ||
+                (frame.data->transmission_attempt <= retry->second.resolved_through_attempt &&
+                 !retry->second.terminal_resolved) ||
                 !logicalDataEqual(retry->second.logical_data, *frame.data)) {
                 packet->free();
                 throw std::logic_error(
@@ -1490,12 +1542,23 @@ void RnicCollectiveNetworkRuntime::Impl::processDataArrival(
         arrival.lifecycle_id,    arrival.flow_id, received.eta_ps,
         arrival.arrival_time_ps, received.extent,
     };
-    const RnicRxArrivalResult result = receiver.node.rxPort().processArrival(ring_packet);
+    const bool recover_late = config.data_recovery != RnicCnDataRecovery::None &&
+        received.transmission_attempt != 0 && missing != flow.rx_missing_packets.end() &&
+        arrival.arrival_time_ps >= received.eta_ps &&
+        arrival.arrival_time_ps - received.eta_ps > config.ring_cam.delay_window_ps;
+    const RnicRxArrivalResult result = recover_late
+        ? receiver.node.rxPort().processRecoveryArrival(ring_packet)
+        : receiver.node.rxPort().processArrival(ring_packet);
+    if (recover_late && result.admission == RnicRingCamAdmission::Admitted) {
+        ++recovery_statistics.late_retry_admissions;
+        ++flow.recovery.late_retry_admissions;
+    }
     processRxReleases(result.serializations_scheduled_before_admission);
     processRxCompletions(result.packets_completed_through_arrival, completions);
     if (result.admission != RnicRingCamAdmission::Admitted) {
         destination_data.erase(pending);
-        if (result.admission == RnicRingCamAdmission::Late) {
+        if (result.admission == RnicRingCamAdmission::Late ||
+            (recover_late && result.admission == RnicRingCamAdmission::Overflow)) {
             if (!first_late_data_diagnostic.has_value()) {
                 std::ostringstream diagnostic;
                 diagnostic << "flow_id=" << arrival.flow_id
@@ -1672,6 +1735,10 @@ void RnicCollectiveNetworkRuntime::Impl::scheduleGapNack(FlowState& flow,
     const RnicCollectiveGapNackMetadata gap_nack{
         data.packet_index, data.payload_byte_offset, data.extent, requested_attempt};
     pending_gap_decisions.emplace(decision_time_ps, GapDecision{flow.request.flow_id, gap_nack});
+    // A full-flow initial budget can be dormant until real loss is observed.
+    // The receiver then supplies a nonempty grant so retries respect the same
+    // total pre-grant DATA budget without waiting for more original traffic.
+    scheduleInitialAccept(flow, EventList::now());
 }
 
 void RnicCollectiveNetworkRuntime::Impl::detectGapThrough(FlowState& flow,
@@ -1830,7 +1897,8 @@ void RnicCollectiveNetworkRuntime::Impl::processGapNackArrival(const EndpointArr
         throw std::logic_error("rnic-cn sender retry state changed its logical packet");
     }
     TxRetryState& state = retry->second;
-    if (gap_nack.requested_transmission_attempt <= state.resolved_through_attempt ||
+    if (state.terminal_resolved ||
+        gap_nack.requested_transmission_attempt <= state.resolved_through_attempt ||
         gap_nack.requested_transmission_attempt <= state.highest_authorized_attempt) {
         ++flow.recovery.duplicate_gap_nacks_ignored;
         ++recovery_statistics.duplicate_gap_nacks_ignored;
@@ -1852,7 +1920,8 @@ void RnicCollectiveNetworkRuntime::Impl::processGapNackArrival(const EndpointArr
 void RnicCollectiveNetworkRuntime::Impl::authorizeRetry(FlowState& flow,
                                                         TxRetryState& state,
                                                         std::uint32_t transmission_attempt) {
-    if (transmission_attempt == 0 || transmission_attempt > config.maximum_retransmissions ||
+    if (state.terminal_resolved || transmission_attempt == 0 ||
+        transmission_attempt > config.maximum_retransmissions ||
         transmission_attempt != state.highest_authorized_attempt + 1 ||
         transmission_attempt <= state.resolved_through_attempt) {
         throw std::logic_error("rnic-cn invalid deterministic retry authorization");
@@ -1869,19 +1938,29 @@ void RnicCollectiveNetworkRuntime::Impl::authorizeRetry(FlowState& flow,
     source.retransmission_flow_ids.insert(flow.request.flow_id);
     tx.setRetransmissionPending(flow.request.flow_id, true);
     state.highest_authorized_attempt = transmission_attempt;
+    refreshInitialEligibility(flow);
 }
 
 void RnicCollectiveNetworkRuntime::Impl::cancelRetryTimeouts(AtlahsFlowId flow_id,
                                                              std::uint64_t packet_index,
                                                              std::uint32_t through_attempt) {
-    auto timeout = pending_retry_timeouts.begin();
-    while (timeout != pending_retry_timeouts.end()) {
-        if (timeout->second.flow_id == flow_id && timeout->second.packet_index == packet_index &&
-            timeout->second.transmission_attempt <= through_attempt) {
-            timeout = pending_retry_timeouts.erase(timeout);
+    const auto indexed = retry_timeouts_by_packet.find({flow_id, packet_index});
+    if (indexed == retry_timeouts_by_packet.end()) {
+        return;
+    }
+    auto& entries = indexed->second;
+    auto reference = entries.begin();
+    while (reference != entries.end()) {
+        const auto timeout = *reference;
+        if (timeout->second.transmission_attempt <= through_attempt) {
+            pending_retry_timeouts.erase(timeout);
+            reference = entries.erase(reference);
         } else {
-            ++timeout;
+            ++reference;
         }
+    }
+    if (entries.empty()) {
+        retry_timeouts_by_packet.erase(indexed);
     }
 }
 
@@ -1929,9 +2008,24 @@ void RnicCollectiveNetworkRuntime::Impl::processGapResolvedArrival(const Endpoin
         !extentsEqual(state.logical_data.extent, resolved.extent)) {
         throw std::invalid_argument("rnic-cn GAP_RESOLVED changed its logical packet range");
     }
+    if (state.terminal_resolved) {
+        // A physical duplicate can arrive after sender retirement removed the
+        // TX flow. Validating its extent is sufficient; closure is idempotent.
+        return;
+    }
     state.highest_authorized_attempt =
         std::max(state.highest_authorized_attempt, resolved.acknowledged_transmission_attempt);
-    if (resolved.acknowledged_transmission_attempt > state.resolved_through_attempt) {
+    if (config.data_recovery != RnicCnDataRecovery::None) {
+        // The physical ACK confirms the logical extent, including when an
+        // older successful attempt overtakes a newer probe. Routed duplicates
+        // still drain, but sender-side work for these bytes is terminal.
+        state.terminal_resolved = true;
+        state.terminal_resolution_ps = now_ps;
+        state.resolved_through_attempt = state.highest_authorized_attempt;
+        cancelRetryTimeouts(flow.request.flow_id, resolved.packet_index,
+                            std::numeric_limits<std::uint32_t>::max());
+        pruneStaleQueuedRetransmissions(flow);
+    } else if (resolved.acknowledged_transmission_attempt > state.resolved_through_attempt) {
         state.resolved_through_attempt = resolved.acknowledged_transmission_attempt;
         cancelRetryTimeouts(flow.request.flow_id, resolved.packet_index,
                             resolved.acknowledged_transmission_attempt);
@@ -1948,6 +2042,20 @@ void RnicCollectiveNetworkRuntime::Impl::processDueRetryTimeouts(TimePs now_ps) 
             throw std::logic_error("rnic-cn retry timeout escaped its deadline");
         }
         due.push_back(timeout->second);
+        const auto key = std::make_pair(timeout->second.flow_id, timeout->second.packet_index);
+        const auto indexed = retry_timeouts_by_packet.find(key);
+        if (indexed == retry_timeouts_by_packet.end()) {
+            throw std::logic_error("rnic-cn due retry timeout lost its packet index");
+        }
+        auto& entries = indexed->second;
+        const auto reference = std::find(entries.begin(), entries.end(), timeout);
+        if (reference == entries.end()) {
+            throw std::logic_error("rnic-cn due retry timeout lost its queue reference");
+        }
+        entries.erase(reference);
+        if (entries.empty()) {
+            retry_timeouts_by_packet.erase(indexed);
+        }
     }
     pending_retry_timeouts.erase(pending_retry_timeouts.begin(), due_end);
 
@@ -1971,12 +2079,39 @@ void RnicCollectiveNetworkRuntime::Impl::processDueRetryTimeouts(TimePs now_ps) 
         if (timeout.transmission_attempt >= config.maximum_retransmissions) {
             std::ostringstream message;
             message << "rnic-cn deterministic retransmission exhausted "
-                       "maximum attempts after sender RTO"
+                       "maximum attempts after "
+                    << (timeout.tail_probe ? "tail probe deadline" : "sender RTO")
                     << " flow_id=" << flow.request.flow_id
                     << " packet_index=" << timeout.packet_index
                     << " attempt=" << timeout.transmission_attempt
-                    << " maximum=" << config.maximum_retransmissions;
+                    << " maximum=" << config.maximum_retransmissions
+                    << " now_ps=" << now_ps
+                    << " source_packets=" << flow.source_data_packets_dispatched
+                    << " delivered_packets=" << flow.delivered_data_packets
+                    << " total_packets=" << flow.final_ledger.total_data_packets
+                    << " retry_packets=" << flow.recovery.deterministic_retransmissions
+                    << " tail_probes=" << flow.recovery.tail_probes
+                    << " late_retry_admissions=" << flow.recovery.late_retry_admissions;
+            const auto missing = flow.rx_missing_packets.find(timeout.packet_index);
+            if (missing != flow.rx_missing_packets.end()) {
+                message << " receiver_last_failed=" << missing->second.last_failed_attempt
+                        << " receiver_last_nack=" << missing->second.last_nack_attempt
+                        << " receiver_accepted_lifecycle="
+                        << missing->second.accepted_lifecycle.value_or(0);
+            }
+            for (const auto& pending : destination_data) {
+                if (pending.second.flow_id == timeout.flow_id &&
+                    pending.second.data.packet_index == timeout.packet_index) {
+                    message << " pending_extent={lifecycle:" << pending.first
+                            << ",attempt:" << pending.second.data.transmission_attempt
+                            << ",eta_ps:" << pending.second.data.eta_ps << '}';
+                }
+            }
+            message << renderNsTm3QueueDiagnostic(topology);
             throw std::runtime_error(message.str());
+        }
+        if (timeout.tail_probe) {
+            state.tail_probe_attempts.insert(timeout.transmission_attempt + 1);
         }
         authorizeRetry(flow, state, timeout.transmission_attempt + 1);
     }
@@ -2065,6 +2200,25 @@ void RnicCollectiveNetworkRuntime::Impl::redeclareFlowForTesting(AtlahsFlowId fl
     wakeAt(EventList::now());
 }
 
+void RnicCollectiveNetworkRuntime::Impl::replayGapResolvedForTesting(
+    AtlahsFlowId flow_id, std::uint64_t packet_index) {
+    FlowState& flow = requireFlow(flow_id);
+    const auto retry = flow.tx_retry_states.find(packet_index);
+    if (retry == flow.tx_retry_states.end() || !retry->second.terminal_resolved) {
+        throw std::logic_error("rnic-cn duplicate resolution requires a terminal extent");
+    }
+    const auto& state = retry->second;
+    NodeState& receiver = requireNode(flow.request.destination);
+    enqueueControl(receiver, {RnicCollectivePacketKind::GAP_RESOLVED, flow_id,
+                              flow.request.destination, flow.request.source,
+                              config.control_wire_bytes, std::nullopt, std::nullopt,
+                              std::nullopt, EventList::now(), false, false, std::nullopt,
+                              RnicCollectiveGapResolvedMetadata{
+                                  packet_index, state.logical_data.payload_byte_offset,
+                                  state.logical_data.extent, state.resolved_through_attempt}});
+    wakeAt(EventList::now());
+}
+
 void RnicCollectiveNetworkRuntime::Impl::replayResolvedGapNackForTesting(
     AtlahsFlowId flow_id,
     std::uint64_t packet_index) {
@@ -2115,6 +2269,7 @@ void RnicCollectiveNetworkRuntime::Impl::pruneStaleQueuedRetransmissions(FlowSta
     if (tx.hasRetransmissionPending(flow.request.flow_id) != pending) {
         tx.setRetransmissionPending(flow.request.flow_id, pending);
     }
+    refreshInitialEligibility(flow);
 }
 
 void RnicCollectiveNetworkRuntime::Impl::settleReceivePorts(
@@ -2482,6 +2637,12 @@ void RnicCollectiveNetworkRuntime::Impl::rebalanceEgress(NodeState& source, Time
 void RnicCollectiveNetworkRuntime::Impl::applyFeedbackArrival(
     FlowState& flow,
     RnicSenderFeedbackOutcome outcome) {
+    if (config.initial_window_bytes.has_value() &&
+        (outcome == RnicSenderFeedbackOutcome::AppliedNow ||
+         outcome == RnicSenderFeedbackOutcome::Scheduled)) {
+        flow.initial_grant_received = true;
+        refreshInitialEligibility(flow);
+    }
     if (outcome == RnicSenderFeedbackOutcome::AppliedNow) {
         refreshEgressPacing(requireNode(flow.request.source));
         return;
@@ -2630,7 +2791,76 @@ void RnicCollectiveNetworkRuntime::Impl::beginMembershipChange(
 
     if (!accepts.empty()) {
         queueAcceptFrames(accepts, receiver_node, observation_time_ps);
+    } else if (config.initial_window_bytes.has_value()) {
+        for (const AtlahsFlowId flow_id : update->accepted_flow_ids) {
+            FlowState& flow = requireFlow(flow_id);
+            if (flow.final_ledger.total_wire_bytes > *config.initial_window_bytes) {
+                scheduleInitialAccept(flow, observation_time_ps);
+            }
+        }
     }
+}
+
+void RnicCollectiveNetworkRuntime::Impl::scheduleInitialAccept(FlowState& flow,
+                                                               TimePs observed_at_ps) {
+    if (!config.initial_window_bytes.has_value() || flow.initial_feedback_sent ||
+        flow.initial_accept_pending || flow.receiver_retired) {
+        return;
+    }
+    const TimePs boundary = checkedAdd(
+        observed_at_ps - observed_at_ps % config.control_deadline_ps,
+        config.control_deadline_ps, "rnic-cn initial ACCEPT boundary overflow");
+    pending_initial_accepts.emplace(boundary, flow.request.flow_id);
+    flow.initial_accept_pending = true;
+}
+
+void RnicCollectiveNetworkRuntime::Impl::processInitialAccepts(TimePs now_ps) {
+    const auto end = pending_initial_accepts.upper_bound(now_ps);
+    for (auto pending = pending_initial_accepts.begin(); pending != end; ++pending) {
+        FlowState& flow = requireFlow(pending->second);
+        flow.initial_accept_pending = false;
+        if (flow.receiver_retired || flow.initial_feedback_sent) {
+            continue;
+        }
+        NodeState& receiver = requireNode(flow.request.destination);
+        const auto& snapshot = frozenSnapshotFor(receiver, now_ps);
+        if (snapshot.n_hat_ppm == 0 || !receiver.controller.contains(flow.request.flow_id)) {
+            throw std::logic_error("rnic-cn initial ACCEPT has no active receiver membership");
+        }
+        queueAcceptFrames({receiver.controller.acceptFor(
+            flow.request.flow_id, snapshot, governedBoundaryPs(now_ps))},
+            flow.request.destination, now_ps);
+    }
+    pending_initial_accepts.erase(pending_initial_accepts.begin(), end);
+}
+
+void RnicCollectiveNetworkRuntime::Impl::refreshInitialEligibility(FlowState& flow) {
+    if (!config.initial_window_bytes.has_value() || flow.receiver_retired) {
+        return;
+    }
+    bool eligible = flow.initial_grant_received;
+    if (!eligible) {
+        const auto remaining_payload =
+            flow.final_ledger.total_payload_bytes - flow.source_payload_bytes_dispatched;
+        const auto spent = checkedAdd(flow.source_wire_bytes_dispatched,
+                                      flow.recovery.deterministic_retransmission_wire_bytes,
+                                      "rnic-cn initial DATA byte counter overflow");
+        const auto next_wire = !flow.retransmission_queue.empty()
+            ? flow.retransmission_queue.front().extent.wireBytes()
+            : (remaining_payload == 0 ? 0 : config.packetization.packetize(remaining_payload).wireBytes());
+        eligible = next_wire == 0 ||
+            (spent <= *config.initial_window_bytes &&
+             next_wire <= *config.initial_window_bytes - spent);
+    }
+    RnicTxPort& tx = requireNode(flow.request.source).node.txPort();
+    if (!eligible && !flow.initial_window_blocked) {
+        ++recovery_statistics.initial_window_holds;
+    }
+    if (eligible && flow.initial_window_blocked && tx.nextWireOpportunityPs() <= EventList::now()) {
+        tx.rebaseDataClassIdle(EventList::now());
+    }
+    flow.initial_window_blocked = !eligible;
+    tx.setDataEligible(flow.request.flow_id, eligible);
 }
 
 void RnicCollectiveNetworkRuntime::Impl::queueAcceptFrames(
@@ -2639,7 +2869,8 @@ void RnicCollectiveNetworkRuntime::Impl::queueAcceptFrames(
     TimePs receiver_observation_time_ps) {
     NodeState& source = requireNode(receiver_node);
     for (const RnicCollectiveGrant& grant : accepts) {
-        const FlowState& flow = requireFlow(grant.flow_id);
+        FlowState& flow = requireFlow(grant.flow_id);
+        flow.initial_feedback_sent = true;
         if (flow.request.destination != receiver_node) {
             throw std::logic_error(
                 "rnic-cn admission spans multiple receivers");
@@ -2696,6 +2927,9 @@ void RnicCollectiveNetworkRuntime::Impl::activateDeclaredFlows() {
         NodeState& source = requireNode(flow.request.source);
         RnicTxPort& tx = source.node.txPort();
         tx.setDataEligible(flow_id, true);
+        if (config.initial_window_bytes.has_value()) {
+            refreshInitialEligibility(flow);
+        }
         touched_sources.insert(flow.request.source);
         touched_receivers.insert(flow.request.destination);
         if (flow.final_ledger.total_data_packets == 0 && !flow.retire_control_queued) {
@@ -2744,6 +2978,7 @@ void RnicCollectiveNetworkRuntime::Impl::queueRateFeedback(
                     config.control_wire_bytes, std::nullopt, grant, std::nullopt,
                     receiver_feedback_time_ps, false, false});
     ++flow.rate_feedback_acks_generated;
+    flow.initial_feedback_sent = true;
 }
 
 std::exception_ptr RnicCollectiveNetworkRuntime::Impl::notifyCompletions(
@@ -2900,10 +3135,24 @@ bool RnicCollectiveNetworkRuntime::Impl::dispatchData(TimePs now_ps) {
             // normal-path receiver inference and it does not make control
             // packets reliable; a routed GAP_RESOLVED or newer GAP_NACK is
             // still required to cancel/supersede it before expiry.
-            pending_retry_timeouts.emplace(
+            const auto timeout = pending_retry_timeouts.emplace(
                 checkedAdd(opportunity.end_ps, config.retransmission_rto_ps,
                            "rnic-cn retransmission RTO overflow"),
                 RetryTimeout{flow.request.flow_id, data.packet_index, data.transmission_attempt});
+            retry_timeouts_by_packet[{flow.request.flow_id, data.packet_index}].push_back(timeout);
+            // No ninth retry is legal. The final physical attempt keeps its
+            // existing long timeout so delayed resolution can still arrive.
+            if (config.data_recovery != RnicCnDataRecovery::None &&
+                data.transmission_attempt < config.maximum_retransmissions) {
+                const TimePs interval = rnicCnRetryProbeIntervalPs(
+                    config.data_recovery, config.retry_probe_windows * config.control_deadline_ps,
+                    data.transmission_attempt);
+                const auto probe = pending_retry_timeouts.emplace(
+                    checkedAdd(opportunity.end_ps, interval, "rnic-cn tail probe deadline overflow"),
+                    RetryTimeout{flow.request.flow_id, data.packet_index,
+                                 data.transmission_attempt, true});
+                retry_timeouts_by_packet[{flow.request.flow_id, data.packet_index}].push_back(probe);
+            }
             flow.first_retry_dispatch_ps.emplace(data.transmission_attempt, now_ps);
             if (!first_retransmission_dispatch_ps.has_value()) {
                 first_retransmission_dispatch_ps = now_ps;
@@ -2914,6 +3163,16 @@ bool RnicCollectiveNetworkRuntime::Impl::dispatchData(TimePs now_ps) {
                                 flow.request.source, flow.request.destination,
                                 data.extent.wireBytes(), data, std::nullopt, std::nullopt,
                                 std::nullopt, std::nullopt, true});
+            if (retry->second.tail_probe_attempts.count(data.transmission_attempt) != 0) {
+                ++flow.recovery.tail_probes;
+                ++recovery_statistics.tail_probes;
+                flow.recovery.tail_probe_wire_bytes = checkedAdd(
+                    flow.recovery.tail_probe_wire_bytes, data.extent.wireBytes(),
+                    "rnic-cn per-flow tail probe wire counter overflow");
+                recovery_statistics.tail_probe_wire_bytes = checkedAdd(
+                    recovery_statistics.tail_probe_wire_bytes, data.extent.wireBytes(),
+                    "rnic-cn tail probe wire counter overflow");
+            }
             ++flow.recovery.deterministic_retransmissions;
             ++recovery_statistics.deterministic_retransmissions;
             ++retransmissions_by_attempt[data.transmission_attempt];
@@ -2928,6 +3187,7 @@ bool RnicCollectiveNetworkRuntime::Impl::dispatchData(TimePs now_ps) {
                 std::max(flow.recovery.maximum_retry_attempt_observed, data.transmission_attempt);
             recovery_statistics.maximum_retry_attempt_observed = std::max(
                 recovery_statistics.maximum_retry_attempt_observed, data.transmission_attempt);
+            refreshInitialEligibility(flow);
             continue;
         }
 
@@ -2963,6 +3223,9 @@ bool RnicCollectiveNetworkRuntime::Impl::dispatchData(TimePs now_ps) {
         flow.source_payload_bytes_dispatched = next_payload;
         flow.source_wire_bytes_dispatched = next_wire;
         flow.source_data_packets_dispatched = next_packets;
+        if (config.initial_window_bytes.has_value()) {
+            refreshInitialEligibility(flow);
+        }
         const std::uint64_t original_release_ps =
             ceilToTick(checkedAdd(transmitted.eta_ps, config.ring_cam.delay_window_ps,
                                   "rnic-cn original ETA plus Delta overflow"),
@@ -2987,6 +3250,9 @@ RnicCollectiveNetworkRuntime::Impl::nextEventTime(TimePs now_ps) const {
 
     if (!pending_launches.empty()) {
         consider(pending_launches.begin()->first);
+    }
+    if (!pending_initial_accepts.empty()) {
+        consider(pending_initial_accepts.begin()->first);
     }
     if (!pending_gap_decisions.empty()) {
         consider(pending_gap_decisions.begin()->first);
@@ -3029,7 +3295,7 @@ RnicCollectiveNetworkRuntime::Impl::nextEventTime(TimePs now_ps) const {
 bool RnicCollectiveNetworkRuntime::Impl::hasPendingWork() const noexcept {
     if (!pending_launches.empty() || !pending_gap_decisions.empty() ||
         !pending_tail_gap_audits.empty() || !pending_retry_timeouts.empty() ||
-        !pending_rate_activations.empty() ||
+        !pending_rate_activations.empty() || !pending_initial_accepts.empty() ||
         !destination_data.empty() || !endpoint_arrivals.empty() ||
         !live_packet_lifecycles.empty() || fatal_control_drop.has_value() || deferred_failure ||
         event_handle.has_value()) {
@@ -3064,6 +3330,9 @@ bool RnicCollectiveNetworkRuntime::Impl::hasPendingWork() const noexcept {
 }
 
 void RnicCollectiveNetworkRuntime::Impl::validateQuiescent() const {
+    if (!retry_timeouts_by_packet.empty()) {
+        throw std::logic_error("rnic-cn quiescence retains retry timeout lookup entries");
+    }
     if (failed) {
         throw std::logic_error("failed rnic-cn runtime cannot be declared quiescent");
     }
@@ -3137,6 +3406,7 @@ void RnicCollectiveNetworkRuntime::Impl::doNextEvent() {
         queueDueGapNacks(now_ps);
         processDueRetryTimeouts(now_ps);
         beginMembershipChanges(now_ps);
+        processInitialAccepts(now_ps);
         const std::exception_ptr completion_error = notifyCompletions(completions);
 
         const bool control_at_same_time = dispatchControls(now_ps);
@@ -3296,6 +3566,22 @@ void RnicCollectiveNetworkRuntime::dropDataAttemptForTesting(AtlahsFlowId flow_i
 void RnicCollectiveNetworkRuntime::duplicateOriginalDataForTesting(AtlahsFlowId flow_id,
                                                                    std::uint64_t packet_index) {
     _impl->duplicateOriginalDataForTesting(flow_id, packet_index);
+}
+
+std::optional<std::uint64_t> RnicCollectiveNetworkRuntime::terminalResolutionForTesting(
+    AtlahsFlowId flow_id, std::uint64_t packet_index) const {
+    const auto& states = _impl->requireFlow(flow_id).tx_retry_states;
+    const auto state = states.find(packet_index);
+    return state == states.end() ? std::nullopt : state->second.terminal_resolution_ps;
+}
+
+bool RnicCollectiveNetworkRuntime::initialGrantReceivedForTesting(AtlahsFlowId flow_id) const {
+    return _impl->requireFlow(flow_id).initial_grant_received;
+}
+
+void RnicCollectiveNetworkRuntime::replayGapResolvedForTesting(
+    AtlahsFlowId flow_id, std::uint64_t packet_index) {
+    _impl->replayGapResolvedForTesting(flow_id, packet_index);
 }
 
 void RnicCollectiveNetworkRuntime::replayResolvedGapNackForTesting(AtlahsFlowId flow_id,
