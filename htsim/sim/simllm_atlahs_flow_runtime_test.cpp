@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <filesystem>
+#include <iostream>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -378,10 +379,14 @@ TEST(SimllmAtlahsFlowRuntimeTest,
     EXPECT_NO_THROW(native->validateQuiescent());
 }
 
-TEST(SimllmAtlahsFlowRuntimeTest,
-     AbiV2RelaysRealDcqcnPolicyAndFabricControlEvents) {
+void runRealDcqcnControl(
+        std::uint32_t sender_count,
+        std::uint64_t payload_bytes,
+        bool observations,
+        bool check_control_details) {
     EventList event_list;
-    EventList::setEndtime(std::numeric_limits<simtime_picosec>::max());
+    constexpr simtime_picosec quiescence_ceiling_ps = UINT64_C(1000000000);
+    EventList::setEndtime(quiescence_ceiling_ps);
     CapturingApi api;
     api.setEventList(&event_list);
     api.total_nodes = 64;
@@ -399,48 +404,81 @@ TEST(SimllmAtlahsFlowRuntimeTest,
     network_config.ecn_seed = 9;
     network_config.pfc_low_threshold_bytes = 4096;
     network_config.pfc_high_threshold_bytes = 8192;
-    network_config.packet_event_observations = true;
-    network_config.congestion_event_observations = true;
-    network_config.pfc_event_observations = true;
+    network_config.packet_event_observations = observations;
+    network_config.congestion_event_observations = observations;
+    network_config.pfc_event_observations = observations;
+    const auto topology_config = FatTreeTopologyCfg::load(
+        network_config.topology_file, network_config.ns_tm3_shared_buffer_bytes,
+        COMPOSITE, FAIR_PRIO);
+    ASSERT_NE(topology_config, nullptr);
+    ASSERT_EQ(topology_config->downlink_speed(TOR_TIER),
+              UINT64_C(400000000000));
+    const simtime_picosec shortest_propagation_ps =
+        topology_config->get_two_point_diameter_latency(0, 1);
+    ASSERT_EQ(shortest_propagation_ps, UINT64_C(2000000));
+    const simtime_picosec completion_floor_ps =
+        sender_count * payload_bytes * 20 + shortest_propagation_ps;
     auto network = std::make_unique<DcqcnAtlahsRuntime>(
         event_list, network_config, 64);
 
     SimllmAtlahsRuntimeConfig config = runtimeConfig(0, "dcqcn");
     config.port.endpoint_count = 64;
-    config.port.network_abi_version =
-        simllm::rnic::kNetworkPortAbiVersionV2;
+    config.port.network_abi_version = observations
+        ? simllm::rnic::kNetworkPortAbiVersionV2
+        : simllm::rnic::kNetworkPortAbiVersionV1;
     config.port.data_header_bytes = 64;
     config.port.max_wire_packet_bytes = 4096;
-    config.port.congestion = true;
-    config.port.control_frames = true;
+    config.port.congestion = observations;
+    config.port.control_frames = observations;
     auto runtime = makeComposedSimllmAtlahsFlowRuntime(
         event_list, std::move(config), std::move(network));
     SimllmAtlahsFlowRuntime* native = runtime.get();
     api.setFlowRuntime(std::move(runtime));
     api.Setup();
 
-    for (std::uint32_t source = 0; source < 8; ++source) {
+    for (std::uint32_t source = 0; source < sender_count; ++source) {
         graph_node_properties node = flow();
         node.host = source;
         node.offset = 100 + source;
         node.target = 63;
-        node.size = 64 * 1024;
+        node.size = payload_bytes;
         node.tag = 9;
         api.Send(
             SendEvent(source, 63, node.size, node.tag, 0), node);
     }
     std::size_t iterations = 0;
     while (api.runtimeHasPendingPhysicalWork()) {
-        ASSERT_LT(++iterations, 100000U);
+        ASSERT_LT(iterations, 100000U);
         ASSERT_TRUE(EventList::doNextEvent());
+        ++iterations;
+        ASSERT_LE(EventList::now(), quiescence_ceiling_ps);
     }
 
-    EXPECT_EQ(api.completion_count, 8U);
-    EXPECT_TRUE(native->networkPort().capabilities().packet_attempt_events);
-    EXPECT_TRUE(native->networkPort().capabilities().ecn_cnp_events);
-    EXPECT_TRUE(native->networkPort().capabilities().policy_update_events);
-    EXPECT_TRUE(native->networkPort().capabilities().pfc_events);
-    EXPECT_FALSE(native->networkPort().capabilities().dynamic_link_events);
+    ASSERT_EQ(api.completion_count, sender_count);
+    ASSERT_EQ(api.completedFlows().size(), sender_count);
+    simtime_picosec last_completion_ps = 0;
+    for (const AtlahsCompletedFlowRecord& row : api.completedFlows()) {
+        last_completion_ps = std::max(last_completion_ps, row.completion_time_ps);
+        std::cout << "BACK71_FLOW senders=" << sender_count
+                  << " payload=" << payload_bytes
+                  << " observations=" << observations
+                  << " flow=" << row.flow_id << " source=" << row.source
+                  << " destination=" << row.destination
+                  << " bytes=" << row.payload_bytes << " tag=" << row.tag
+                  << " start_ps=" << row.start_time_ps
+                  << " completion_ps=" << row.completion_time_ps
+                  << " wqe=" << row.wqe_id << " sq=" << row.sq_id
+                  << " rq=" << row.rq_id << " cq=" << row.cq_id
+                  << " sq_post=" << row.sq_post_sequence
+                  << " sq_dispatch=" << row.sq_dispatch_sequence
+                  << " cq_post=" << row.cq_post_sequence
+                  << " cq_consume=" << row.cq_consume_sequence
+                  << " transport=" << static_cast<int>(row.transport_kind)
+                  << " transport_object=" << row.transport_object_id << '\n';
+    }
+    EXPECT_GE(last_completion_ps, completion_floor_ps);
+    EXPECT_LE(last_completion_ps, EventList::now());
+    EXPECT_NO_THROW(native->validateQuiescent());
     const auto& packet_events = native->networkPort().packetEvents();
     const auto& control_events = native->networkPort().controlEvents();
     const auto count_control = [&](simllm::rnic::NetworkEventKind kind) {
@@ -450,6 +488,42 @@ TEST(SimllmAtlahsFlowRuntimeTest,
                 return event.kind == kind;
             });
     };
+    std::cout << "BACK71_BOUNDARY senders=" << sender_count
+              << " payload=" << payload_bytes
+              << " observations=" << observations
+              << " last_completion_ps=" << last_completion_ps
+              << " quiescence_ps=" << EventList::now()
+              << " floor_ps=" << completion_floor_ps
+              << " callbacks=" << iterations
+              << " packet_events=" << packet_events.size()
+              << " control_events=" << control_events.size()
+              << " ecn=" << count_control(
+                     simllm::rnic::NetworkEventKind::EcnMarked)
+              << " cnp=" << count_control(
+                     simllm::rnic::NetworkEventKind::CnpReceived)
+              << " rates=" << count_control(
+                     simllm::rnic::NetworkEventKind::RateUpdated)
+              << " pfc_frames=" << count_control(
+                     simllm::rnic::NetworkEventKind::PfcFrameSubmitted)
+              << " pauses=" << count_control(
+                     simllm::rnic::NetworkEventKind::PfcPaused)
+              << " resumes=" << count_control(
+                     simllm::rnic::NetworkEventKind::PfcResumed)
+              << '\n';
+    if (!observations) {
+        EXPECT_TRUE(packet_events.empty());
+        EXPECT_TRUE(control_events.empty());
+        EXPECT_FALSE(native->networkPort().capabilities().ecn_cnp_events);
+    }
+    if (!check_control_details) {
+        return;
+    }
+
+    EXPECT_TRUE(native->networkPort().capabilities().packet_attempt_events);
+    EXPECT_TRUE(native->networkPort().capabilities().ecn_cnp_events);
+    EXPECT_TRUE(native->networkPort().capabilities().policy_update_events);
+    EXPECT_TRUE(native->networkPort().capabilities().pfc_events);
+    EXPECT_FALSE(native->networkPort().capabilities().dynamic_link_events);
     EXPECT_GT(count_control(simllm::rnic::NetworkEventKind::EcnMarked), 0);
     EXPECT_GT(count_control(simllm::rnic::NetworkEventKind::CnpReceived), 0);
     EXPECT_GT(count_control(simllm::rnic::NetworkEventKind::RateUpdated), 8);
@@ -495,6 +569,51 @@ TEST(SimllmAtlahsFlowRuntimeTest,
     EXPECT_TRUE(retained_cnp_seen);
     EXPECT_NO_THROW(native->validateQuiescent());
 }
+
+TEST(SimllmAtlahsFlowRuntimeTest,
+     AbiV2RelaysRealDcqcnPolicyAndFabricControlEvents) {
+    runRealDcqcnControl(8, 65536, true, true);
+}
+
+struct DcqcnObservationCase {
+    std::uint32_t sender_count;
+    std::uint64_t payload_bytes;
+    bool observations;
+};
+
+void PrintTo(const DcqcnObservationCase& point, std::ostream* output) {
+    *output << "senders=" << point.sender_count
+            << ", payload=" << point.payload_bytes
+            << ", observations=" << point.observations;
+}
+
+class DcqcnObservationTest
+    : public ::testing::TestWithParam<DcqcnObservationCase> {};
+
+TEST_P(DcqcnObservationTest, PreservesExternalControlCompletions) {
+    const DcqcnObservationCase& point = GetParam();
+    // EventList is process-global. CTest runs each point in its own process;
+    // the emitted native rows support an exact off/on comparison per point.
+    runRealDcqcnControl(point.sender_count, point.payload_bytes,
+                       point.observations, false);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    Back71, DcqcnObservationTest,
+    ::testing::Values(
+        DcqcnObservationCase{4, 65536, false},
+        DcqcnObservationCase{4, 65536, true},
+        DcqcnObservationCase{4, 131072, false},
+        DcqcnObservationCase{4, 131072, true},
+        DcqcnObservationCase{8, 65536, false},
+        DcqcnObservationCase{8, 65536, true},
+        DcqcnObservationCase{8, 131072, false},
+        DcqcnObservationCase{8, 131072, true}),
+    [](const ::testing::TestParamInfo<DcqcnObservationCase>& info) {
+        return "Senders" + std::to_string(info.param.sender_count)
+            + "Bytes" + std::to_string(info.param.payload_bytes)
+            + (info.param.observations ? "Observed" : "Unobserved");
+    });
 
 TEST(SimllmAtlahsFlowRuntimeTest,
      AbiV2RelaysTimestampedDynamicEndpointLinkTransitions) {

@@ -34,6 +34,7 @@ using htsim::simllm_rnic::SimllmAtlahsFlowRuntime;
 using htsim::simllm_rnic::SimllmAtlahsRuntimeConfig;
 using htsim::simllm_rnic::defaultSimllmAtlahsDeviceConfig;
 using htsim::simllm_rnic::makeComposedSimllmAtlahsFlowRuntime;
+using simllm::rnic::CompletionStatus;
 using simllm::rnic::Picoseconds;
 using simllm::rnic::WqeRecord;
 
@@ -532,6 +533,51 @@ std::uint64_t unsignedValue(
     return *value;
 }
 
+bool booleanValue(const Json::Object& object, const std::string& name) {
+    const bool* value = std::get_if<bool>(&field(object, name).value());
+    if (value == nullptr) {
+        throw ProtocolError(
+            "invalid_fields", "frame." + name + " must be a boolean");
+    }
+    return *value;
+}
+
+std::optional<Picoseconds> nullableTime(
+        const Json::Object& object, const std::string& name) {
+    if (std::holds_alternative<std::nullptr_t>(field(object, name).value())) {
+        return std::nullopt;
+    }
+    return unsignedValue(object, name);
+}
+
+std::vector<std::uint64_t> sequenceList(
+        const Json::Object& object, const std::string& name,
+        std::uint64_t last_sequence) {
+    const Json::Array* values =
+        std::get_if<Json::Array>(&field(object, name).value());
+    if (values == nullptr) {
+        throw ProtocolError(
+            "invalid_fields", "frame." + name + " must be an array");
+    }
+    std::vector<std::uint64_t> result;
+    for (const Json& item : *values) {
+        const std::uint64_t* value =
+            std::get_if<std::uint64_t>(&item.value());
+        if (value == nullptr || *value == 0 || *value > last_sequence
+            || (!result.empty() && *value <= result.back())) {
+            throw ProtocolError(
+                "invalid_fields", "frame." + name
+                    + " must contain strictly increasing accepted sequences");
+        }
+        result.push_back(*value);
+    }
+    return result;
+}
+
+Json optionalUnsigned(std::optional<std::uint64_t> value) {
+    return value.has_value() ? Json(*value) : Json(nullptr);
+}
+
 void requireSchema(const Json::Object& object) {
     if (stringValue(object, "schema") != kRnicFlowSessionSchema) {
         throw ProtocolError(
@@ -655,6 +701,7 @@ struct Injection {
     AtlahsFlowId native_flow_id{0};
     bool fired{false};
     unsigned int emitted_phases{0};
+    bool emitted_completion{false};
     std::unique_ptr<InjectionEvent> event;
 };
 
@@ -688,6 +735,10 @@ public:
             throw ProtocolError(
                 "post_terminal", "a complete frame followed close");
         }
+        if (reported_failure_) {
+            throw ProtocolError(
+                "transport_failure", "a failed native completion terminated the session");
+        }
         if (verb == "open") {
             return open(object);
         }
@@ -696,7 +747,13 @@ public:
                 "open_required", "open must be the first frame");
         }
         if (verb == "inject") {
-            return inject(object);
+            return inject(object, false);
+        }
+        if (verb == "inject_at_boundary") {
+            return inject(object, true);
+        }
+        if (verb == "await_completion") {
+            return awaitCompletion(object);
         }
         if (verb == "advance") {
             return advance(object);
@@ -847,12 +904,21 @@ private:
             });
     }
 
-    Json inject(const Json::Object& object) {
-        requireFields(
-            object,
-            {"destination", "eligible_at_ps", "execution_id", "flow_id",
-             "operation_id", "payload_bytes", "policy_context_token",
-             "schema", "sequence", "source", "tag", "verb"});
+    Json inject(const Json::Object& object, bool at_boundary) {
+        if (at_boundary) {
+            requireFields(
+                object,
+                {"boundary_id", "destination", "eligible_at_ps",
+                 "execution_id", "flow_id", "operation_id", "payload_bytes",
+                 "policy_context_token", "predecessor_sequences", "schema",
+                 "sequence", "source", "tag", "verb"});
+        } else {
+            requireFields(
+                object,
+                {"destination", "eligible_at_ps", "execution_id", "flow_id",
+                 "operation_id", "payload_bytes", "policy_context_token",
+                 "schema", "sequence", "source", "tag", "verb"});
+        }
         if (drained_) {
             throw ProtocolError(
                 "post_drain_inject", "inject is illegal after drain");
@@ -887,8 +953,8 @@ private:
             unsignedValue(object, "payload_bytes", 1);
         injection.eligible_at_ps =
             unsignedValue(object, "eligible_at_ps");
-        if (last_horizon_.has_value()
-            && injection.eligible_at_ps <= *last_horizon_) {
+        if (!at_boundary && ordinary_injection_floor_.has_value()
+            && injection.eligible_at_ps <= *ordinary_injection_floor_) {
             throw ProtocolError(
                 "stale_eligibility",
                 "injection eligibility is inside an advanced interval");
@@ -908,6 +974,35 @@ private:
             throw ProtocolError(
                 "duplicate_identity", "flow identity tuple was reused");
         }
+        if (at_boundary) {
+            const std::uint64_t boundary_id =
+                unsignedValue(object, "boundary_id", 1);
+            const auto predecessors =
+                sequenceList(object, "predecessor_sequences", last_sequence_);
+            if (predecessors.empty()) {
+                throw ProtocolError(
+                    "invalid_fields", "boundary injection requires predecessors");
+            }
+            if (!boundary_id_.has_value() || boundary_id != *boundary_id_) {
+                throw ProtocolError(
+                    "stale_boundary", "boundary token is absent or no longer open");
+            }
+            if (injection.eligible_at_ps != *boundary_time_) {
+                throw ProtocolError(
+                    "boundary_time_mismatch", "eligibility differs from the open boundary");
+            }
+            for (std::uint64_t predecessor : predecessors) {
+                const Injection& prior = injections_.at(predecessor - 1);
+                if (completion(prior) == nullptr) {
+                    throw ProtocolError(
+                        "predecessor_pending", "boundary predecessor is incomplete");
+                }
+                if (completionStatus(prior) != CompletionStatus::Success) {
+                    throw ProtocolError(
+                        "predecessor_failed", "boundary predecessor did not succeed");
+                }
+            }
+        }
         injection.native_flow_id = makeAtlahsFlowId(
             injection.source,
             static_cast<std::uint32_t>(sequence - 1));
@@ -920,12 +1015,15 @@ private:
             injections_.back().eligible_at_ps);
         identities_.insert(identity);
         last_sequence_ = sequence;
-        return success(
-            "inject",
-            Json::Object{
-                {"accepted_sequence", Json(sequence)},
-                {"eligible_at_ps", Json(injections_.back().eligible_at_ps)},
-            });
+        Json::Object response{
+            {"accepted_sequence", Json(sequence)},
+            {"eligible_at_ps", Json(injections_.back().eligible_at_ps)},
+        };
+        if (at_boundary) {
+            response.emplace("boundary_id", Json(*boundary_id_));
+        }
+        return success(at_boundary ? "inject_at_boundary" : "inject",
+                       std::move(response));
     }
 
     void fireInjection(std::size_t index) {
@@ -978,6 +1076,168 @@ private:
                 return record.flow_id == injection.native_flow_id;
             });
         return item == completed.end() ? nullptr : &*item;
+    }
+
+    CompletionStatus completionStatus(const Injection& injection) const {
+        const auto status = wqe(injection).completion_status;
+        if (!status.has_value()) {
+            throw std::logic_error("completed native WQE lacks its status");
+        }
+        return *status;
+    }
+
+    const char* completionStatusName(const Injection& injection) const {
+        switch (completionStatus(injection)) {
+        case CompletionStatus::Success: return "success";
+        case CompletionStatus::TransportError: return "transport_error";
+        case CompletionStatus::NetworkRejected: return "network_rejected";
+        }
+        throw std::logic_error("native WQE has an unknown completion status");
+    }
+
+    bool quiescent() const {
+        if (std::any_of(injections_.begin(), injections_.end(),
+                        [](const Injection& injection) { return !injection.fired; })
+            || api_.runtimeHasPendingPhysicalWork()) {
+            return false;
+        }
+        native_->validateQuiescent();
+        api_.validateWqeQuiescent();
+        if (api_.completedFlows().size() != injections_.size()
+            || api_.completion_notifications != injections_.size()) {
+            throw std::logic_error("flow-session completion conservation failed");
+        }
+        return true;
+    }
+
+    void invalidateBoundary() {
+        boundary_id_.reset();
+        boundary_time_.reset();
+    }
+
+    Json::Array collectCompletionRows() {
+        Json::Array rows;
+        for (Injection& injection : injections_) {
+            const auto* completed = completion(injection);
+            if (completed != nullptr && !injection.emitted_completion) {
+                rows.push_back(completionRowJson(injection, *completed, true));
+                injection.emitted_completion = true;
+                reported_failure_ = reported_failure_
+                    || completionStatus(injection) != CompletionStatus::Success;
+            }
+        }
+        return rows;
+    }
+
+    Json awaitResponse(const char* reason, std::uint64_t events_executed) {
+        return success("await_completion", Json::Object{
+            {"authority_counters", authorityCountersJson(counters())},
+            {"boundary_id", optionalUnsigned(boundary_id_)},
+            {"boundary_time_ps", optionalUnsigned(boundary_time_)},
+            {"completion_rows", Json(collectCompletionRows())},
+            {"event_time_ps", Json(EventList::now())},
+            {"events", Json(collectLifecycleEvents())},
+            {"events_executed", Json(events_executed)},
+            {"fully_processed_horizon_ps", optionalUnsigned(last_horizon_)},
+            {"last_accepted_sequence", Json(last_sequence_)},
+            {"ordinary_injection_floor_ps", optionalUnsigned(ordinary_injection_floor_)},
+            {"quiescent", Json(quiescent())},
+            {"reason", Json(reason)},
+        });
+    }
+
+    Json awaitCompletion(const Json::Object& object) {
+        requireFields(object,
+                      {"completion_sequences", "max_events", "max_time_ps",
+                       "schema", "through_ps", "through_sequence",
+                       "until_quiescent", "verb"});
+        if (drained_) {
+            throw ProtocolError(
+                "post_drain_advance", "await is illegal after drain");
+        }
+        if (unsignedValue(object, "through_sequence") != last_sequence_) {
+            throw ProtocolError(
+                "cursor_disagreement", "await cursor disagrees with accepted sequence");
+        }
+        const auto targets = sequenceList(object, "completion_sequences", last_sequence_);
+        const bool until_quiescent = booleanValue(object, "until_quiescent");
+        const auto through_ps = nullableTime(object, "through_ps");
+        const Picoseconds max_time = unsignedValue(object, "max_time_ps", 1);
+        const std::uint64_t max_events = unsignedValue(object, "max_events", 1);
+        if (targets.empty() != until_quiescent) {
+            throw ProtocolError(
+                "invalid_fields", "await requires pending targets or quiescence mode");
+        }
+        if (through_ps.has_value()
+            && (*through_ps > max_time
+                || (ordinary_injection_floor_.has_value()
+                    && *through_ps < *ordinary_injection_floor_))) {
+            throw ProtocolError(
+                "stale_horizon", "await horizon moved backward or exceeds its hard limit");
+        }
+        if (max_time < EventList::now()) {
+            throw ProtocolError("time_limit", "await hard time limit is already exhausted");
+        }
+        for (std::uint64_t target : targets) {
+            if (completion(injections_.at(target - 1)) != nullptr) {
+                throw ProtocolError(
+                    "target_not_pending", "await target already completed");
+            }
+        }
+        if (!until_quiescent
+            && next_boundary_id_ == std::numeric_limits<std::uint64_t>::max()) {
+            throw ProtocolError("boundary_exhausted", "boundary identity space is exhausted");
+        }
+
+        std::uint64_t events_executed = 0;
+        while (true) {
+            if (until_quiescent && quiescent()) {
+                invalidateBoundary();
+                return awaitResponse("quiescence", events_executed);
+            }
+            const auto completed_target = std::find_if(
+                targets.begin(), targets.end(), [&](std::uint64_t target) {
+                    return completion(injections_.at(target - 1)) != nullptr;
+                });
+            if (completed_target != targets.end()) {
+                boundary_id_ = next_boundary_id_++;
+                boundary_time_ = EventList::now();
+                return awaitResponse("completion", events_executed);
+            }
+            if (std::any_of(injections_.begin(), injections_.end(),
+                            [&](const Injection& injection) {
+                                return completion(injection) != nullptr
+                                    && completionStatus(injection) != CompletionStatus::Success;
+                            })) {
+                throw ProtocolError(
+                    "transport_failure", "a native flow failed before the requested condition");
+            }
+            const auto next = EventList::nextEventTime();
+            if (!next.has_value()) {
+                throw ProtocolError("stalled_runtime", "unfinished runtime has no pending event");
+            }
+            if (through_ps.has_value() && *next > *through_ps) {
+                invalidateBoundary();
+                last_horizon_ = through_ps;
+                ordinary_injection_floor_ = through_ps;
+                return awaitResponse("horizon", events_executed);
+            }
+            if (*next > max_time) {
+                throw ProtocolError("time_limit", "await exhausted its hard time limit");
+            }
+            if (events_executed == max_events) {
+                throw ProtocolError("event_limit", "await exhausted its callback limit");
+            }
+            invalidateBoundary();
+            if (*next > 0) {
+                last_horizon_ = *next - 1;
+            }
+            ordinary_injection_floor_ = *next;
+            if (!EventList::doNextEvent()) {
+                throw std::logic_error("event list advertised an event but did not run it");
+            }
+            ++events_executed;
+        }
     }
 
     struct PendingProjection {
@@ -1113,11 +1373,14 @@ private:
         }
         const Picoseconds through_ps =
             unsignedValue(object, "through_ps");
-        if (last_horizon_.has_value() && through_ps < *last_horizon_) {
+        if (ordinary_injection_floor_.has_value()
+            && through_ps < *ordinary_injection_floor_) {
             throw ProtocolError(
                 "stale_horizon", "advance horizon moved backward");
         }
+        invalidateBoundary();
         last_horizon_ = through_ps;
+        ordinary_injection_floor_ = through_ps;
         while (true) {
             const std::optional<simtime_picosec> next =
                 EventList::nextEventTime();
@@ -1141,8 +1404,9 @@ private:
 
     Json completionRowJson(
             const Injection& injection,
-            const AtlahsCompletedFlowRecord& completed) const {
-        return Json(Json::Object{
+            const AtlahsCompletedFlowRecord& completed,
+            bool include_status = false) const {
+        Json::Object row{
             {"completion_time_ps", Json(completed.completion_time_ps)},
             {"cq_consume_sequence", Json(completed.cq_consume_sequence)},
             {"cq_id", Json(completed.cq_id)},
@@ -1164,7 +1428,11 @@ private:
             {"transport_kind", Json(atlahsTransportKindName(completed.transport_kind))},
             {"transport_object_id", Json(completed.transport_object_id)},
             {"wqe_id", Json(completed.wqe_id)},
-        });
+        };
+        if (include_status) {
+            row.emplace("completion_status", Json(completionStatusName(injection)));
+        }
+        return Json(std::move(row));
     }
 
     Json drain(const Json::Object& object) {
@@ -1260,6 +1528,7 @@ private:
     bool opened_{false};
     bool drained_{false};
     bool closed_{false};
+    bool reported_failure_{false};
     std::string session_id_;
     std::string profile_name_;
     std::string topology_identity_;
@@ -1271,6 +1540,10 @@ private:
     std::uint64_t last_sequence_{0};
     std::uint64_t drained_sequence_{0};
     std::optional<Picoseconds> last_horizon_;
+    std::optional<Picoseconds> ordinary_injection_floor_;
+    std::optional<Picoseconds> boundary_time_;
+    std::optional<std::uint64_t> boundary_id_;
+    std::uint64_t next_boundary_id_{1};
     std::set<std::tuple<std::string, std::string, std::string>> identities_;
     std::vector<Injection> injections_;
 };
