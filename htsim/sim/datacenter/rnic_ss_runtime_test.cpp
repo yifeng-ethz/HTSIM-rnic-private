@@ -183,12 +183,14 @@ TEST(RnicSsRuntimeTest, StateTraceUsesPhysicalCreditFeedbackAndInstallsAtQuiesce
     std::ifstream input(trace);
     const std::string text((std::istreambuf_iterator<char>(input)),
                            std::istreambuf_iterator<char>());
+    input.close();
     EXPECT_NE(text.find(",flow-start,"), std::string::npos);
     EXPECT_NE(text.find(",service-rate-change,"), std::string::npos);
     EXPECT_NE(text.find(",completion,"), std::string::npos);
     std::ifstream goodput_input(goodput);
     const std::string goodput_text((std::istreambuf_iterator<char>(goodput_input)),
                                    std::istreambuf_iterator<char>());
+    goodput_input.close();
     EXPECT_NE(goodput_text.find("delivered_payload_bytes,goodput_bps"), std::string::npos);
     EXPECT_FALSE(std::filesystem::exists(goodput.string() + ".tmp"));
     std::filesystem::remove(trace);

@@ -1,0 +1,3 @@
+# Frozen topology hashes identify exact LF bytes on every checkout.
+/experiments/ss_dragonfly_load_discrimination/merlin_shape_buffer1mib.topo text eol=lf
+/experiments/ss_dragonfly_load_discrimination/merlin_shape_buffer4mib.topo text eol=lf
