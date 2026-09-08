@@ -16,6 +16,7 @@ set(LIB_SOURCES
     rnic_atlahs_driver.cpp
     rnic_atlahs_runtime_factory.cpp
     rnic_collective_network_runtime.cpp
+    rnic_collective_trace.cpp
     rnic_collective_route.cpp
     rnic_ss_packet.cpp
     rnic_ss_route.cpp

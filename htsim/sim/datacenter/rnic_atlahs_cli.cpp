@@ -307,7 +307,8 @@ void rejectCrossProfileOptions(const RnicAtlahsCliOptions& options) {
         supplied.cn_maximum_retransmissions ||
         supplied.cn_retransmission_rto_ps || supplied.data_recovery ||
         supplied.retry_probe_windows || supplied.initial_window_bytes ||
-        supplied.initial_window_fan_in;
+        supplied.initial_window_fan_in || supplied.cn_trace_directory ||
+        options.collective.trace_directory.has_value();
     if (options.profile != RnicProfile::CollectiveNetwork && supplied_collective) {
         throw std::invalid_argument("physical Clos/control options are valid only for rnic-cn");
     }
@@ -444,6 +445,12 @@ RnicAtlahsCliOptions parseRnicAtlahsCli(int argc, const char* const argv[]) {
         } else if (option == "-rnic_cn_margin_ppm") {
             options.collective.margin_ppm = parseUnsigned32(option, value);
             options.explicitly_supplied.margin_ppm = true;
+        } else if (option == "-rnic_cn_trace_dir") {
+            if (value.empty() || options.explicitly_supplied.cn_trace_directory) {
+                throw optionError(option, "requires one nonempty trace directory");
+            }
+            options.collective.trace_directory = value;
+            options.explicitly_supplied.cn_trace_directory = true;
         } else if (option == "-rnic_cn_data_recovery") {
             if (value == "none") {
                 options.collective.data_recovery = RnicCnDataRecovery::None;
@@ -635,6 +642,7 @@ std::string rnicAtlahsCliUsage(const std::string& program_name) {
              " [-rnic_cn_retransmission_rto_ps PS]"
              " [-rnic_cn_data_recovery none|deadline|exponential]"
              " [-rnic_cn_retry_probe_windows N]"
+             " [-rnic_cn_trace_dir DIRECTORY]"
              " [-rnic_cn_initial_window_bytes BYTES -rnic_cn_initial_window_fan_in N]\n"
           << "rnic-ss: [-topo FILE]"
              " [-rnic_hop_latency_ps PS]"

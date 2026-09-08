@@ -2,10 +2,14 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -1368,14 +1372,16 @@ TEST(RnicCollectiveNetworkRuntimeTest, FullInitialBudgetWithLossWaitsForPhysical
 
 std::vector<std::vector<std::uint64_t>> runDormantWindowTrace(
     std::optional<std::uint64_t> budget,
-    RnicCnDataRecovery recovery = RnicCnDataRecovery::None) {
+    RnicCnDataRecovery recovery = RnicCnDataRecovery::None,
+    std::optional<std::string> directory = std::nullopt) {
     TwoTierCollectiveFixture fixture;
-    const auto epoch = alignFixtureEpoch(fixture);
     auto config = fixture.runtimeConfig();
     config.data_recovery = recovery;
     config.initial_window_bytes = budget;
     config.initial_window_fan_in = budget.has_value() ? 3 : 0;
+    config.trace_directory = directory;
     RnicCollectiveNetworkRuntime runtime(fixture.events, *fixture.topology, config);
+    const auto epoch = alignFixtureEpoch(fixture);
     std::vector<AtlahsFlowId> completions;
     runtime.setup(32, [&](AtlahsFlowId id) { completions.push_back(id); });
     const std::vector<AtlahsFlowId> ids{0x710000009ULL, 0x71000000aULL, 0x71000000bULL};
@@ -1404,6 +1410,7 @@ std::vector<std::vector<std::uint64_t>> runDormantWindowTrace(
     });
     runtime.validateQuiescent();
     EXPECT_EQ(completions.size(), 3U);
+    if (directory.has_value()) runtime.writeTrace();
     return trace;
 }
 
@@ -1412,6 +1419,152 @@ TEST(RnicCollectiveNetworkRuntimeTest, DormantWindowPreservesEveryDispatchAndPac
     EXPECT_EQ(baseline, runDormantWindowTrace(2692));
     EXPECT_EQ(baseline, runDormantWindowTrace(std::nullopt, RnicCnDataRecovery::Exponential));
     EXPECT_EQ(baseline, runDormantWindowTrace(2692, RnicCnDataRecovery::Exponential));
+}
+
+struct TraceDirectory {
+    std::filesystem::path path = std::filesystem::temp_directory_path() /
+        (std::string("rnic-cn-") + ::testing::UnitTest::GetInstance()->current_test_info()->name());
+    TraceDirectory() {
+        if (std::filesystem::exists(path) || std::filesystem::exists(path.string() + ".tmp"))
+            throw std::runtime_error("trace test path already exists");
+    }
+    ~TraceDirectory() {
+        std::filesystem::remove_all(path);
+        std::filesystem::remove_all(path.string() + ".tmp");
+    }
+};
+
+using TraceRow = std::map<std::string, std::string>;
+std::vector<TraceRow> readTraceRows(const std::filesystem::path& path) {
+    std::ifstream input(path);
+    if (!input) throw std::runtime_error("missing trace table");
+    auto split = [](const std::string& line) {
+        std::vector<std::string> cells;
+        std::istringstream stream(line + ',');
+        std::string cell;
+        while (std::getline(stream, cell, ',')) cells.push_back(cell);
+        return cells;
+    };
+    std::string line;
+    std::getline(input, line);
+    const auto header = split(line);
+    std::vector<TraceRow> rows;
+    while (std::getline(input, line)) {
+        const auto cells = split(line);
+        if (cells.size() != header.size()) throw std::runtime_error("ragged trace table");
+        TraceRow row;
+        for (std::size_t i = 0; i < cells.size(); ++i) row.emplace(header[i], cells[i]);
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+TEST(RnicCollectiveNetworkRuntimeTest, TracePreservesDispatchPacerAndCompletionAndJoinsEveryHop) {
+    TraceDirectory directory;
+    const auto traced = runDormantWindowTrace(std::nullopt, RnicCnDataRecovery::None,
+                                              directory.path.string());
+    const auto boundary = EventList::now();
+    EXPECT_EQ(traced, runDormantWindowTrace(std::nullopt));
+    const auto manifest = readTraceRows(directory.path / "manifest.csv").at(0);
+    EXPECT_EQ(manifest.at("status"), "complete");
+    EXPECT_EQ(manifest.at("finalized"), "true");
+    EXPECT_EQ(manifest.at("physical_quiescence"), "verified");
+    EXPECT_EQ(std::stoull(manifest.at("physical_quiescence_time_ps")), boundary);
+    std::set<std::uint64_t> sequences;
+    std::map<std::string, TraceRow> packets;
+    std::map<std::string, TraceRow> lifecycles;
+    std::map<std::string, std::uint64_t> creations, terminals, hops;
+    std::map<std::string, std::uint64_t> service_starts;
+    for (const std::string table : {"flows", "packets", "queues", "events"}) {
+        const auto rows = readTraceRows(directory.path / (table + ".csv"));
+        EXPECT_EQ(rows.size(), std::stoull(manifest.at(table + "_rows")));
+        for (const auto& row : rows) {
+            EXPECT_EQ(row.at("schema"), "rnic-cn-trace-v1");
+            EXPECT_TRUE(sequences.insert(std::stoull(row.at("sequence"))).second);
+            if (table == "flows") {
+                EXPECT_GT(std::stoull(row.at("flow_id")), UINT32_MAX);
+            }
+            if (table == "packets") {
+                EXPECT_TRUE(packets.emplace(row.at("packet_id"), row).second);
+                EXPECT_TRUE(lifecycles.emplace(row.at("lifecycle_id"), row).second);
+                EXPECT_EQ(std::stoull(row.at("source_end_ps")) -
+                              std::stoull(row.at("source_start_ps")),
+                          std::stoull(row.at("wire_bytes")) * 80U);
+                EXPECT_EQ(row.at("observed_at_ps"), row.at("source_end_ps"));
+            }
+            if (table == "queues") {
+                const auto& packet = packets.at(row.at("packet_id"));
+                for (const auto key : {"lifecycle_id", "flow_id", "packet_flow_id", "kind", "wire_bytes"})
+                    EXPECT_EQ(row.at(key), packet.at(key));
+                EXPECT_EQ(std::stoull(row.at("backlog_bytes")),
+                          std::stoull(row.at("buffered_bytes")) + std::stoull(row.at("in_service_bytes")));
+                const auto visit = row.at("packet_id") + ":" + row.at("switch_type") + ":" +
+                                   row.at("switch_id") + ":" + row.at("egress_id");
+                if (row.at("transition") == "service_start") {
+                    EXPECT_TRUE(service_starts.emplace(visit, std::stoull(row.at("time_ps"))).second);
+                }
+                if (row.at("transition") == "service_end") {
+                    EXPECT_EQ(std::stoull(row.at("time_ps")) - service_starts.at(visit),
+                              std::stoull(row.at("wire_bytes")) * 80U);
+                    EXPECT_EQ(row.at("in_service_bytes"), "0");
+                    service_starts.erase(visit);
+                    ++hops[row.at("packet_id")];
+                }
+            }
+            if (table == "events") {
+                const auto& event = row.at("event");
+                if (event == "packet_created") ++creations[row.at("packet_id")];
+                if (event == "endpoint_consumed") {
+                    ++terminals[row.at("packet_id")];
+                    EXPECT_EQ(std::stoull(row.at("detail")), 2U + 3U * hops[row.at("packet_id")]);
+                }
+                if (event == "rx_schedule") {
+                    const auto& packet = lifecycles.at(row.at("lifecycle_id"));
+                    const auto release = ((std::stoull(packet.at("eta_ps")) + 4096000U + 15999U) /
+                                          16000U) * 16000U;
+                    EXPECT_EQ(std::stoull(row.at("logical_release_ps")), release);
+                    EXPECT_GE(std::stoull(row.at("service_start_ps")), release);
+                    EXPECT_EQ(std::stoull(row.at("service_end_ps")) -
+                                  std::stoull(row.at("service_start_ps")),
+                              std::stoull(packet.at("wire_bytes")) * 80U);
+                }
+                if (event == "delivery" || event == "flow_complete") {
+                    EXPECT_EQ(lifecycles.at(row.at("trigger_lifecycle_id")).at("flow_id"), row.at("flow_id"));
+                }
+            }
+        }
+    }
+    EXPECT_TRUE(service_starts.empty());
+    for (const auto& packet : packets) {
+        EXPECT_EQ(creations[packet.first], 1U);
+        EXPECT_EQ(terminals[packet.first], 1U);
+    }
+    EXPECT_EQ(sequences.size(), std::stoull(manifest.at("observation_count")));
+    EXPECT_EQ(*sequences.begin(), 1U);
+    EXPECT_EQ(*sequences.rbegin(), sequences.size());
+    EXPECT_EQ(packets.size(), std::stoull(manifest.at("data_packet_count")) +
+                              std::stoull(manifest.at("control_packet_count")));
+}
+
+TEST(RnicCollectiveNetworkRuntimeTest, TraceRejectsIncompleteAndFailedPublication) {
+    TraceDirectory directory;
+    TwoTierCollectiveFixture fixture;
+    auto config = fixture.runtimeConfig();
+    config.trace_directory = "";
+    EXPECT_THROW(RnicCollectiveNetworkRuntime(fixture.events, *fixture.topology, config),
+                 std::invalid_argument);
+    config.trace_directory = directory.path.string();
+    RnicCollectiveNetworkRuntime runtime(fixture.events, *fixture.topology, config);
+    EXPECT_THROW(RnicCollectiveNetworkRuntime(fixture.events, *fixture.topology, config),
+                 std::runtime_error);
+    runtime.setup(32, [](AtlahsFlowId) {});
+    runtime.send({0x730000001ULL, 0, 31, 500, 0, 1});
+    EXPECT_THROW(runtime.writeTrace(), std::logic_error);
+    EXPECT_FALSE(std::filesystem::exists(directory.path));
+    fixture.drainRuntime(runtime);
+    std::filesystem::create_directory(directory.path.string() + ".tmp/manifest.csv");
+    EXPECT_THROW(runtime.writeTrace(), std::ios_base::failure);
+    EXPECT_FALSE(std::filesystem::exists(directory.path));
 }
 
 TEST(RnicCollectiveNetworkRuntimeTest, InitialWindowBoundsBytesAndZeroBudgetReceivesPhysicalGrant) {
@@ -1431,15 +1584,17 @@ TEST(RnicCollectiveNetworkRuntimeTest, InitialWindowBoundsBytesAndZeroBudgetRece
 }
 
 std::uint64_t runExponentialLossPrefix(std::uint64_t deadline, std::uint32_t windows,
-                                      std::uint32_t lost_prefix, std::uint64_t legacy_timeout) {
+                                      std::uint32_t lost_prefix, std::uint64_t legacy_timeout,
+                                      std::optional<std::string> directory = std::nullopt) {
     TwoTierCollectiveFixture fixture;
-    const auto epoch = alignFixtureEpoch(fixture);
     auto config = fixture.runtimeConfig();
     config.data_recovery = RnicCnDataRecovery::Exponential;
     config.control_deadline_ps = deadline;
     config.retry_probe_windows = windows;
     config.retransmission_rto_ps = legacy_timeout;
+    config.trace_directory = directory;
     RnicCollectiveNetworkRuntime runtime(fixture.events, *fixture.topology, config);
+    const auto epoch = alignFixtureEpoch(fixture);
     constexpr AtlahsFlowId id = 0x720000001ULL;
     std::vector<AtlahsFlowId> completions;
     runtime.setup(32, [&](AtlahsFlowId flow_id) { completions.push_back(flow_id); });
@@ -1465,6 +1620,7 @@ std::uint64_t runExponentialLossPrefix(std::uint64_t deadline, std::uint32_t win
     const auto expected_sum = deadline * windows * ((UINT64_C(1) << lost_prefix) - 1);
     EXPECT_GE(observed_sum, expected_sum);
     EXPECT_LE(observed_sum, expected_sum + lost_prefix * 80000U);
+    if (directory.has_value()) runtime.writeTrace();
     return *runtime.flow(id).delivery_completion_time_ps - epoch;
 }
 
@@ -1477,6 +1633,34 @@ TEST(RnicCollectiveNetworkRuntimeTest, ExponentialProbeIntervalsAndCumulativeWai
             }
         }
     }
+}
+
+TEST(RnicCollectiveNetworkRuntimeTest, TraceBindsNackAndProbeAuthorizationsToPhysicalAttempts) {
+    TraceDirectory directory;
+    runExponentialLossPrefix(timeFromUs(10.0), 4, 1, timeFromMs(50), directory.path.string());
+    std::map<std::string, TraceRow> packets;
+    for (const auto& row : readTraceRows(directory.path / "packets.csv"))
+        packets.emplace(row.at("lifecycle_id"), row);
+    std::size_t drops = 0, nacks = 0, probes = 0;
+    for (const auto& row : readTraceRows(directory.path / "events.csv")) {
+        if (row.at("event") == "fabric_drop") ++drops;
+        if (row.at("event") != "retry_authorized") continue;
+        EXPECT_EQ(row.at("packet_index"), "0");
+        if (row.at("detail") == "gap_nack") {
+            ++nacks;
+            EXPECT_EQ(row.at("attempt"), "1");
+            EXPECT_EQ(packets.at(row.at("trigger_lifecycle_id")).at("kind"), "GAP_NACK");
+        } else {
+            ++probes;
+            EXPECT_EQ(row.at("detail"), "probe_timeout");
+            EXPECT_EQ(row.at("attempt"), "2");
+            EXPECT_EQ(row.at("origin_attempt"), "1");
+            EXPECT_EQ(row.at("deadline_ps"), row.at("time_ps"));
+        }
+    }
+    EXPECT_EQ(drops, 2U);
+    EXPECT_EQ(nacks, 1U);
+    EXPECT_EQ(probes, 1U);
 }
 
 TEST(RnicCollectiveNetworkRuntimeTest, FinalPhysicalResolutionBeforeAtAndAfterNominalProbeSurvives) {

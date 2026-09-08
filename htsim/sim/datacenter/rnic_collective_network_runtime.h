@@ -7,6 +7,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
 
 #include "atlahs_flow_runtime.h"
 #include "eventlist.h"
@@ -42,6 +43,7 @@ struct RnicCollectiveNetworkConfig {
     std::uint32_t retry_probe_windows{4};
     std::optional<std::uint64_t> initial_window_bytes;
     std::uint64_t initial_window_fan_in{0};
+    std::optional<std::string> trace_directory;
 };
 
 struct RnicCollectiveRecoveryStatistics {
@@ -145,6 +147,7 @@ public:
     // drivers. Completed flow history may remain, but no physical/control
     // work, receiver membership, or routed packet may remain live.
     void validateQuiescent() const;
+    void writeTrace();
 
 private:
     struct Impl;

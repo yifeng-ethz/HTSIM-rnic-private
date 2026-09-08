@@ -33,6 +33,23 @@ void append(std::vector<std::string>& arguments,
     arguments.push_back(value);
 }
 
+TEST(RnicAtlahsCliTest, CollectiveTraceDirectoryIsOptionalStrictAndProfileScoped) {
+    EXPECT_FALSE(parse(baseArguments("rnic-cn")).collective.trace_directory.has_value());
+    auto arguments = baseArguments("rnic-cn");
+    append(arguments, "-rnic_cn_trace_dir", "trace");
+    EXPECT_EQ(parse(arguments).collective.trace_directory, "trace");
+    append(arguments, "-rnic_cn_trace_dir", "another-trace");
+    EXPECT_THROW(parse(arguments), std::invalid_argument);
+    for (const auto profile : {"rnic-nn", "rnic-nn-fluid", "rnic-ss"}) {
+        auto rejected = baseArguments(profile);
+        append(rejected, "-rnic_cn_trace_dir", "trace");
+        EXPECT_THROW(parse(rejected), std::invalid_argument);
+    }
+    auto empty = baseArguments("rnic-cn");
+    append(empty, "-rnic_cn_trace_dir", "");
+    EXPECT_THROW(parse(empty), std::invalid_argument);
+}
+
 TEST(RnicAtlahsCliTest, ResolvesCollectiveDefaultsInConstructorUnits) {
     const RnicAtlahsCliOptions options = parse(baseArguments("rnic-cn"));
 

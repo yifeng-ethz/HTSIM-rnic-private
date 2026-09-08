@@ -61,6 +61,7 @@ struct RnicAtlahsCollectiveCliOptions {
     std::uint32_t retry_probe_windows = 4;
     std::optional<std::uint64_t> initial_window_bytes;
     std::uint64_t initial_window_fan_in = 0;
+    std::optional<std::string> trace_directory;
 };
 
 // Public-mechanism parameters for the open rnic-ss comparator.  None of these
@@ -114,6 +115,7 @@ struct RnicAtlahsExplicitCliOptions {
     bool retry_probe_windows = false;
     bool initial_window_bytes = false;
     bool initial_window_fan_in = false;
+    bool cn_trace_directory = false;
 
     bool ss_state_trace_csv = false;
     bool goodput_trace_csv = false;
