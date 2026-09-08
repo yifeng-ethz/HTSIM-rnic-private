@@ -144,6 +144,28 @@ void validateCollectiveOptions(const RnicAtlahsCliOptions& options) {
         throw std::invalid_argument("-rnic_cn_margin_ppm: value must be in [1, 1000000]");
     }
     rnicCnControlRecoveryName(options.collective.control_recovery);
+    rnicCnDataRecoveryName(options.collective.data_recovery);
+    requirePositive(options.collective.retry_probe_windows, "-rnic_cn_retry_probe_windows");
+    if (options.collective.data_recovery == RnicCnDataRecovery::None &&
+        options.explicitly_supplied.retry_probe_windows) {
+        throw std::invalid_argument("retry probe windows require deadline data recovery");
+    }
+    const Wide probe_interval = static_cast<Wide>(options.collective.retry_probe_windows) *
+                                options.collective.control_deadline_ps;
+    if (probe_interval > std::numeric_limits<std::uint64_t>::max()) {
+        throw std::invalid_argument("retry probe interval overflows uint64_t");
+    }
+    if (options.explicitly_supplied.initial_window_bytes !=
+        options.explicitly_supplied.initial_window_fan_in) {
+        throw std::invalid_argument("initial window bytes and fan-in must be supplied together");
+    }
+    if (options.collective.initial_window_bytes.has_value() &&
+        (options.collective.initial_window_fan_in == 0 ||
+         static_cast<Wide>(*options.collective.initial_window_bytes) *
+             options.collective.initial_window_fan_in >
+             options.collective.ns_tm3_shared_buffer_bytes)) {
+        throw std::invalid_argument("initial window requires positive fan-in and F*U <= buffer");
+    }
     requirePositive(options.collective.control_headroom_bytes, "-rnic_cn_control_headroom_bytes");
     requirePositive(options.collective.control_messages_per_flow,
                     "-rnic_cn_control_messages_per_flow");
@@ -274,7 +296,9 @@ void rejectCrossProfileOptions(const RnicAtlahsCliOptions& options) {
         supplied.ring_release_tick_ps || supplied.ring_wire_capacity_bytes ||
         supplied.ns_tm3_shared_buffer_bytes ||
         supplied.cn_maximum_retransmissions ||
-        supplied.cn_retransmission_rto_ps;
+        supplied.cn_retransmission_rto_ps || supplied.data_recovery ||
+        supplied.retry_probe_windows || supplied.initial_window_bytes ||
+        supplied.initial_window_fan_in;
     if (options.profile != RnicProfile::CollectiveNetwork && supplied_collective) {
         throw std::invalid_argument("physical Clos/control options are valid only for rnic-cn");
     }
@@ -411,6 +435,24 @@ RnicAtlahsCliOptions parseRnicAtlahsCli(int argc, const char* const argv[]) {
         } else if (option == "-rnic_cn_margin_ppm") {
             options.collective.margin_ppm = parseUnsigned32(option, value);
             options.explicitly_supplied.margin_ppm = true;
+        } else if (option == "-rnic_cn_data_recovery") {
+            if (value == "none") {
+                options.collective.data_recovery = RnicCnDataRecovery::None;
+            } else if (value == "deadline") {
+                options.collective.data_recovery = RnicCnDataRecovery::Deadline;
+            } else {
+                throw optionError(option, "expected none or deadline");
+            }
+            options.explicitly_supplied.data_recovery = true;
+        } else if (option == "-rnic_cn_retry_probe_windows") {
+            options.collective.retry_probe_windows = parseUnsigned32(option, value);
+            options.explicitly_supplied.retry_probe_windows = true;
+        } else if (option == "-rnic_cn_initial_window_bytes") {
+            options.collective.initial_window_bytes = parseUnsigned(option, value);
+            options.explicitly_supplied.initial_window_bytes = true;
+        } else if (option == "-rnic_cn_initial_window_fan_in") {
+            options.collective.initial_window_fan_in = parseUnsigned(option, value);
+            options.explicitly_supplied.initial_window_fan_in = true;
         } else if (option == "-rnic_cn_control_recovery") {
             if (value == "none") {
                 options.collective.control_recovery = RnicCnControlRecovery::None;
@@ -579,7 +621,10 @@ std::string rnicAtlahsCliUsage(const std::string& program_name) {
              " [-rnic_cn_ring_capacity_bytes BYTES]"
              " [-rnic_cn_ns_tm3_buffer_bytes BYTES]"
              " [-rnic_cn_max_retransmissions N]"
-             " [-rnic_cn_retransmission_rto_ps PS]\n"
+             " [-rnic_cn_retransmission_rto_ps PS]"
+             " [-rnic_cn_data_recovery none|deadline]"
+             " [-rnic_cn_retry_probe_windows N]"
+             " [-rnic_cn_initial_window_bytes BYTES -rnic_cn_initial_window_fan_in N]\n"
           << "rnic-ss: [-topo FILE]"
              " [-rnic_hop_latency_ps PS]"
              " [-rnic_switch_latency_ps PS]"
@@ -601,4 +646,12 @@ std::string rnicAtlahsCliUsage(const std::string& program_name) {
              " [-rnic_ss_routing unordered|ordered]"
              " [-rnic_ss_loss_stress off|on]\n";
     return usage.str();
+}
+
+const char* rnicCnDataRecoveryName(RnicCnDataRecovery recovery) {
+    switch (recovery) {
+        case RnicCnDataRecovery::None: return "none";
+        case RnicCnDataRecovery::Deadline: return "deadline";
+    }
+    throw std::invalid_argument("unknown rnic-cn data recovery selection");
 }

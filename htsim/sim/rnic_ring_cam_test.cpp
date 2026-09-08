@@ -244,4 +244,44 @@ TEST(RnicRingCamModuloTimestampTest, RejectsAmbiguousConfiguration) {
     EXPECT_THROW(classifyRnicModuloTimestampAge(16, 0, 4, 4), std::invalid_argument);
 }
 
+TEST(RnicRingCamTest, ExplicitRecoveryKeepsTimestampAndUsesArrivalReleaseBoundaries) {
+    for (const std::uint64_t arrival : {199U, 200U, 201U, 400U}) {
+        RnicRingCam strict({100, 10, 2000});
+        RnicRingCam recovery({100, 10, 2000});
+        const Packet packet{1, 10, 100, arrival, {936, 1000}};
+        EXPECT_EQ(strict.processArrival(packet).admission,
+                  arrival > 200 ? Admission::Late : Admission::Admitted);
+        const auto result = recovery.processRecoveryArrival(packet);
+        ASSERT_EQ(result.admission, Admission::Admitted);
+        const auto release = ((std::max<std::uint64_t>(200, arrival) + 9) / 10) * 10;
+        EXPECT_EQ(result.logical_release_ps, release);
+        const auto packets = recovery.advanceTo(release);
+        ASSERT_EQ(packets.size(), 1U);
+        EXPECT_EQ(packets.front().packet.eta_ps, 100U);
+        EXPECT_EQ(packets.front().packet.arrival_ps, arrival);
+        EXPECT_GE(packets.front().logical_release_ps, arrival);
+        EXPECT_EQ(recovery.wireOccupancyBytes(), 0U);
+    }
+}
+
+TEST(RnicRingCamTest, ExplicitRecoverySharesFiniteStorageAndRejectsEarlyPackets) {
+    for (const std::uint64_t capacity : {1000U, 2000U}) {
+        RnicRingCam cam({100, 10, capacity});
+        EXPECT_EQ(cam.processRecoveryArrival({9, 10, 200, 199, {936, 1000}}).admission,
+                  Admission::Early);
+        ASSERT_EQ(cam.processRecoveryArrival({1, 10, 0, 201, {936, 1000}}).admission,
+                  Admission::Admitted);
+        const auto second = cam.processRecoveryArrival({2, 11, 0, 202, {936, 1000}});
+        EXPECT_EQ(second.admission, capacity == 1000 ? Admission::Overflow : Admission::Admitted);
+        EXPECT_LE(cam.wireOccupancyBytes(), capacity);
+        cam.advanceTo(210);
+        EXPECT_EQ(cam.wireOccupancyBytes(), 0U);
+        EXPECT_EQ(cam.processRecoveryArrival({3, 12, 0, 211, {1, 65}}).admission,
+                  Admission::Admitted);
+        EXPECT_EQ(cam.wireOccupancyBytes(), 65U);
+        cam.advanceTo(220);
+        EXPECT_EQ(cam.wireOccupancyBytes(), 0U);
+    }
+}
+
 }  // namespace

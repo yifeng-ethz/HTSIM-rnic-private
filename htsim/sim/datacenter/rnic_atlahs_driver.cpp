@@ -181,6 +181,10 @@ RnicAtlahsRuntimeConfig collectiveRuntimeConfig(const RnicAtlahsCliOptions& opti
         {},
         options.collective.maximum_retransmissions,
         options.collective.retransmission_rto_ps,
+        options.collective.data_recovery,
+        options.collective.retry_probe_windows,
+        options.collective.initial_window_bytes,
+        options.collective.initial_window_fan_in,
     };
 }
 
@@ -366,10 +370,26 @@ std::string renderRnicAtlahsModelManifest(const RnicAtlahsCliOptions& options,
                  << " rnic_cn_control_sizing=per-egress-H-over-M-C"
                  << " rnic_cn_control_base_buffer_bytes="
                  << options.collective.ns_tm3_shared_buffer_bytes << '\n';
+        manifest << "[RNIC manifest] rnic_cn_data_recovery="
+                 << rnicCnDataRecoveryName(options.collective.data_recovery)
+                 << " rnic_cn_retry_probe_windows=" << options.collective.retry_probe_windows
+                 << " rnic_cn_initial_window="
+                 << (options.collective.initial_window_bytes.has_value() ? "bounded" : "none")
+                 << " rnic_cn_initial_window_bytes="
+                 << options.collective.initial_window_bytes.value_or(0)
+                 << " rnic_cn_initial_window_fan_in=" << options.collective.initial_window_fan_in
+                 << " rnic_cn_initial_buffer_bytes=" << options.collective.ns_tm3_shared_buffer_bytes
+                 << " rnic_cn_initial_sizing=F-times-U-at-most-B"
+                 << " rnic_cn_probe_epoch=physical-retry-serialization-end"
+                 << " rnic_cn_recovery_release=actual-arrival-tick" << '\n';
         manifest << "[RNIC manifest] recovery=deterministic-gap-nack-retransmission"
-                 << " late_admission=rejected-as-gap"
+                 << " late_admission="
+                 << (options.collective.data_recovery == RnicCnDataRecovery::Deadline
+                         ? "authenticated-retry-at-arrival-tick" : "rejected-as-gap")
                  << " early_admission=hard-error"
-                 << " overflow_admission=hard-error"
+                 << " overflow_admission="
+                 << (options.collective.data_recovery == RnicCnDataRecovery::Deadline
+                         ? "strict-hard-error-late-retry-nack" : "hard-error")
                  << " gap_decision=post-resequence-same-timestamp"
                  << " gap_decision_epsilon_ps=0"
                  << " gap_nack_priority=high"

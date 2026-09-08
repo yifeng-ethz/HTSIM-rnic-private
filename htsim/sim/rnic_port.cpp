@@ -438,7 +438,16 @@ RnicRxPort::RnicRxPort(uint64_t access_capacity_bps, RnicRingCamConfig ring_cam_
     : _wire_serializer(access_capacity_bps), _ring_cam(ring_cam_config) {}
 
 RnicRxArrivalResult RnicRxPort::processArrival(const RnicRingCamPacket& packet) {
-    RnicRingCamArrivalResult result = _ring_cam.processArrival(packet);
+    return admit(packet, false);
+}
+
+RnicRxArrivalResult RnicRxPort::processRecoveryArrival(const RnicRingCamPacket& packet) {
+    return admit(packet, true);
+}
+
+RnicRxArrivalResult RnicRxPort::admit(const RnicRingCamPacket& packet, bool recover_late) {
+    RnicRingCamArrivalResult result = recover_late
+        ? _ring_cam.processRecoveryArrival(packet) : _ring_cam.processArrival(packet);
     std::vector<RnicRxScheduledSerialization> scheduled =
         scheduleSerializations(result.released_before_admission);
     updateLogicalReleaseTracking(result.released_before_admission, result.logical_release_ps);

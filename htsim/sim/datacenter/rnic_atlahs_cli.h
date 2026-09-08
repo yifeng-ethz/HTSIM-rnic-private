@@ -7,10 +7,12 @@
 #include <string>
 
 #include "rnic_profile.h"
+#include "rnic_data_recovery.h"
 
 enum class RnicCnControlRecovery { None, Headroom };
 
 const char* rnicCnControlRecoveryName(RnicCnControlRecovery recovery);
+const char* rnicCnDataRecoveryName(RnicCnDataRecovery recovery);
 std::uint64_t rnicCnControlAdmittedFanIn(std::uint64_t headroom_bytes,
                                       std::uint64_t messages_per_flow,
                                       std::uint64_t control_wire_bytes);
@@ -55,6 +57,10 @@ struct RnicAtlahsCollectiveCliOptions {
     std::uint64_t ns_tm3_shared_buffer_bytes = UINT64_C(1) << 20;
     std::uint32_t maximum_retransmissions = 8;
     std::uint64_t retransmission_rto_ps = UINT64_C(50000000000);
+    RnicCnDataRecovery data_recovery = RnicCnDataRecovery::None;
+    std::uint32_t retry_probe_windows = 4;
+    std::optional<std::uint64_t> initial_window_bytes;
+    std::uint64_t initial_window_fan_in = 0;
 };
 
 // Public-mechanism parameters for the open rnic-ss comparator.  None of these
@@ -104,6 +110,10 @@ struct RnicAtlahsExplicitCliOptions {
     bool ns_tm3_shared_buffer_bytes = false;
     bool cn_maximum_retransmissions = false;
     bool cn_retransmission_rto_ps = false;
+    bool data_recovery = false;
+    bool retry_probe_windows = false;
+    bool initial_window_bytes = false;
+    bool initial_window_fan_in = false;
 
     bool ss_state_trace_csv = false;
     bool goodput_trace_csv = false;

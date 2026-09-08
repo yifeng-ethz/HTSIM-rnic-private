@@ -54,6 +54,20 @@ public:
         runtime.replayResolvedGapNackForTesting(flow_id, packet_index);
     }
 
+    static bool initialGrantReceived(const RnicCollectiveNetworkRuntime& runtime,
+                                     AtlahsFlowId flow_id) {
+        return runtime.initialGrantReceivedForTesting(flow_id);
+    }
+
+    static std::uint64_t pacerState(const RnicTxPort& port) {
+        return port._pacer.state();
+    }
+
+    static void replayGapResolved(RnicCollectiveNetworkRuntime& runtime,
+                                  AtlahsFlowId flow_id, std::uint64_t packet_index) {
+        runtime.replayGapResolvedForTesting(flow_id, packet_index);
+    }
+
     static void redeclareFlow(RnicCollectiveNetworkRuntime& runtime, AtlahsFlowId flow_id) {
         runtime.redeclareFlowForTesting(flow_id);
     }
@@ -651,6 +665,7 @@ TEST(RnicCollectiveNetworkRuntimeTest,
         return rnicCollectiveNoQueueTransitPs(fixture.topology_config, source, destination, extent);
     };
     config.maximum_retransmissions = 2;
+    const auto epoch = EventList::now();
     RnicCollectiveNetworkRuntime runtime(fixture.events, *fixture.topology, std::move(config));
     std::vector<AtlahsFlowId> completions;
     runtime.setup(32, [&](AtlahsFlowId flow_id) { completions.push_back(flow_id); });
@@ -803,6 +818,7 @@ TEST(RnicCollectiveNetworkRuntimeTest, DuplicatePhysicalGapNackAndRetransmission
         return rnicCollectiveNoQueueTransitPs(fixture.topology_config, source, destination, extent);
     };
     config.maximum_retransmissions = 2;
+    const auto epoch = EventList::now();
     RnicCollectiveNetworkRuntime runtime(fixture.events, *fixture.topology, std::move(config));
     std::vector<AtlahsFlowId> completions;
     runtime.setup(32, [&](AtlahsFlowId flow_id) { completions.push_back(flow_id); });
@@ -1030,6 +1046,7 @@ TEST(RnicCollectiveNetworkRuntimeTest, DuplicateLateRetryIsIgnoredBeforeAttemptT
         return rnicCollectiveNoQueueTransitPs(fixture.topology_config, source, destination, extent);
     };
     config.maximum_retransmissions = 2;
+    const auto epoch = EventList::now();
     RnicCollectiveNetworkRuntime runtime(fixture.events, *fixture.topology, std::move(config));
     std::vector<AtlahsFlowId> completions;
     runtime.setup(32, [&](AtlahsFlowId flow_id) { completions.push_back(flow_id); });
@@ -1078,6 +1095,323 @@ TEST(RnicCollectiveNetworkRuntimeTest, ResolvingOnePacketKeepsAnotherPacketsWatc
     ASSERT_TRUE(second.has_value());
     EXPECT_GE(*second, *first + rto);
     EXPECT_NO_THROW(runtime.validateQuiescent());
+}
+
+std::uint64_t alignFixtureEpoch(TwoTierCollectiveFixture& fixture) {
+    // EventList is a process-wide clock. Start each comparison at the same
+    // control-window and receive-tick phase, then compare elapsed times.
+    const auto period = timeFromUs(10.0);
+    const auto epoch = (EventList::now() / period + 1) * period;
+    bool aligned = false;
+    CallbackEvent boundary(fixture.events, epoch, [&] { aligned = true; });
+    fixture.stepUntil([&] { return aligned; });
+    return epoch;
+}
+
+struct PromptRecoveryObservation {
+    std::uint64_t completion;
+    std::uint64_t first_dispatch;
+    std::uint64_t second_dispatch;
+    RnicCollectiveRecoveryStatistics statistics;
+};
+
+PromptRecoveryObservation runPromptTail(std::uint64_t deadline, std::uint32_t windows,
+                                       std::uint64_t legacy_timeout) {
+    TwoTierCollectiveFixture fixture;
+    const auto epoch = alignFixtureEpoch(fixture);
+    auto config = fixture.runtimeConfig();
+    config.control_deadline_ps = deadline;
+    config.data_recovery = RnicCnDataRecovery::Deadline;
+    config.retry_probe_windows = windows;
+    config.retransmission_rto_ps = legacy_timeout;
+    RnicCollectiveNetworkRuntime runtime(fixture.events, *fixture.topology, config);
+    constexpr AtlahsFlowId flow_id = 0x710000001ULL;
+    std::vector<AtlahsFlowId> completions;
+    runtime.setup(32, [&](AtlahsFlowId id) { completions.push_back(id); });
+    RnicCollectiveNetworkRuntimeTestPeer::dropOriginalData(runtime, flow_id, 0);
+    RnicCollectiveNetworkRuntimeTestPeer::dropDataAttempt(runtime, flow_id, 0, 1);
+    runtime.send({flow_id, 0, 31, 500, EventList::now(), 1});
+    fixture.drainRuntime(runtime);
+    EXPECT_EQ(completions, (std::vector<AtlahsFlowId>{flow_id}));
+    const auto flow = runtime.flow(flow_id);
+    EXPECT_EQ(flow.delivered_payload_bytes, 500U);
+    EXPECT_EQ(flow.delivered_wire_bytes, 564U);
+    EXPECT_EQ(flow.delivered_data_packets, 1U);
+    EXPECT_EQ(flow.deterministic_retransmissions, 2U);
+    EXPECT_EQ(runtime.recoveryStatistics().tail_probes, 1U);
+    EXPECT_EQ(runtime.recoveryStatistics().tail_probe_wire_bytes, 564U);
+    const auto first = RnicCollectiveNetworkRuntimeTestPeer::retryDispatch(runtime, flow_id, 1);
+    const auto second = RnicCollectiveNetworkRuntimeTestPeer::retryDispatch(runtime, flow_id, 2);
+    EXPECT_TRUE(first.has_value());
+    EXPECT_TRUE(second.has_value());
+    EXPECT_GE(second.value(), first.value() + 564U * 80U + deadline * windows);
+    EXPECT_LT(second.value(), first.value() + 564U * 80U + deadline * windows + timeFromUs(1.0));
+    return {flow.delivery_completion_time_ps.value() - epoch, first.value() - epoch,
+            second.value() - epoch, runtime.recoveryStatistics()};
+}
+
+TEST(RnicCollectiveNetworkRuntimeTest, PromptTailProbeScalesWithDeadlineAndIgnoresLegacyTimeout) {
+    for (const std::uint64_t deadline : {timeFromUs(5.0), timeFromUs(10.0)}) {
+        const auto short_probe = runPromptTail(deadline, 2, timeFromMs(50));
+        const auto same_probe = runPromptTail(deadline, 2, timeFromMs(100));
+        const auto long_probe = runPromptTail(deadline, 4, timeFromMs(50));
+        EXPECT_EQ(short_probe.completion, same_probe.completion);
+        EXPECT_EQ(short_probe.first_dispatch, same_probe.first_dispatch);
+        EXPECT_EQ(short_probe.second_dispatch, same_probe.second_dispatch);
+        EXPECT_EQ(short_probe.statistics.deterministic_retransmission_wire_bytes,
+                  same_probe.statistics.deterministic_retransmission_wire_bytes);
+        EXPECT_GE(long_probe.second_dispatch - long_probe.first_dispatch,
+                  short_probe.second_dispatch - short_probe.first_dispatch + 2 * deadline - 80000);
+        EXPECT_LE(long_probe.second_dispatch - long_probe.first_dispatch,
+                  short_probe.second_dispatch - short_probe.first_dispatch + 2 * deadline + 80000);
+        EXPECT_LT(long_probe.completion, timeFromMs(1));
+    }
+}
+
+TEST(RnicCollectiveNetworkRuntimeTest, AuthenticatedLateRetryUsesPhysicalArrivalAndOneRxSerializer) {
+    TwoTierCollectiveFixture fixture;
+    auto config = fixture.runtimeConfig();
+    // The fixture's physical switch serializers add more than this window.
+    // Its original remains a strict late rejection; the retry has fresh ETA.
+    config.ring_cam.delay_window_ps = 1;
+    config.data_recovery = RnicCnDataRecovery::Deadline;
+    RnicCollectiveNetworkRuntime runtime(fixture.events, *fixture.topology, config);
+    std::vector<AtlahsFlowId> completions;
+    runtime.setup(32, [&](AtlahsFlowId id) { completions.push_back(id); });
+    constexpr AtlahsFlowId id = 0x710000002ULL;
+    runtime.send({id, 0, 31, 500, EventList::now(), 1});
+    fixture.drainRuntime(runtime);
+    EXPECT_EQ(completions, (std::vector<AtlahsFlowId>{id}));
+    EXPECT_EQ(runtime.flow(id).late_data_packets, 1U);
+    EXPECT_EQ(runtime.recoveryStatistics().late_retry_admissions, 1U);
+    EXPECT_EQ(runtime.flow(id).deterministic_retransmissions, 1U);
+    EXPECT_EQ(runtime.node(31).rxPort().deliveredPayloadBytes(id), 500U);
+    EXPECT_EQ(runtime.node(31).rxPort().deliveredWireBytes(id), 564U);
+    EXPECT_EQ(runtime.node(31).rxPort().ringCam().wireOccupancyBytes(), 0U);
+}
+
+TEST(RnicCollectiveNetworkRuntimeTest, OlderSuccessfulRetryClosesNewerInFlightProbes) {
+    TwoTierCollectiveFixture fixture;
+    auto config = fixture.runtimeConfig();
+    config.data_recovery = RnicCnDataRecovery::Deadline;
+    config.control_deadline_ps = timeFromUs(1.0);
+    config.retry_probe_windows = 2;
+    RnicCollectiveNetworkRuntime runtime(fixture.events, *fixture.topology, config);
+    constexpr AtlahsFlowId id = 0x710000003ULL;
+    std::vector<AtlahsFlowId> completions;
+    runtime.setup(32, [&](AtlahsFlowId flow_id) { completions.push_back(flow_id); });
+    RnicCollectiveNetworkRuntimeTestPeer::dropOriginalData(runtime, id, 0);
+    runtime.send({id, 0, 31, 500, EventList::now(), 1});
+    fixture.drainRuntime(runtime);
+    EXPECT_EQ(completions, (std::vector<AtlahsFlowId>{id}));
+    EXPECT_GE(runtime.flow(id).deterministic_retransmissions, 2U);
+    EXPECT_GE(runtime.flow(id).duplicate_data_packets_ignored, 1U);
+    EXPECT_EQ(runtime.flow(id).delivered_data_packets, 1U);
+    RnicCollectiveNetworkRuntimeTestPeer::replayResolvedGapNack(runtime, id, 0);
+    RnicCollectiveNetworkRuntimeTestPeer::replayGapResolved(runtime, id, 0);
+    RnicCollectiveNetworkRuntimeTestPeer::replayGapResolved(runtime, id, 0);
+    fixture.drainRuntime(runtime);
+    EXPECT_EQ(completions.size(), 1U);
+    EXPECT_NO_THROW(runtime.validateQuiescent());
+}
+
+TEST(RnicCollectiveNetworkRuntimeTest, CancelledQueuedProbeDoesNotCountAsPhysicalTransmission) {
+    TwoTierCollectiveFixture fixture;
+    auto config = fixture.runtimeConfig();
+    config.data_recovery = RnicCnDataRecovery::Deadline;
+    config.control_deadline_ps = timeFromUs(1.0);
+    config.retry_probe_windows = 2;
+    RnicCollectiveNetworkRuntime runtime(fixture.events, *fixture.topology, config);
+    constexpr AtlahsFlowId id = 0x710000008ULL;
+    std::vector<AtlahsFlowId> completions;
+    runtime.setup(32, [&](AtlahsFlowId flow_id) { completions.push_back(flow_id); });
+    RnicCollectiveNetworkRuntimeTestPeer::dropOriginalData(runtime, id, 0);
+    runtime.send({id, 0, 31, 500, EventList::now(), 1});
+    fixture.stepUntil([&] {
+        return RnicCollectiveNetworkRuntimeTestPeer::retryDispatch(runtime, id, 1).has_value();
+    });
+    const auto first = RnicCollectiveNetworkRuntimeTestPeer::retryDispatch(runtime, id, 1).value();
+    // Real duplicate DECLARE packets occupy the same source serializer across
+    // probe expiry. The earlier retry's physical resolution cancels its queued
+    // successor before DATA can acquire that serializer.
+    CallbackEvent busy(fixture.events, first + 564U * 80U + timeFromUs(2.0) - 1, [&] {
+        for (unsigned duplicate = 0; duplicate < 1000; ++duplicate) {
+            RnicCollectiveNetworkRuntimeTestPeer::redeclareFlow(runtime, id);
+        }
+    });
+    fixture.drainRuntime(runtime);
+    EXPECT_EQ(completions, (std::vector<AtlahsFlowId>{id}));
+    EXPECT_EQ(runtime.flow(id).deterministic_retransmissions, 1U);
+    EXPECT_EQ(runtime.recoveryStatistics().tail_probes, 0U);
+    EXPECT_EQ(runtime.recoveryStatistics().tail_probe_wire_bytes, 0U);
+    EXPECT_EQ(runtime.flow(id).delivered_payload_bytes, 500U);
+}
+
+TEST(RnicCollectiveNetworkRuntimeTest, PromptResolutionKeepsOtherFlowsAndGapsIndependent) {
+    TwoTierCollectiveFixture fixture;
+    auto config = fixture.runtimeConfig();
+    config.data_recovery = RnicCnDataRecovery::Deadline;
+    RnicCollectiveNetworkRuntime runtime(fixture.events, *fixture.topology, config);
+    std::vector<AtlahsFlowId> completions;
+    runtime.setup(32, [&](AtlahsFlowId id) { completions.push_back(id); });
+    constexpr AtlahsFlowId a = 0x710000004ULL;
+    constexpr AtlahsFlowId b = 0x710000005ULL;
+    RnicCollectiveNetworkRuntimeTestPeer::dropOriginalData(runtime, a, 0);
+    RnicCollectiveNetworkRuntimeTestPeer::dropOriginalData(runtime, a, 2);
+    RnicCollectiveNetworkRuntimeTestPeer::dropDataAttempt(runtime, a, 2, 1);
+    RnicCollectiveNetworkRuntimeTestPeer::dropOriginalData(runtime, b, 0);
+    runtime.send({a, 0, 31, 2500, EventList::now(), 1});
+    runtime.send({b, 1, 30, 500, EventList::now(), 2});
+    fixture.drainRuntime(runtime);
+    EXPECT_EQ(completions.size(), 2U);
+    EXPECT_EQ(runtime.flow(a).delivered_payload_bytes, 2500U);
+    EXPECT_EQ(runtime.flow(a).delivered_data_packets, 3U);
+    EXPECT_EQ(runtime.flow(b).delivered_payload_bytes, 500U);
+    EXPECT_EQ(runtime.flow(a).deterministic_retransmissions, 3U);
+    EXPECT_EQ(runtime.flow(b).deterministic_retransmissions, 1U);
+    EXPECT_EQ(runtime.recoveryStatistics().tail_probes, 1U);
+}
+
+TEST(RnicCollectiveNetworkRuntimeTest, PromptRecoveryRetainsBoundedPermanentLossFailure) {
+    TwoTierCollectiveFixture fixture;
+    auto config = fixture.runtimeConfig();
+    config.data_recovery = RnicCnDataRecovery::Deadline;
+    config.maximum_retransmissions = 2;
+    const auto epoch = EventList::now();
+    RnicCollectiveNetworkRuntime runtime(fixture.events, *fixture.topology, config);
+    constexpr AtlahsFlowId id = 0x710000006ULL;
+    runtime.setup(32, [](AtlahsFlowId) {});
+    for (std::uint32_t attempt = 0; attempt <= 2; ++attempt) {
+        RnicCollectiveNetworkRuntimeTestPeer::dropDataAttempt(runtime, id, 0, attempt);
+    }
+    runtime.send({id, 0, 31, 500, EventList::now(), 1});
+    try {
+        fixture.stepUntil([] { return false; });
+        FAIL() << "permanent loss must fail at the configured limit";
+    } catch (const std::runtime_error& error) {
+        EXPECT_NE(std::string(error.what()).find("maximum attempts"), std::string::npos);
+    }
+    EXPECT_EQ(runtime.flow(id).deterministic_retransmissions, 2U);
+    EXPECT_EQ(runtime.flow(id).delivered_payload_bytes, 0U);
+    EXPECT_LT(EventList::now() - epoch, timeFromMs(1));
+}
+
+struct InitialWindowObservation {
+    std::uint64_t completion;
+    std::uint64_t before_grant;
+    std::uint64_t holds;
+    std::uint64_t accepts;
+    std::optional<std::uint64_t> grant;
+    std::optional<std::uint64_t> retry;
+};
+
+InitialWindowObservation runInitialWindow(std::optional<std::uint64_t> budget,
+                                          bool drop_original = false) {
+    TwoTierCollectiveFixture fixture;
+    const auto epoch = alignFixtureEpoch(fixture);
+    auto config = fixture.runtimeConfig();
+    config.initial_window_bytes = budget;
+    config.initial_window_fan_in = budget.has_value() ? 1 : 0;
+    config.data_recovery = drop_original ? RnicCnDataRecovery::Deadline : RnicCnDataRecovery::None;
+    RnicCollectiveNetworkRuntime runtime(fixture.events, *fixture.topology, config);
+    constexpr AtlahsFlowId id = 0x710000007ULL;
+    runtime.setup(32, [](AtlahsFlowId) {});
+    if (drop_original) {
+        RnicCollectiveNetworkRuntimeTestPeer::dropOriginalData(runtime, id, 2);
+    }
+    runtime.send({id, 0, 31, 2500, EventList::now(), 1});
+    std::uint64_t before_grant = 0;
+    std::optional<std::uint64_t> grant;
+    // Observe every event until the physical nonempty grant reaches this
+    // sender, including retries and the control packet's full transit time.
+    fixture.stepUntil([&] {
+        const auto flow = runtime.flow(id);
+        if (!RnicCollectiveNetworkRuntimeTestPeer::initialGrantReceived(runtime, id)) {
+            before_grant = flow.source_wire_bytes_dispatched +
+                           flow.deterministic_retransmission_wire_bytes;
+        } else {
+            grant = EventList::now() - epoch;
+        }
+        return grant.has_value() || flow.receiver_retired;
+    });
+    fixture.drainRuntime(runtime);
+    EXPECT_EQ(runtime.flow(id).delivered_payload_bytes, 2500U);
+    return {runtime.flow(id).delivery_completion_time_ps.value() - epoch, before_grant,
+            runtime.recoveryStatistics().initial_window_holds,
+            runtime.recoveryStatistics().initial_grants_dispatched, grant,
+            RnicCollectiveNetworkRuntimeTestPeer::retryDispatch(runtime, id, 1).has_value()
+                ? std::optional<std::uint64_t>(
+                    *RnicCollectiveNetworkRuntimeTestPeer::retryDispatch(runtime, id, 1) - epoch)
+                : std::nullopt};
+}
+
+TEST(RnicCollectiveNetworkRuntimeTest, FullInitialBudgetWithLossWaitsForPhysicalGrantBeforeRetry) {
+    const auto result = runInitialWindow(2692, true);
+    EXPECT_EQ(result.before_grant, 2692U);
+    ASSERT_TRUE(result.grant.has_value());
+    ASSERT_TRUE(result.retry.has_value());
+    EXPECT_GE(*result.retry, *result.grant);
+    EXPECT_GE(result.accepts, 1U);
+    EXPECT_LT(result.completion, timeFromMs(1));
+}
+
+std::vector<std::vector<std::uint64_t>> runDormantWindowTrace(
+    std::optional<std::uint64_t> budget) {
+    TwoTierCollectiveFixture fixture;
+    const auto epoch = alignFixtureEpoch(fixture);
+    auto config = fixture.runtimeConfig();
+    config.initial_window_bytes = budget;
+    config.initial_window_fan_in = budget.has_value() ? 3 : 0;
+    RnicCollectiveNetworkRuntime runtime(fixture.events, *fixture.topology, config);
+    std::vector<AtlahsFlowId> completions;
+    runtime.setup(32, [&](AtlahsFlowId id) { completions.push_back(id); });
+    const std::vector<AtlahsFlowId> ids{0x710000009ULL, 0x71000000aULL, 0x71000000bULL};
+    runtime.send({ids[0], 0, 31, 2500, epoch, 1});
+    runtime.send({ids[1], 0, 30, 511, epoch, 2});
+    runtime.send({ids[2], 1, 31, 1800, epoch, 3});
+    std::vector<std::vector<std::uint64_t>> trace;
+    fixture.stepUntil([&] {
+        std::vector<std::uint64_t> row{EventList::now() - epoch};
+        for (const auto node : {0U, 1U, 30U, 31U}) {
+            const auto& tx = runtime.node(node).txPort();
+            row.push_back(RnicCollectiveNetworkRuntimeTestPeer::pacerState(tx));
+            row.push_back(std::max(tx.nextWireOpportunityPs(), epoch) - epoch);
+        }
+        for (const auto id : ids) {
+            const auto flow = runtime.flow(id);
+            row.insert(row.end(), {flow.source_payload_bytes_dispatched,
+                                   flow.source_wire_bytes_dispatched,
+                                   flow.source_data_packets_dispatched,
+                                   flow.delivered_payload_bytes, flow.delivered_wire_bytes,
+                                   flow.delivered_data_packets, flow.current_wire_rate_bps});
+        }
+        row.insert(row.end(), completions.begin(), completions.end());
+        trace.push_back(std::move(row));
+        return !runtime.hasPendingPhysicalWork();
+    });
+    runtime.validateQuiescent();
+    EXPECT_EQ(completions.size(), 3U);
+    return trace;
+}
+
+TEST(RnicCollectiveNetworkRuntimeTest, DormantWindowPreservesEveryDispatchAndPacerObservation) {
+    EXPECT_EQ(runDormantWindowTrace(std::nullopt), runDormantWindowTrace(2692));
+}
+
+TEST(RnicCollectiveNetworkRuntimeTest, InitialWindowBoundsBytesAndZeroBudgetReceivesPhysicalGrant) {
+    for (const std::uint64_t budget : {0U, 999U, 1000U, 2000U}) {
+        const auto result = runInitialWindow(budget);
+        EXPECT_LE(result.before_grant, budget);
+        EXPECT_EQ(result.holds, 1U);
+        EXPECT_GE(result.accepts, 1U);
+        EXPECT_LT(result.completion, timeFromMs(1));
+    }
+    const auto off = runInitialWindow(std::nullopt);
+    const auto dormant = runInitialWindow(2692);
+    EXPECT_EQ(off.completion, dormant.completion);
+    EXPECT_EQ(off.before_grant, dormant.before_grant);
+    EXPECT_EQ(off.holds, 0U);
+    EXPECT_EQ(dormant.holds, 0U);
 }
 
 }  // namespace

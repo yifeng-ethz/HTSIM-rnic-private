@@ -14,6 +14,7 @@
 #include "rnic_collective_packet.h"
 #include "rnic_packet_extent.h"
 #include "rnic_ring_cam.h"
+#include "rnic_data_recovery.h"
 
 class FatTreeTopology;
 class RnicNode;
@@ -37,6 +38,10 @@ struct RnicCollectiveNetworkConfig {
     // Sender-visible overtime for a retry that receives neither a subsequent
     // exact-gap NACK nor a physical GAP_RESOLVED closure.
     std::uint64_t retransmission_rto_ps{50000000000ULL};
+    RnicCnDataRecovery data_recovery{RnicCnDataRecovery::None};
+    std::uint32_t retry_probe_windows{4};
+    std::optional<std::uint64_t> initial_window_bytes;
+    std::uint64_t initial_window_fan_in{0};
 };
 
 struct RnicCollectiveRecoveryStatistics {
@@ -54,6 +59,11 @@ struct RnicCollectiveRecoveryStatistics {
     // An NFLOW_UPDATE whose membership already retired is counted here and
     // otherwise ignored, mirroring stale DECLAREs.
     std::uint64_t stale_nflow_updates_ignored{0};
+    std::uint64_t tail_probes{0};
+    std::uint64_t tail_probe_wire_bytes{0};
+    std::uint64_t late_retry_admissions{0};
+    std::uint64_t initial_window_holds{0};
+    std::uint64_t initial_grants_dispatched{0};
 };
 
 struct RnicCollectiveFlowSnapshot {
@@ -153,6 +163,8 @@ private:
                                    std::uint32_t transmission_attempt);
     void duplicateOriginalDataForTesting(AtlahsFlowId flow_id, std::uint64_t packet_index);
     void replayResolvedGapNackForTesting(AtlahsFlowId flow_id, std::uint64_t packet_index);
+    void replayGapResolvedForTesting(AtlahsFlowId flow_id, std::uint64_t packet_index);
+    bool initialGrantReceivedForTesting(AtlahsFlowId flow_id) const;
     std::uint64_t maxOriginalReleaseForTesting(AtlahsFlowId flow_id) const;
     std::uint64_t finalOriginalReleaseForTesting(AtlahsFlowId flow_id) const;
     std::optional<std::uint64_t> publishedRetireDeadlineForTesting(AtlahsFlowId flow_id) const;

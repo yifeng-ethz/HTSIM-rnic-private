@@ -239,7 +239,13 @@ void validateRuntimeQuiescence(AtlahsHtsimApi& api) {
                   << " rnic_cn_stale_declarations_ignored="
                   << recovery.stale_declarations_ignored
                   << " rnic_cn_stale_nflow_updates_ignored="
-                  << recovery.stale_nflow_updates_ignored << '\n';
+                  << recovery.stale_nflow_updates_ignored
+                  << " rnic_cn_tail_probes=" << recovery.tail_probes
+                  << " rnic_cn_tail_probe_wire_bytes=" << recovery.tail_probe_wire_bytes
+                  << " rnic_cn_late_retry_admissions=" << recovery.late_retry_admissions
+                  << " rnic_cn_initial_window_holds=" << recovery.initial_window_holds
+                  << " rnic_cn_initial_grants_dispatched=" << recovery.initial_grants_dispatched
+                  << '\n';
         std::cout << renderRnicSevereLateDropManifest(recovery);
     }
 }
