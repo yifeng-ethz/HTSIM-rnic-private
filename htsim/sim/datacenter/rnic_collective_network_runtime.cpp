@@ -2072,7 +2072,30 @@ void RnicCollectiveNetworkRuntime::Impl::processDueRetryTimeouts(TimePs now_ps) 
                     << " flow_id=" << flow.request.flow_id
                     << " packet_index=" << timeout.packet_index
                     << " attempt=" << timeout.transmission_attempt
-                    << " maximum=" << config.maximum_retransmissions;
+                    << " maximum=" << config.maximum_retransmissions
+                    << " now_ps=" << now_ps
+                    << " source_packets=" << flow.source_data_packets_dispatched
+                    << " delivered_packets=" << flow.delivered_data_packets
+                    << " total_packets=" << flow.final_ledger.total_data_packets
+                    << " retry_packets=" << flow.recovery.deterministic_retransmissions
+                    << " tail_probes=" << flow.recovery.tail_probes
+                    << " late_retry_admissions=" << flow.recovery.late_retry_admissions;
+            const auto missing = flow.rx_missing_packets.find(timeout.packet_index);
+            if (missing != flow.rx_missing_packets.end()) {
+                message << " receiver_last_failed=" << missing->second.last_failed_attempt
+                        << " receiver_last_nack=" << missing->second.last_nack_attempt
+                        << " receiver_accepted_lifecycle="
+                        << missing->second.accepted_lifecycle.value_or(0);
+            }
+            for (const auto& pending : destination_data) {
+                if (pending.second.flow_id == timeout.flow_id &&
+                    pending.second.data.packet_index == timeout.packet_index) {
+                    message << " pending_extent={lifecycle:" << pending.first
+                            << ",attempt:" << pending.second.data.transmission_attempt
+                            << ",eta_ps:" << pending.second.data.eta_ps << '}';
+                }
+            }
+            message << renderNsTm3QueueDiagnostic(topology);
             throw std::runtime_error(message.str());
         }
         if (timeout.tail_probe) {
