@@ -4,10 +4,12 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <streambuf>
 #include <string>
+#include <typeinfo>
 #include <vector>
 
 #include "rnic_flow_session.h"
@@ -405,6 +407,57 @@ TEST(RnicFlowSessionTest, EqualTimeAdvanceInvalidatesBoundary) {
     ASSERT_EQ(result.return_code, 2);
     EXPECT_NE(result.responses.back().find("\"code\":\"stale_boundary\""), std::string::npos);
     EXPECT_NE(result.responses.back().find("\"native_posts\":1"), std::string::npos);
+}
+
+TEST(RnicFlowSessionTest, CompletionLeavesAnAlreadyPendingEqualTimeCallback) {
+    class Witness final : public EventSource {
+    public:
+        Witness() : EventSource(EventList::getTheEventList(), "equal-time-witness") {}
+        void doNextEvent() override {
+            if (++callbacks == 1) {
+                // The physical arrival has now queued the native CQ callback.
+                // Queue the separate witness behind it, at the same timestamp.
+                for (const auto& [time, source] : EventList::getPendingSources()) {
+                    completion_callback_pending |= time == EventList::now()
+                        && typeid(*source) == typeid(htsim::simllm_rnic::SimllmAtlahsFlowRuntime);
+                }
+                EventList::sourceIsPendingGetHandle(*this, EventList::now());
+            }
+        }
+        unsigned int callbacks{0};
+        bool completion_callback_pending{false};
+    };
+    const auto time = kOnePacketCompletionPs;
+    std::ostringstream output, error;
+    std::unique_ptr<Witness> witness;
+    std::size_t stage = 0;
+    ScriptedFrames frames([&]() {
+        switch (stage++) {
+        case 0:
+            return openFrame(2) + injectFrame(1) + awaitFrame(1, {1}, false, time - 1);
+        case 1:
+            witness = std::make_unique<Witness>();
+            EventList::sourceIsPendingGetHandle(*witness, time);
+            return awaitFrame(1, {1});
+        case 2: {
+            const auto paused = responseBodies(output.str()).at(3);
+            EXPECT_EQ(responseUnsigned(paused, "event_time_ps"), time);
+            EXPECT_EQ(responseUnsigned(paused, "fully_processed_horizon_ps"), time - 1);
+            EXPECT_NE(paused.find("\"reason\":\"completion\""), std::string::npos);
+            EXPECT_TRUE(witness->completion_callback_pending);
+            EXPECT_EQ(witness->callbacks, 1U);
+            EXPECT_EQ(EventList::nextEventTime(), time);
+            return advanceFrame(1, time);
+        }
+        case 3:
+            EXPECT_EQ(witness->callbacks, 2U);
+            return finishFrames(1);
+        default: return std::string{};
+        }
+    });
+    std::istream input(&frames);
+    EXPECT_EQ(runRnicFlowSession(input, output, error, "htsim-test", "simllm-test"), 0)
+        << output.str() << error.str();
 }
 
 TEST(RnicFlowSessionTest, AdvancingAwaitInvalidatesPreviousBoundary) {
