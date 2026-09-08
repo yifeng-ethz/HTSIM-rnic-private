@@ -185,6 +185,7 @@ RnicAtlahsRuntimeConfig collectiveRuntimeConfig(const RnicAtlahsCliOptions& opti
         options.collective.retry_probe_windows,
         options.collective.initial_window_bytes,
         options.collective.initial_window_fan_in,
+        options.collective.trace_directory,
     };
 }
 

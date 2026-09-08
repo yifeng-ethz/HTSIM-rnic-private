@@ -372,10 +372,17 @@ int main(int argc, char* argv[]) {
             api.validateWqeQuiescent();
             writeRequestedStateTrace(api, options);
             writeRequestedGoodputTrace(api, options);
+            if (options.collective.trace_directory.has_value()) {
+                auto* runtime = dynamic_cast<RnicCollectiveNetworkRuntime*>(
+                    &requireAssembledProfile(api).implementation());
+                if (runtime == nullptr) throw std::logic_error("trace requires rnic-cn");
+                runtime->writeTrace();
+            }
             if (options.completion_csv.has_value()) {
                 writeCompletionCsv(*options.completion_csv, options.profile, api.completedFlows());
             }
-            std::cout << "[RNIC manifest] physical_quiescence=verified\n";
+            std::cout << "[RNIC manifest] physical_quiescence=verified"
+                      << " physical_quiescence_time_ps=" << EventList::now() << '\n';
             std::cout << renderRnicControlRecoveryManifest(requireAssembledProfile(api));
         } catch (...) {
             if (api.getFlowRuntime() != nullptr) {
