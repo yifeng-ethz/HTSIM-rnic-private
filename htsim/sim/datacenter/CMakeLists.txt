@@ -1,5 +1,6 @@
 # List of common source files shared among executables.
 set(LIB_SOURCES
+    rnic_breakout_topology.cpp
     firstfit.cpp
     vl2_topology.cpp
     fat_tree_topology.cpp
@@ -182,6 +183,12 @@ if ( ENABLE_TESTS )
             PROPERTIES LABELS "structural;frozen" TIMEOUT 10)
     endforeach()
 
+    add_executable(rnic_breakout_topology_test rnic_breakout_topology_test.cpp)
+    target_link_libraries(rnic_breakout_topology_test PRIVATE htsim_dc htsim gtest_main)
+    gtest_discover_tests(rnic_breakout_topology_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
     add_executable(fat_tree_switch_factory_test fat_tree_switch_factory_test.cpp)
     target_link_libraries(fat_tree_switch_factory_test PRIVATE htsim_dc htsim gtest_main)
     gtest_discover_tests(fat_tree_switch_factory_test
