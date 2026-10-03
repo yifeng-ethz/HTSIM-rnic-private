@@ -3,6 +3,9 @@
 #include "eventlist.h"
 #include "trigger.h"
 
+#include <limits>
+#include <stdexcept>
+
 simtime_picosec EventList::_endtime = 0;
 simtime_picosec EventList::_lasteventtime = 0;
 int EventList::_trafficeventcount = 0;
@@ -76,10 +79,7 @@ EventList::doNextEvent()
     pendingsources_t::iterator i = _pendingsources.begin();
     simtime_picosec nexteventtime = i->first;
     EventSource* nextsource = i->second;
-    if (nextsource->isTraffic()) {
-        _trafficeventcount--;
-    } 
-    _pendingsources.erase(i);
+    removePending(i);
     assert(nexteventtime >= _lasteventtime);
     _lasteventtime = nexteventtime; // set this before calling doNextEvent, so that this::now() is accurate
     nextsource->doNextEvent();
@@ -87,41 +87,56 @@ EventList::doNextEvent()
 }
 
 
-/* void 
-EventList::sourceIsPending(EventSource &src, simtime_picosec when) 
+EventList::Handle
+EventList::insertPending(EventSource& src, simtime_picosec when, bool traffic)
 {
-    assert(when>=now());
-    if ((_endtime==0 || when<_endtime) && (src.isTraffic() ||
-        (_trafficeventcount > 0 || _lasteventtime == 0))) {
-        _pendingsources.insert(make_pair(when,&src));
-        if (src.isTraffic()) {
-            _trafficeventcount++;
+    int next_count = _trafficeventcount;
+    if (traffic) {
+        if (next_count < 0) {
+            throw std::logic_error("negative EventList traffic count at insertion");
         }
+        if (next_count == std::numeric_limits<int>::max()) {
+            throw std::overflow_error("EventList pending traffic count overflow");
+        }
+        ++next_count;
     }
-} */
+    // Commit the count only after map allocation/insertion succeeds.
+    Handle handle = _pendingsources.insert(make_pair(when, &src));
+    _trafficeventcount = next_count;
+    return handle;
+}
 
-void EventList::sourceIsPending(EventSource& src, simtime_picosec when) {
-    /* printf("EventList::sourceIsPending: source %s at time %lu ps -- %lu %lu %lu\n",
-               src.str().c_str(), static_cast<unsigned long>(when), _endtime, when, _endtime); */
+void
+EventList::removePending(Handle handle)
+{
+    const bool traffic = handle->second->isTraffic();
+    if (traffic) {
+        if (_trafficeventcount <= 0) {
+            throw std::logic_error("EventList pending traffic count underflow");
+        }
+        --_trafficeventcount;
+    }
+    _pendingsources.erase(handle);
+}
+
+void
+EventList::sourceIsPending(EventSource& src, simtime_picosec when)
+{
     assert(when >= now());
+    const bool traffic = src.isTraffic();
     if (_endtime == 0 || when < _endtime) {
-        _pendingsources.insert(make_pair(when, &src));
-        /* printf("EventList1::sourceIsPending: source %s at time %lu ps\n",
-               src.str().c_str(), static_cast<unsigned long>(when)); */
+        insertPending(src, when, traffic);
     }
 }
 
 EventList::Handle
-EventList::sourceIsPendingGetHandle(EventSource &src, simtime_picosec when) 
+EventList::sourceIsPendingGetHandle(EventSource& src, simtime_picosec when)
 {
-    assert(when>=now());
-    if ((_endtime==0 || when<_endtime) && (src.isTraffic() ||
-        (_trafficeventcount > 0 || _lasteventtime == 0))) {
-        EventList::Handle handle =_pendingsources.insert(make_pair(when,&src));
-        if (src.isTraffic()) {
-            _trafficeventcount++;
-        }
-        return handle;
+    assert(when >= now());
+    const bool traffic = src.isTraffic();
+    if ((_endtime == 0 || when < _endtime) &&
+        (traffic || _trafficeventcount > 0 || _lasteventtime == 0)) {
+        return insertPending(src, when, traffic);
     }
     return _pendingsources.end();
 }
@@ -136,10 +151,7 @@ EventList::cancelPendingSource(EventSource &src) {
     pendingsources_t::iterator i = _pendingsources.begin();
     while (i != _pendingsources.end()) {
         if (i->second == &src) {
-            if (src.isTraffic()) {
-                _trafficeventcount--;
-            }
-            _pendingsources.erase(i);
+            removePending(i);
             return;
         }
         i++;
@@ -155,10 +167,7 @@ EventList::cancelPendingSourceByTime(EventSource &src, simtime_picosec when) {
 
     for (auto i = range.first; i != range.second; ++i) {
         if (i->second == &src) {
-            if (src.isTraffic()) {
-                _trafficeventcount--;
-            }
-            _pendingsources.erase(i);
+            removePending(i);
             return;
         }
     }
@@ -174,10 +183,7 @@ void EventList::cancelPendingSourceByHandle(EventSource &src, EventList::Handle 
     assert(handle != _pendingsources.end());
     assert(handle->first >= now());
     
-    if (src.isTraffic()) {
-        _trafficeventcount--;
-    }
-    _pendingsources.erase(handle);
+    removePending(handle);
 }
 
 void 
