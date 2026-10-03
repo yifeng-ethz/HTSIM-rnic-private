@@ -16,6 +16,8 @@ public:
     EventSource(const string& name);
     virtual ~EventSource() {};
     virtual void doNextEvent() = 0;
+    // Classification must remain stable while this source has pending records.
+    // Each insertion/removal queries it once; queued records are not reclassified.
     virtual bool isTraffic() {return true;}
     inline EventList& eventlist() const {return _eventlist;}
 protected:
@@ -43,6 +45,8 @@ public:
     // A pending trigger is an immediate event at now(). Otherwise return the
     // earliest scheduled source time, or no value when the list is empty.
     static std::optional<simtime_picosec> nextEventTime();
+    // Pending traffic records, counting duplicate source/time entries separately.
+    // Executing callbacks and immediate triggers are excluded.
     static inline int trafficEventCount() {return EventList::_trafficeventcount;}
     static Handle nullHandle() {return _pendingsources.end();}
     static multimap<simtime_picosec, EventSource*> getPendingSources() {return _pendingsources;}
@@ -57,6 +61,9 @@ public:
     void operator=(const EventList&) = delete;  // disable Assign Constructor
 
 private:
+    friend class EventListAccountingTestPeer;
+    static Handle insertPending(EventSource& src, simtime_picosec when, bool traffic);
+    static void removePending(Handle handle);
     static simtime_picosec _endtime;
     static simtime_picosec _lasteventtime;
     typedef multimap <simtime_picosec, EventSource*> pendingsources_t;

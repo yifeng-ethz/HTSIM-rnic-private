@@ -279,6 +279,7 @@ if ( ENABLE_TESTS )
     set(UNIT_TEST_FILES
         atlahs_wqe_test
         dcqcn_test
+        eventlist_accounting_test
         eventlist_microphase_test
         pipe_test
         rnic_collective_control_test
