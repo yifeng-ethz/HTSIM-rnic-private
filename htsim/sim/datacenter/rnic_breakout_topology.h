@@ -60,10 +60,18 @@ struct RnicBreakoutTopologyConfig {
     std::uint64_t uplink_propagation_ps;
     std::uint64_t switch_processing_ps;
     std::uint64_t downlink_propagation_ps;
+    // Zero/zero keeps the historical single-leaf paths and resource catalog.
+    // Clos links have one serializer per leaf, spine and physical lane in
+    // each direction, at the same configured lane capacity as endpoint links.
+    std::uint32_t endpoints_per_leaf{0};
+    std::uint32_t spines{0};
+    std::uint64_t inter_switch_propagation_ps{0};
 };
 
-// A single store-and-forward switch with independently serialized full-duplex
-// lanes on every endpoint. There is no additional aggregate-capacity wire.
+// A single store-and-forward leaf, optionally expanded into a leaf/spine Clos,
+// with independently serialized full-duplex lanes on every endpoint. There is
+// no additional aggregate-capacity wire. Clos spine selection is explicit and
+// independent of the source and destination physical lane identities.
 // Forwarding groups list explicitly reachable physical egress lanes. A breakout
 // cable alone creates no multipath group. The supplied hash returns a group
 // member index and is experimental configuration, not an assertion about an
@@ -80,7 +88,8 @@ public:
                          RnicFinitePriorityQueue::DropObserver drop = {});
     const Route& route(std::uint32_t source, std::uint32_t destination,
                        std::uint32_t source_lane, std::uint32_t destination_lane,
-                       PacketSink& endpoint, bool source_already_serialized = false);
+                       PacketSink& endpoint, bool source_already_serialized = false,
+                       std::uint32_t spine = 0);
     const Route& hashedRoute(std::uint32_t source, std::uint32_t destination,
                              std::uint32_t source_lane, std::uint16_t udp_source_port,
                              const std::vector<std::uint32_t>& forwarding_group,
@@ -88,17 +97,33 @@ public:
                              bool source_already_serialized = false);
     const RnicFinitePriorityQueue& sourceQueue(std::uint32_t node, std::uint32_t lane) const;
     const RnicFinitePriorityQueue& egressQueue(std::uint32_t node, std::uint32_t lane) const;
+    const RnicFinitePriorityQueue& leafUplinkQueue(
+        std::uint32_t leaf, std::uint32_t spine, std::uint32_t lane) const;
+    const RnicFinitePriorityQueue& spineEgressQueue(
+        std::uint32_t spine, std::uint32_t leaf, std::uint32_t lane) const;
+    bool crossesLeaves(std::uint32_t source, std::uint32_t destination) const;
     std::uint64_t noQueueTransitPs(std::uint64_t wire_bytes,
+                                  bool source_already_serialized = false) const;
+    std::uint64_t noQueueTransitPs(std::uint64_t wire_bytes,
+                                  std::uint32_t source, std::uint32_t destination,
                                   bool source_already_serialized = false) const;
 
 private:
     std::size_t index(std::uint32_t node, std::uint32_t lane) const;
-    using Key = std::tuple<std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t, bool>;
+    std::size_t fabricIndex(std::uint32_t leaf, std::uint32_t spine,
+                           std::uint32_t lane) const;
+    using Key = std::tuple<std::uint32_t, std::uint32_t, std::uint32_t,
+                           std::uint32_t, bool, std::uint32_t>;
     RnicBreakoutTopologyConfig _config;
     std::vector<std::unique_ptr<RnicFinitePriorityQueue>> _source;
     std::vector<std::unique_ptr<RnicFinitePriorityQueue>> _egress;
     std::vector<std::unique_ptr<Pipe>> _uplink;
     std::vector<std::unique_ptr<Pipe>> _downlink;
+    std::uint32_t _leaves{0};
+    std::vector<std::unique_ptr<RnicFinitePriorityQueue>> _leaf_uplink;
+    std::vector<std::unique_ptr<RnicFinitePriorityQueue>> _spine_egress;
+    std::vector<std::unique_ptr<Pipe>> _leaf_to_spine;
+    std::vector<std::unique_ptr<Pipe>> _spine_to_leaf;
     std::vector<PacketSink*> _endpoints;
     std::map<Key, std::unique_ptr<Route>> _routes;
 };

@@ -1,4 +1,4 @@
-# Single-stage breakout topology primitive
+# Single-leaf and two-tier Clos topology primitive
 
 `RnicBreakoutTopology` builds cached explicit htsim Packet/Route paths through
 independent source lanes, an ingress propagation/processing pipe, a finite
@@ -7,6 +7,34 @@ endpoint count, lanes, rate, queue capacities and delays. Each direction has
 its own source and egress serializer. There is no extra aggregate serializer
 or unlimited egress service. Destinations bind to one stable PacketSink across
 lanes. Drain routed packets before destroying the topology and sinks.
+
+The optional `endpoints_per_leaf` and `spines` fields enable a two-tier
+leaf/spine Clos. Both fields default to zero, preserving the single-leaf
+paths and resource catalog. A same-leaf route uses the same two serializers
+and delays. An inter-leaf route adds a leaf-to-spine serializer, a
+spine-to-destination-leaf serializer, two inter-switch propagation delays and
+two switch processing delays. These are actual finite packet queues and
+Pipes. No scalar topology multiplier prices the packet a second time.
+
+`route()` takes an explicit optional spine index separately from both
+physical lane indices. Leaf uplinks are shared by `(leaf, spine, lane)`;
+spine downlinks are shared by `(spine, leaf, lane)`. Opposite directions have
+independent serializers. Queue inspection names each physical resource.
+The application owns spine selection, declared forwarding groups and any
+source pacing. These primitives do not infer a physical switch hash or
+guarantee diversity. Four endpoints per leaf and four spines have equal
+aggregate downlink and uplink capacity at the configured common lane rate;
+two spines have 2:1 oversubscription and one has 4:1.
+
+With 1538 wire bytes, 100000 ps propagation per link and 200000 ps processing
+per switch, unloaded same-leaf/inter-leaf transit is exactly
+1384320/2968640 ps at 25 Gb/s per lane, and 2860800/5921600 ps at 10 Gb/s.
+The source-already-serialized suffix removes exactly one serializer.
+`noQueueTransitPs(bytes, source, destination)` includes the selected path's
+serializer and delay count; the older endpoint-independent overload retains
+its single-leaf meaning. Queue occupancy uses the explicit storage charge,
+which can differ from wire bytes. These model inputs require independent
+hardware qualification before serving as physical bounds.
 
 `RnicFinitePriorityQueue` serves HIGH, MID then LOW with strict priority at
 packet boundaries. Service is nonpreemptive and occupancy includes the active
