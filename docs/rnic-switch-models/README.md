@@ -14,6 +14,12 @@ Both are behavioral models for controlled simulation experiments. They define
 packet timing, arbitration, buffering, accounting, and route boundaries. They
 are not cycle-accurate implementations of commercial hardware.
 
+The additive [single-switch TM1 component](tm1.md) models the C3232C bench's
+208-byte cell accounting, explicit XPE domains, separate DATA/control caps,
+source MACs and physical egress service. Its `htsim_ns_tm1` executable compares
+preinstalled allocation calendars and PRBS pacing. It is independent of the
+Clos factory selectors below and leaves their runtime defaults unchanged.
+
 ## Scope
 
 | Component | Role |
