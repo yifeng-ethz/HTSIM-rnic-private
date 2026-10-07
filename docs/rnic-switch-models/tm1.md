@@ -191,6 +191,23 @@ not a proven current bound. An unpoliced full 8 KiB control backlog is a
 different experiment and can exceed it. The 920-case DATA sweep contains
 no injected control workload; only native tests exercise priority blocking.
 
+That 1 percent example assumes compact per-window control, not the reference
+book's ACK on every DATA packet. For ACK wire extent A and DATA wire extent L,
+reverse ACK demand is `r_DATA*A/L` at one ACK per packet. The book's synthetic
+64-byte ACK at 95 percent 1500-MTU DATA needs about 3.95 percent of the reverse
+25G lane before grants/PTP. Actual RC ACK extent and coalescing must be measured.
+If reverse DATA also consumes 95 percent, this control consumes the remaining
+wire budget; it is not free merely because the physical link is full-duplex.
+Reserve both directions or use a lower DATA fraction, then re-derive K and
+the burst envelope. The 90 percent cases provide a DATA-side sensitivity,
+not a measured ACK/RC profile.
+
+Priority service does not reserve memory. HIGH admission must remain possible
+under worst-case DATA occupancy, through verified free-pool bounds or supported
+minimum/reserved storage. A separate 8 KiB control cap is a maximum, not an
+8 KiB guarantee. The model's shared-domain admission can still drop HIGH when
+its domain is full; no unconditional control deadline is claimed.
+
 The reference runtime's shared ledger can affect other senders at DECLARE
 dispatch before any control packet arrives. This is ex-ante oracle knowledge.
 Its zero-gap behavior does not prove a distributed hardware implementation.
@@ -219,6 +236,14 @@ firmware verification. Enable 9000 end to end for long bulk phases only after
 the receiver ring, replay storage and lane-ordering contract cover full jumbo
 frames. IP MTU is not the same as an RDMA QP's path MTU; use the supported
 verbs path MTU for the standard RC comparison.
+
+[The standard verbs MTU enumeration](https://github.com/linux-rdma/rdma-core/blob/master/libibverbs/verbs.h)
+uses 256, 512, 1024, 2048 and 4096 bytes rather than 1500/9000.
+[Cisco's RoCE configuration guide](https://www.cisco.com/c/en/us/td/docs/unified_computing/ucs/ucs-manager/GUI-User-Guides/RoCEv2-Configuration/4-2/b-RoCE-Configuration-Guide-4-2.pdf)
+maps Ethernet1500 to RoCE1024 and Ethernet9000 to RoCE4096 on its platform.
+Query the actual Mellanox/Ollanox endpoint's active/path MTU and wire packet
+extent; this UDP benchmark's 9000-byte DATA packets do not stand in for a
+4096-byte verbs payload or establish RC jumbo performance.
 
 The byte-cap approximation gives about 83.9 us on each 25G lane and
 21.0 us at 100G. It is not a formal cell-cap drain ceiling because the wire

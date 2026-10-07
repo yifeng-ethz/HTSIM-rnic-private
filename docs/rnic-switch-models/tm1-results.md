@@ -75,10 +75,12 @@ are 359.40416 and 339.39584 us before fixed forward terms. The runner checks
 the stronger maximum actual receiver-lane byte floor on four 25G ports.
 Every generated extent matches an independent packetization formula.
 
-Three frozen relation families pass in 22 parameterized instances: pure wire
+Three unscored analytic relation families agree in 22 instances: pure wire
 serialization floors double exactly at half rate; jumbo lowers wire overhead
 for identical requested bytes; and a forced one-lane collision allocates
-23.75 Gb/s instead of 95 Gb/s. Loaded half-rate makespan ratios range from
+23.75 Gb/s instead of 95 Gb/s.
+These geometry checks derive from packet extents and allocation constants;
+they are not scored scheduling behavior. Measured loaded half-rate ratios range from
 1.9603 to 2.0280 because fixed delays, tick rounding and whole-packet window
 carry remain. A four-port collision never gains service through hash entropy.
 
