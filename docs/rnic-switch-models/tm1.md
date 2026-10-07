@@ -24,6 +24,12 @@ are unavailable while disabled, so that inspection does not test timestamp
 operation. Existing packet/drop counters are historical, not calibration of
 this model.
 
+The prescribed experiment uses LOW DATA and HIGH control only. The reusable
+component also exposes a strict MID class sharing the control storage cap;
+that optional class is not a reproduction of the installed groups 1/2 with
+zero remaining bandwidth. Same-instant admissions follow event insertion
+order, not a calibrated ASIC ingress arbiter, so loss fairness is unqualified.
+
 A temporary unattached custom queuing policy accepted `queue-limit 262144
 bytes` and was removed. No interface policy was replaced or saved. Therefore
 the 256 KiB cap is a proposed setting, not the switch's current cap, and its
@@ -138,6 +144,11 @@ planning clock constrains joint-resource launch opportunities; it is not
 proof of a receiver-arrival window budget when frames have different lengths
 or source/destination rates. Actual modeled output queues still enforce
 physical service and expose any resulting backlog.
+
+NX-OS configuration controls forwarding and supported QoS policies. It does
+not provide the custom per-packet timestamp eligibility/release primitive
+assumed by this design. Implement that primitive in the ASU endpoints;
+changing a queue-limit or PTP feature does not install a switch resequencer.
 
 At 25G, W=32 us contains 100000 wire bytes at full rate and 95000 at
 95 percent. Four equal senders have 23750 bytes each per receiving lane,
